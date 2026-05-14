@@ -8,6 +8,14 @@ Currently covers:
   Qwen3 checkpoints × `{bf16, q8, q4}` quantisation tiers.
 - `llama_decode_*` — `mlx_lm::models::llama` on small (1B) + large (3B)
   Llama-3.2-Instruct checkpoints × `{bf16, q8, q4}`.
+- `qwen3_5_decode_{4b_q8,9b_q8}` — `mlx_lm::models::qwen3_5` on the
+  `mlx-community/Qwen3.5-{4B,9B}` hybrid checkpoints (Gated DeltaNet +
+  full-attention layers). Same architecture as chandra-ocr-2 (vision-free).
+- `vision_prefill_chandra_q8` — ViT-24 forward on `tests/fixtures/qwen3_5/test_image.png`
+  using the chandra-ocr-2 multimodal checkpoint (`jwindle47/chandra-ocr-2-8bit-mlx`,
+  only public mlx conversion). One image per iteration. `head_dim = 72` falls
+  outside MLX's fused SDPA set; sensitive to the
+  `scaled_dot_product_attention_pad_to_fused` helper.
 
 Each variant is benched with a 13-token short prompt and a 1024-token long
 prompt, decoding 100 tokens per iteration; both prompts use synthetic
@@ -49,11 +57,12 @@ point `MLX_LM_BENCH_CACHE` at that root and the bench will reuse them —
 provided each checkpoint sits at `<root>/<repo_id>/` matching the IDs used
 in the bench file.
 
-Total disk after a full population is ~16 GB. Cells skip if `hf` is missing
-or download fails; CI without `hf` will run zero cells rather than fail.
-Partial checkpoints (an interrupted `hf download` leaving the index file
-plus only some shards) are detected and reported with a resume command —
-they're never silently treated as complete.
+Total disk after a full population is ~42 GB (text decoders ~16 GB +
+Qwen3.5 ~22 GB + chandra-ocr-2 multimodal ~3 GB). Cells skip if `hf` is
+missing or download fails; CI without `hf` will run zero cells rather
+than fail. Partial checkpoints (an interrupted `hf download` leaving the
+index file plus only some shards) are detected and reported with a resume
+command — they're never silently treated as complete.
 
 Set `MLX_LM_BENCH_NO_DOWNLOAD=1` to suppress downloads entirely — any cell
 whose checkpoint isn't already cached will be dropped silently. Useful
