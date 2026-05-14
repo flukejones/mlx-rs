@@ -308,13 +308,21 @@ fn maybe_bench_llama(c: &mut Criterion, label: &str, repo_id: &str) {
 fn bench_decode(c: &mut Criterion) {
     eprintln!("lm_decode cache root: {}", bench_cache_root().display());
 
-    // Qwen3 plain decoder — small (0.6B) + large (1.7B), bf16.
+    // Qwen3 plain decoder — small (0.6B) + large (1.7B) × {bf16, q8, q4}.
     maybe_bench_qwen3(c, "small_bf16", "mlx-community/Qwen3-0.6B-bf16");
+    maybe_bench_qwen3(c, "small_q8", "mlx-community/Qwen3-0.6B-8bit");
+    maybe_bench_qwen3(c, "small_q4", "mlx-community/Qwen3-0.6B-4bit");
     maybe_bench_qwen3(c, "large_bf16", "mlx-community/Qwen3-1.7B-bf16");
+    maybe_bench_qwen3(c, "large_q8", "mlx-community/Qwen3-1.7B-8bit");
+    maybe_bench_qwen3(c, "large_q4", "mlx-community/Qwen3-1.7B-4bit");
 
-    // Llama 3.2 — small (1B) + large (3B), bf16.
+    // Llama 3.2 — small (1B) + large (3B) × {bf16, q8, q4}.
     maybe_bench_llama(c, "small_bf16", "mlx-community/Llama-3.2-1B-Instruct-bf16");
+    maybe_bench_llama(c, "small_q8", "mlx-community/Llama-3.2-1B-Instruct-8bit");
+    maybe_bench_llama(c, "small_q4", "mlx-community/Llama-3.2-1B-Instruct-4bit");
     maybe_bench_llama(c, "large_bf16", "mlx-community/Llama-3.2-3B-Instruct-bf16");
+    maybe_bench_llama(c, "large_q8", "mlx-community/Llama-3.2-3B-Instruct-8bit");
+    maybe_bench_llama(c, "large_q4", "mlx-community/Llama-3.2-3B-Instruct-4bit");
 }
 
 criterion_group!(benches, bench_decode);
