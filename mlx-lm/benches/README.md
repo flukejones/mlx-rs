@@ -5,9 +5,9 @@ Criterion benches for the text-decoder models in `mlx_lm::models`.
 Currently covers:
 
 - `qwen3_decode_*` — `mlx_lm::models::qwen3` on small (0.6B) + large (1.7B)
-  Qwen3 bf16 checkpoints.
+  Qwen3 checkpoints × `{bf16, q8, q4}` quantisation tiers.
 - `llama_decode_*` — `mlx_lm::models::llama` on small (1B) + large (3B)
-  Llama-3.2-Instruct bf16 checkpoints.
+  Llama-3.2-Instruct checkpoints × `{bf16, q8, q4}`.
 
 Each variant is benched with a 13-token short prompt and a 1024-token long
 prompt, decoding 100 tokens per iteration; both prompts use synthetic
@@ -23,7 +23,7 @@ Pass a filter to run a subset:
 
 ```
 cargo bench -p mlx-lm --bench lm_decode -- qwen3_decode_small
-cargo bench -p mlx-lm --bench lm_decode -- llama_decode_large_bf16/short
+cargo bench -p mlx-lm --bench lm_decode -- llama_decode_large_q4/short
 ```
 
 ## Model cache
@@ -49,7 +49,7 @@ point `MLX_LM_BENCH_CACHE` at that root and the bench will reuse them —
 provided each checkpoint sits at `<root>/<repo_id>/` matching the IDs used
 in the bench file.
 
-Total disk after a full population is ~13 GB. Cells skip if `hf` is missing
+Total disk after a full population is ~16 GB. Cells skip if `hf` is missing
 or download fails; CI without `hf` will run zero cells rather than fail.
 Partial checkpoints (an interrupted `hf download` leaving the index file
 plus only some shards) are detected and reported with a resume command —
