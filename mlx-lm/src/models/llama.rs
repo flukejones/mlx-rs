@@ -20,6 +20,7 @@ use serde_json::Value;
 use tokenizers::Tokenizer;
 
 use crate::{
+    activations::swiglu,
     cache::KeyValueCache,
     error::Error,
     quantization::{resolve_quantization, QuantizationConfig},
@@ -232,9 +233,9 @@ impl Module<&Array> for Mlp {
     type Error = Exception;
 
     fn forward(&mut self, input: &Array) -> Result<Self::Output, Self::Error> {
-        let down_proj_input =
-            nn::silu(self.gate_proj.forward(input)?)?.multiply(self.up_proj.forward(input)?)?;
-        self.down_proj.forward(&down_proj_input)
+        let gate = self.gate_proj.forward(input)?;
+        let up = self.up_proj.forward(input)?;
+        self.down_proj.forward(&swiglu(&gate, &up)?)
     }
 
     fn training_mode(&mut self, mode: bool) {
