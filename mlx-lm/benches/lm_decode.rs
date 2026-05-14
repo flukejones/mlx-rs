@@ -1,8 +1,9 @@
 //! Decode-throughput bench for mlx-lm text decoders.
 //!
-//! Covers the decoder-only models that ship with the crate today:
+//! Covers all the decoder families:
 //!   - Qwen3 plain decoder (`mlx_lm::models::qwen3`)
 //!   - Llama 3.2 (`mlx_lm::models::llama`)
+//!   - Qwen3.5 hybrid SSM + attention (`mlx_lm::models::qwen3_5`)
 //!
 //! Each variant is benched at a short (13-token) and long (1024-token)
 //! prompt, decoding `DECODE_TOKENS` tokens. The long-prompt case stresses
@@ -26,11 +27,18 @@ use mlx_lm::cache::ConcatKeyValueCache;
 use mlx_lm::models::{
     llama::{load_llama_model, Generate as LlamaGenerate, Model as LlamaModel},
     qwen3::{load_qwen3_model, Generate as Qwen3Generate, Model as Qwen3Model},
+    qwen3_5::{
+        config::ModelConfig as Qwen3_5Config,
+        generation::{Generate as Qwen3_5Generate, SamplingParams, StopCriteria},
+        image_processor::Qwen35ImageProcessor,
+        layer::LanguageModel as Qwen3_5LanguageModel,
+        weights::{load_full_model, load_language_model},
+    },
 };
 use mlx_rs::{
     ops::indexing::{IndexOp, NewAxis},
     transforms::eval,
-    Array,
+    Array, Dtype,
 };
 
 const DECODE_TOKENS: i32 = 100;
@@ -305,6 +313,167 @@ fn maybe_bench_llama(c: &mut Criterion, label: &str, repo_id: &str) {
     group.finish();
 }
 
+/// Chat-rendered "Hello" short prompt for the Qwen3.5 tokenizer.
+const QWEN3_5_SHORT_PROMPT: &[i32] = &[
+    248045, 846, 198, 9419, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271,
+];
+
+fn maybe_bench_qwen3_5(c: &mut Criterion, label: &str, repo_id: &str) {
+    let Some(dir) = ensure_model(repo_id) else {
+        return;
+    };
+
+    let cfg = match Qwen3_5Config::from_file(dir.join("config.json")) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("skipping qwen3_5 {label}: config parse failed: {e:?}");
+            return;
+        }
+    };
+    let (mut model, _) = match load_language_model(&cfg, &dir) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("skipping qwen3_5 {label}: load failed: {e:?}");
+            return;
+        }
+    };
+
+    let short = Array::from_slice(QWEN3_5_SHORT_PROMPT, &[QWEN3_5_SHORT_PROMPT.len() as i32]);
+    let mut long_ids = Vec::with_capacity(LONG_PROMPT_LEN);
+    long_ids.extend_from_slice(QWEN3_5_SHORT_PROMPT);
+    let filler = QWEN3_5_SHORT_PROMPT[1];
+    while long_ids.len() < LONG_PROMPT_LEN {
+        long_ids.push(filler);
+    }
+    long_ids.truncate(LONG_PROMPT_LEN);
+    let long = Array::from_slice(&long_ids, &[long_ids.len() as i32]);
+
+    let warm = Qwen3_5Generate::new(
+        &mut model,
+        &cfg,
+        short.clone(),
+        StopCriteria {
+            max_new_tokens: WARMUP_TOKENS,
+            eos_ids: vec![],
+        },
+        SamplingParams::default(),
+    );
+    let tokens: Vec<u32> = warm.map(|r| r.unwrap()).collect();
+    let ids: Vec<i32> = tokens.iter().map(|&t| t as i32).collect();
+    if !ids.is_empty() {
+        let arr = Array::from_slice(&ids, &[ids.len() as i32]);
+        eval([&arr]).unwrap();
+    }
+
+    let mut group = c.benchmark_group(format!("qwen3_5_decode_{label}"));
+    group.throughput(Throughput::Elements(DECODE_TOKENS as u64));
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+
+    let run = |model: &mut Qwen3_5LanguageModel, prompt: &Array| {
+        let gen = Qwen3_5Generate::new(
+            model,
+            &cfg,
+            prompt.clone(),
+            StopCriteria {
+                max_new_tokens: DECODE_TOKENS,
+                eos_ids: vec![],
+            },
+            SamplingParams::default(),
+        );
+        let tokens: Vec<u32> = gen.map(|r| r.unwrap()).collect();
+        let ids: Vec<i32> = tokens.iter().map(|&t| t as i32).collect();
+        let arr = Array::from_slice(&ids, &[ids.len() as i32]);
+        eval([&arr]).unwrap();
+    };
+
+    group.bench_function(BenchmarkId::new("short", DECODE_TOKENS), |b| {
+        b.iter(|| run(&mut model, &short));
+    });
+    group.bench_function(
+        BenchmarkId::new("long_prompt", LONG_PROMPT_LEN as i32),
+        |b| {
+            b.iter(|| run(&mut model, &long));
+        },
+    );
+    group.finish();
+}
+
+/// Vision-tower (ViT-24 + merger) forward pass on a single image.
+///
+/// Loads the full multimodal qwen3_5 checkpoint, runs the image processor on
+/// the bundled fixture `tests/fixtures/qwen3_5/test_image.png` once, then
+/// benches the ViT forward in isolation. Throughput is one image per call.
+///
+/// The `head_dim = 72` in this ViT is exactly the case that falls outside
+/// MLX's fused SDPA set, so this cell is sensitive to the
+/// `scaled_dot_product_attention_pad_to_fused` helper.
+fn maybe_bench_chandra_vision(c: &mut Criterion, label: &str, repo_id: &str) {
+    let Some(dir) = ensure_model(repo_id) else {
+        return;
+    };
+
+    let cfg = match Qwen3_5Config::from_file(dir.join("config.json")) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("skipping vision {label}: config parse failed: {e:?}");
+            return;
+        }
+    };
+    if cfg.vision_config.depth == 0 {
+        eprintln!("skipping vision {label}: checkpoint has no vision tower");
+        return;
+    }
+    let (_, mut vision, _) = match load_full_model(&cfg, &dir) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("skipping vision {label}: load failed: {e:?}");
+            return;
+        }
+    };
+
+    let processor = match Qwen35ImageProcessor::from_dir(&dir) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("skipping vision {label}: image processor init failed: {e:?}");
+            return;
+        }
+    };
+    let img_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qwen3_5/test_image.png");
+    let processed = match processor.preprocess_path(&img_path) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("skipping vision {label}: preprocess failed: {e:?}");
+            return;
+        }
+    };
+    let num_patches = (processed.pixel_values.len() / processed.feature_dim as usize) as i32;
+    let pixel_array = Array::from_slice(
+        &processed.pixel_values,
+        &[num_patches, processed.feature_dim],
+    )
+    .as_dtype(Dtype::Bfloat16)
+    .unwrap();
+    let grid_thw = processed.grid_thw;
+
+    // Warm-up: ensure Metal kernels + alloc state are stable.
+    let warm = vision.forward(&pixel_array, &[grid_thw]).unwrap();
+    eval([&warm]).unwrap();
+
+    let mut group = c.benchmark_group(format!("vision_prefill_{label}"));
+    group.throughput(Throughput::Elements(1));
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+    group.bench_function(BenchmarkId::new("one_image", num_patches), |b| {
+        b.iter(|| {
+            let out = vision.forward(&pixel_array, &[grid_thw]).unwrap();
+            eval([&out]).unwrap();
+        });
+    });
+    group.finish();
+}
+
 fn bench_decode(c: &mut Criterion) {
     eprintln!("lm_decode cache root: {}", bench_cache_root().display());
 
@@ -323,6 +492,18 @@ fn bench_decode(c: &mut Criterion) {
     maybe_bench_llama(c, "large_bf16", "mlx-community/Llama-3.2-3B-Instruct-bf16");
     maybe_bench_llama(c, "large_q8", "mlx-community/Llama-3.2-3B-Instruct-8bit");
     maybe_bench_llama(c, "large_q4", "mlx-community/Llama-3.2-3B-Instruct-4bit");
+
+    // Qwen3.5 hybrid SSM+attention. The 4B-8bit checkpoint is the smallest
+    // public mlx-community Qwen3.5 build and exercises the same code paths as
+    // the chandra-ocr-2 text-only model.
+    maybe_bench_qwen3_5(c, "4b_q8", "mlx-community/Qwen3.5-4B-MLX-8bit");
+    maybe_bench_qwen3_5(c, "9b_q8", "mlx-community/Qwen3.5-9B-8bit");
+
+    // Vision-tower prefill on the chandra-ocr-2-8bit-mlx checkpoint (the only
+    // public mlx conversion of chandra). Measures `VisionModel::forward` for
+    // one image — the hot path #348's `scaled_dot_product_attention_pad_to_fused`
+    // is meant to accelerate (head_dim=72 falls outside the fused SDPA set).
+    maybe_bench_chandra_vision(c, "chandra_q8", "jwindle47/chandra-ocr-2-8bit-mlx");
 }
 
 criterion_group!(benches, bench_decode);

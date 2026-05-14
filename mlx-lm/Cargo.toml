@@ -25,9 +25,11 @@ idna_adapter = "1.2"
 thiserror = "2"
 serde_json = "1"
 minijinja = "2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff", "webp", "gif"] }
 
 [dev-dependencies]
 lazy_static = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
