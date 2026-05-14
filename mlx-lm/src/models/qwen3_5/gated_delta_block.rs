@@ -1,0 +1,412 @@
+//! `Qwen3_5GatedDeltaNet` — the `linear_attention` decoder layer.
+//!
+//! Wraps the projector linears + causal Conv1d + sequential GDN scan + gated
+//! RMSNorm + output projection, matching
+//! `mlx_vlm.models.qwen3_5.language.Qwen3_5GatedDeltaNet`.
+
+use mlx_rs::{
+    builder::Builder,
+    error::Exception,
+    fast::rms_norm,
+    macros::{ModuleParameters, Quantizable},
+    module::{Module, Param},
+    nn,
+    ops::{
+        concatenate_axis, expand_dims, indexing::take_axis, ones, r#where, reshape, split_sections,
+        zeros,
+    },
+    quantization::MaybeQuantized,
+    random, Array, Dtype,
+};
+
+use super::cache::LinearAttnCache;
+use super::config::TextConfig;
+use super::gated_delta::gated_delta_update_ops;
+
+/// Gated RMSNorm from `Qwen3_5RMSNormGated`. Returns
+/// `silu(gate.astype(f32)) * rms_norm(hidden, weight)` cast back to `hidden.dtype`.
+fn rms_norm_gated(
+    hidden: &Array,
+    gate: &Array,
+    weight: &Array,
+    eps: f32,
+) -> Result<Array, Exception> {
+    let normed = rms_norm(
+        hidden.as_dtype(Dtype::Float32)?,
+        Some(&weight.as_dtype(Dtype::Float32)?),
+        eps,
+    )?;
+    let gate_silu = nn::silu(gate.as_dtype(Dtype::Float32)?)?;
+    gate_silu.multiply(&normed)?.as_dtype(hidden.dtype())
+}
+
+/// The Gated DeltaNet decoder block.
+#[derive(Debug, Clone, ModuleParameters, Quantizable)]
+pub struct GatedDeltaNet {
+    pub num_v_heads: i32,
+    pub num_k_heads: i32,
+    pub head_k_dim: i32,
+    pub head_v_dim: i32,
+    pub key_dim: i32,
+    pub value_dim: i32,
+    pub conv_dim: i32,
+    pub conv_kernel_size: i32,
+    pub eps: f32,
+
+    /// Causal 1-D depthwise conv on the projected `(q, k, v)`.
+    #[param]
+    pub conv1d: nn::Conv1d,
+
+    /// `Linear(hidden, key_dim*2 + value_dim)`.
+    #[quantizable]
+    #[param]
+    pub in_proj_qkv: MaybeQuantized<nn::Linear>,
+    /// `Linear(hidden, value_dim)`.
+    #[quantizable]
+    #[param]
+    pub in_proj_z: MaybeQuantized<nn::Linear>,
+    /// `Linear(hidden, num_v_heads)`.
+    #[quantizable]
+    #[param]
+    pub in_proj_b: MaybeQuantized<nn::Linear>,
+    /// `Linear(hidden, num_v_heads)`.
+    #[quantizable]
+    #[param]
+    pub in_proj_a: MaybeQuantized<nn::Linear>,
+
+    /// Learned `[num_v_heads]` time-step bias inside `compute_g`.
+    #[param]
+    pub dt_bias: Param<Array>,
+    /// Learned `[num_v_heads]` log-A used inside `compute_g`. Stored unscaled
+    /// in fp32 (the cast_predicate keeps `A_log` out of the bf16 cast at load).
+    #[param]
+    pub a_log: Param<Array>,
+    /// Learned `[head_v_dim]` RMS norm weight applied inside `Qwen3_5RMSNormGated`.
+    #[param]
+    pub norm_weight: Param<Array>,
+
+    /// `Linear(value_dim, hidden_size)` — final out-projection.
+    #[quantizable]
+    #[param]
+    pub out_proj: MaybeQuantized<nn::Linear>,
+}
+
+impl GatedDeltaNet {
+    /// Build a freshly-initialised block from a [`TextConfig`].
+    pub fn new(cfg: &TextConfig) -> Result<Self, Exception> {
+        let hidden = cfg.hidden_size;
+        let num_v_heads = cfg.linear_num_value_heads;
+        let num_k_heads = cfg.linear_num_key_heads;
+        if num_v_heads % num_k_heads != 0 {
+            return Err(Exception::custom(format!(
+                "GatedDeltaNet: linear_num_value_heads ({num_v_heads}) must be divisible by linear_num_key_heads ({num_k_heads})"
+            )));
+        }
+        let head_k_dim = cfg.linear_key_head_dim;
+        let head_v_dim = cfg.linear_value_head_dim;
+        let key_dim = head_k_dim * num_k_heads;
+        let value_dim = head_v_dim * num_v_heads;
+        let conv_dim = key_dim * 2 + value_dim;
+        let conv_kernel_size = cfg.linear_conv_kernel_dim;
+        let eps = cfg.rms_norm_eps;
+
+        // Depthwise conv: every group is a single channel, so the kernel
+        // weight shape is `(conv_dim, kernel_size, 1)` — we build the layer
+        // by hand because the upstream `Conv1dBuilder` always initialises
+        // weights with `(out, k, in_channels)` and ignores `groups`.
+        let conv1d = depthwise_conv1d(conv_dim, conv_kernel_size)?;
+
+        let in_proj_qkv = nn::LinearBuilder::new(hidden, conv_dim)
+            .bias(false)
+            .build()?;
+        let in_proj_z = nn::LinearBuilder::new(hidden, value_dim)
+            .bias(false)
+            .build()?;
+        let in_proj_b = nn::LinearBuilder::new(hidden, num_v_heads)
+            .bias(false)
+            .build()?;
+        let in_proj_a = nn::LinearBuilder::new(hidden, num_v_heads)
+            .bias(false)
+            .build()?;
+        let out_proj = nn::LinearBuilder::new(value_dim, hidden)
+            .bias(false)
+            .build()?;
+
+        let dt_bias = ones::<f32>(&[num_v_heads])?;
+        let a_log_a = random::uniform::<_, f32>(0.0, 16.0, &[num_v_heads], None)?;
+        let a_log = a_log_a.log()?;
+        let norm_weight = ones::<f32>(&[head_v_dim])?;
+
+        Ok(Self {
+            num_v_heads,
+            num_k_heads,
+            head_k_dim,
+            head_v_dim,
+            key_dim,
+            value_dim,
+            conv_dim,
+            conv_kernel_size,
+            eps,
+            conv1d,
+            in_proj_qkv: MaybeQuantized::Original(in_proj_qkv),
+            in_proj_z: MaybeQuantized::Original(in_proj_z),
+            in_proj_b: MaybeQuantized::Original(in_proj_b),
+            in_proj_a: MaybeQuantized::Original(in_proj_a),
+            dt_bias: Param::new(dt_bias),
+            a_log: Param::new(a_log),
+            norm_weight: Param::new(norm_weight),
+            out_proj: MaybeQuantized::Original(out_proj),
+        })
+    }
+
+    /// Block forward.
+    ///
+    /// - `inputs`: `[B, S, hidden_size]`.
+    /// - `mask`: optional `[B, S]` bool — `false` positions zero the conv input
+    ///   and freeze the SSM state.
+    /// - `cache`: per-layer cache slot. Mutated in place.
+    pub fn forward(
+        &mut self,
+        inputs: &Array,
+        mask: Option<&Array>,
+        mut cache: Option<&mut LinearAttnCache>,
+    ) -> Result<Array, Exception> {
+        let shape = inputs.shape();
+        let b = shape[0];
+        let s = shape[1];
+
+        let mixed_qkv = self.in_proj_qkv.forward(inputs)?;
+        let z = self.in_proj_z.forward(inputs)?;
+        let z = reshape(&z, &[b, s, self.num_v_heads, self.head_v_dim])?;
+
+        let b_arr = self.in_proj_b.forward(inputs)?;
+        let a_arr = self.in_proj_a.forward(inputs)?;
+
+        let mixed_qkv = match mask {
+            Some(m) => {
+                // mask: [B, S] -> [B, S, 1] to broadcast across conv_dim.
+                let m_b = expand_dims(m, 2)?;
+                let zero = Array::from_f32(0.0).as_dtype(mixed_qkv.dtype())?;
+                r#where(&m_b, &mixed_qkv, &zero)?
+            }
+            None => mixed_qkv,
+        };
+
+        // Concatenate the cached conv history with the new tokens. The history
+        // is the last `conv_kernel_size - 1` tokens of the prior conv_input.
+        let history_len = self.conv_kernel_size - 1;
+        let conv_state = match cache.as_ref().and_then(|c| c.conv_state.as_ref()) {
+            Some(cs) if cs.shape() == [b, history_len, self.conv_dim] => cs.clone(),
+            _ => zeros::<f32>(&[b, history_len, self.conv_dim])?.as_dtype(mixed_qkv.dtype())?,
+        };
+        let conv_input = concatenate_axis(&[conv_state, mixed_qkv.clone()], 1)?;
+
+        let conv_out = self.conv1d.forward(&conv_input)?;
+        let conv_out = nn::silu(conv_out)?;
+
+        // Persist the new conv history tail.
+        if let Some(cache) = cache.as_deref_mut() {
+            let total_len = history_len + s;
+            let new_history = take_tail_axis(&conv_input, 1, history_len, total_len)?;
+            cache.conv_state = Some(new_history);
+        }
+
+        // Split conv_out into q / k / v along the channel axis.
+        let parts = split_sections(&conv_out, &[self.key_dim, 2 * self.key_dim], -1)?;
+        let q = reshape(&parts[0], &[b, s, self.num_k_heads, self.head_k_dim])?;
+        let k = reshape(&parts[1], &[b, s, self.num_k_heads, self.head_k_dim])?;
+        let v = reshape(&parts[2], &[b, s, self.num_v_heads, self.head_v_dim])?;
+
+        // Scale q/k with the head-dim power. `fast::rms_norm` with `None`
+        // weight emits a single Metal kernel; the explicit `.as_dtype` cast
+        // restores the input dtype after the f32 scalar promotion.
+        let inv_scale = (self.head_k_dim as f32).powf(-0.5);
+        let q_normed = rms_norm(&q, None, 1e-6)?
+            .multiply(Array::from_f32(inv_scale * inv_scale))?
+            .as_dtype(q.dtype())?;
+        let k_normed = rms_norm(&k, None, 1e-6)?
+            .multiply(Array::from_f32(inv_scale))?
+            .as_dtype(k.dtype())?;
+
+        let state_in = cache
+            .as_ref()
+            .and_then(|c| c.recurrent_state.as_ref())
+            .cloned();
+        let (out, new_state) = gated_delta_update_ops(
+            &q_normed,
+            &k_normed,
+            &v,
+            &a_arr,
+            &b_arr,
+            &self.a_log.value,
+            &self.dt_bias.value,
+            state_in.as_ref(),
+            mask,
+        )?;
+
+        if let Some(cache) = cache {
+            cache.recurrent_state = Some(new_state);
+            cache.offset += s;
+        }
+
+        // Apply the gated RMS norm with the per-head `z`.
+        let gated = rms_norm_gated(&out, &z, &self.norm_weight.value, self.eps)?;
+        let flat = reshape(&gated, &[b, s, self.num_v_heads * self.head_v_dim])?;
+        self.out_proj.forward(&flat)
+    }
+
+    /// Toggle training mode on every quantisable parameter.
+    pub fn training_mode(&mut self, mode: bool) {
+        self.in_proj_qkv.training_mode(mode);
+        self.in_proj_z.training_mode(mode);
+        self.in_proj_b.training_mode(mode);
+        self.in_proj_a.training_mode(mode);
+        self.out_proj.training_mode(mode);
+    }
+}
+
+/// Slice `x[:, start:stop]` along `axis`. Returns the same rank.
+fn take_tail_axis(
+    x: &Array,
+    axis: i32,
+    slice_len: i32,
+    total_len: i32,
+) -> Result<Array, Exception> {
+    let start = total_len - slice_len;
+    let idx: Vec<i32> = (start..total_len).collect();
+    let idx_arr = Array::from_slice(&idx, &[idx.len() as i32]);
+    take_axis(x, &idx_arr, axis)
+}
+
+/// Build a depthwise Conv1d with weight shape `[conv_dim, kernel_size, 1]`,
+/// the depthwise convention used by Qwen3.5 / mlx_vlm.
+fn depthwise_conv1d(conv_dim: i32, kernel_size: i32) -> Result<nn::Conv1d, Exception> {
+    let scale = (1.0_f32 / (kernel_size as f32)).sqrt();
+    let weight = random::uniform::<_, f32>(-scale, scale, &[conv_dim, kernel_size, 1], None)?;
+    Ok(nn::Conv1d {
+        weight: Param::new(weight),
+        bias: Param::new(None),
+        stride: 1,
+        padding: 0,
+        dilation: 1,
+        groups: conv_dim,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mlx_rs::{random::uniform, transforms::eval};
+
+    fn synthetic_text_config() -> TextConfig {
+        let json = serde_json::json!({
+            "model_type": "qwen3_5_text",
+            "hidden_size": 32,
+            "intermediate_size": 64,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 8,
+            "rms_norm_eps": 1e-6,
+            "vocab_size": 100,
+            "max_position_embeddings": 256,
+            "layer_types": ["linear_attention"],
+            "linear_num_key_heads": 2,
+            "linear_num_value_heads": 4,
+            "linear_key_head_dim": 4,
+            "linear_value_head_dim": 4,
+            "linear_conv_kernel_dim": 4,
+            "rope_parameters": {
+                "mrope_section": [2, 1, 1],
+                "rope_theta": 10000.0,
+                "partial_rotary_factor": 1.0,
+                "type": "default"
+            }
+        });
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn block_shape_round_trips_without_cache() {
+        let cfg = synthetic_text_config();
+        let mut blk = GatedDeltaNet::new(&cfg).unwrap();
+        let x = uniform::<_, f32>(0.0, 1.0, &[1, 5, cfg.hidden_size], None).unwrap();
+        let y = blk.forward(&x, None, None).unwrap();
+        eval([&y]).unwrap();
+        assert_eq!(y.shape(), &[1, 5, cfg.hidden_size]);
+    }
+
+    /// `linear_key_head_dim = 32` so the kernel `dk_ok` gate is satisfied;
+    /// the rest matches the synthetic text-only config used elsewhere.
+    fn head_k_dim_32_config() -> TextConfig {
+        let json = serde_json::json!({
+            "model_type": "qwen3_5_text",
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 16,
+            "rms_norm_eps": 1e-6,
+            "vocab_size": 100,
+            "max_position_embeddings": 256,
+            "layer_types": ["linear_attention"],
+            "linear_num_key_heads": 1,
+            "linear_num_value_heads": 2,
+            "linear_key_head_dim": 32,
+            "linear_value_head_dim": 32,
+            "linear_conv_kernel_dim": 4,
+            "rope_parameters": {
+                "mrope_section": [4, 2, 2],
+                "rope_theta": 10000.0,
+                "partial_rotary_factor": 1.0,
+                "type": "default"
+            }
+        });
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn chained_24_blocks_produce_expected_shape() {
+        let cfg = head_k_dim_32_config();
+        let layers: usize = 24;
+
+        let mut blocks: Vec<GatedDeltaNet> = (0..layers)
+            .map(|_| GatedDeltaNet::new(&cfg).unwrap())
+            .collect();
+        let x = uniform::<_, f32>(0.0, 1.0, &[1, 4, cfg.hidden_size], None).unwrap();
+        let mut out = x;
+        for blk in blocks.iter_mut() {
+            out = blk.forward(&out, None, None).unwrap();
+        }
+        eval([&out]).unwrap();
+        assert_eq!(out.shape(), &[1, 4, cfg.hidden_size]);
+    }
+
+    #[test]
+    fn block_prefill_then_decode_extends_cache_offset() {
+        let cfg = synthetic_text_config();
+        let mut blk = GatedDeltaNet::new(&cfg).unwrap();
+        let prompt = uniform::<_, f32>(0.0, 1.0, &[1, 5, cfg.hidden_size], None).unwrap();
+        let mut cache = LinearAttnCache::new();
+        let prefill_out = blk.forward(&prompt, None, Some(&mut cache)).unwrap();
+        eval([&prefill_out]).unwrap();
+        assert_eq!(prefill_out.shape(), &[1, 5, cfg.hidden_size]);
+        assert_eq!(cache.offset, 5);
+        assert!(cache.conv_state.is_some());
+        assert!(cache.recurrent_state.is_some());
+
+        let next = uniform::<_, f32>(0.0, 1.0, &[1, 1, cfg.hidden_size], None).unwrap();
+        let decode_out = blk.forward(&next, None, Some(&mut cache)).unwrap();
+        eval([&decode_out]).unwrap();
+        assert_eq!(decode_out.shape(), &[1, 1, cfg.hidden_size]);
+        assert_eq!(cache.offset, 6);
+
+        // Conv history must always have length conv_kernel_size - 1.
+        let cs = cache.conv_state.as_ref().unwrap();
+        assert_eq!(
+            cs.shape(),
+            &[1, cfg.linear_conv_kernel_dim - 1, blk.conv_dim]
+        );
+    }
+}

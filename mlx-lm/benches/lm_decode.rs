@@ -1,8 +1,9 @@
 //! Decode-throughput bench for mlx-lm text decoders.
 //!
-//! Covers the decoder families present at M1:
+//! Covers all the decoder families:
 //!   - Qwen3 plain decoder (`mlx_lm::models::qwen3`)
 //!   - Llama 3.2 (`mlx_lm::models::llama`)
+//!   - Qwen3.5 hybrid SSM + attention (`mlx_lm::models::qwen3_5`)
 //!
 //! Each variant is benched at a short (13-token) and long (1024-token)
 //! prompt, decoding `DECODE_TOKENS` tokens. The long-prompt case stresses
@@ -25,6 +26,12 @@ use mlx_lm::cache::{KVCache, QuantizedKVCache};
 use mlx_lm::models::{
     llama::{load_llama_model, Generate as LlamaGenerate, Model as LlamaModel},
     qwen3::{load_qwen3_model, Generate as Qwen3Generate, Model as Qwen3Model},
+    qwen3_5::{
+        config::ModelConfig as Qwen3_5Config,
+        generation::{Generate as Qwen3_5Generate, SamplingParams, StopCriteria},
+        layer::LanguageModel as Qwen3_5LanguageModel,
+        weights::load_language_model,
+    },
 };
 use mlx_rs::{
     ops::indexing::{IndexOp, NewAxis},
@@ -444,6 +451,92 @@ fn maybe_bench_qwen3_kv_decode_only(
     group.finish();
 }
 
+/// Chat-rendered "Hello" short prompt for the Qwen3.5 tokenizer.
+const QWEN3_5_SHORT_PROMPT: &[i32] = &[
+    248045, 846, 198, 9419, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271,
+];
+
+fn maybe_bench_qwen3_5(c: &mut Criterion, label: &str, repo_id: &str) {
+    let Some(dir) = ensure_model(repo_id) else {
+        return;
+    };
+
+    let cfg = match Qwen3_5Config::from_file(dir.join("config.json")) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("skipping qwen3_5 {label}: config parse failed: {e:?}");
+            return;
+        }
+    };
+    let (mut model, _) = match load_language_model(&cfg, &dir) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("skipping qwen3_5 {label}: load failed: {e:?}");
+            return;
+        }
+    };
+
+    let short = Array::from_slice(QWEN3_5_SHORT_PROMPT, &[QWEN3_5_SHORT_PROMPT.len() as i32]);
+    let mut long_ids = Vec::with_capacity(LONG_PROMPT_LEN);
+    long_ids.extend_from_slice(QWEN3_5_SHORT_PROMPT);
+    let filler = QWEN3_5_SHORT_PROMPT[1];
+    while long_ids.len() < LONG_PROMPT_LEN {
+        long_ids.push(filler);
+    }
+    long_ids.truncate(LONG_PROMPT_LEN);
+    let long = Array::from_slice(&long_ids, &[long_ids.len() as i32]);
+
+    let warm = Qwen3_5Generate::new(
+        &mut model,
+        &cfg,
+        short.clone(),
+        StopCriteria {
+            max_new_tokens: WARMUP_TOKENS,
+            eos_ids: vec![],
+        },
+        SamplingParams::default(),
+    );
+    let tokens: Vec<u32> = warm.map(|r| r.unwrap()).collect();
+    let ids: Vec<i32> = tokens.iter().map(|&t| t as i32).collect();
+    if !ids.is_empty() {
+        let arr = Array::from_slice(&ids, &[ids.len() as i32]);
+        eval([&arr]).unwrap();
+    }
+
+    let mut group = c.benchmark_group(format!("qwen3_5_decode_{label}"));
+    group.throughput(Throughput::Elements(DECODE_TOKENS as u64));
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+
+    let run = |model: &mut Qwen3_5LanguageModel, prompt: &Array| {
+        let gen = Qwen3_5Generate::new(
+            model,
+            &cfg,
+            prompt.clone(),
+            StopCriteria {
+                max_new_tokens: DECODE_TOKENS,
+                eos_ids: vec![],
+            },
+            SamplingParams::default(),
+        );
+        let tokens: Vec<u32> = gen.map(|r| r.unwrap()).collect();
+        let ids: Vec<i32> = tokens.iter().map(|&t| t as i32).collect();
+        let arr = Array::from_slice(&ids, &[ids.len() as i32]);
+        eval([&arr]).unwrap();
+    };
+
+    group.bench_function(BenchmarkId::new("short", DECODE_TOKENS), |b| {
+        b.iter(|| run(&mut model, &short));
+    });
+    group.bench_function(
+        BenchmarkId::new("long_prompt", LONG_PROMPT_LEN as i32),
+        |b| {
+            b.iter(|| run(&mut model, &long));
+        },
+    );
+    group.finish();
+}
+
 /// Which cells to register. Trimmed = end-to-end decode only; Full = all
 /// llama + qwen3 size × precision combinations. Default trimmed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -470,6 +563,10 @@ fn bench_decode(c: &mut Criterion) {
     maybe_bench_llama(c, "small_bf16", "mlx-community/Llama-3.2-1B-Instruct-bf16");
     maybe_bench_llama(c, "small_q8", "mlx-community/Llama-3.2-1B-Instruct-8bit");
     maybe_bench_llama(c, "small_q4", "mlx-community/Llama-3.2-1B-Instruct-4bit");
+
+    // Qwen3.5 hybrid SSM + attention.
+    maybe_bench_qwen3_5(c, "4b_q8", "mlx-community/Qwen3.5-4B-MLX-8bit");
+    maybe_bench_qwen3_5(c, "9b_q8", "mlx-community/Qwen3.5-9B-8bit");
 
     // KV-quant decode-only: dequant-on-read vs packed-matmul. T=1024.
     maybe_bench_qwen3_kv_decode_only(

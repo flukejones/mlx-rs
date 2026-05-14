@@ -1,0 +1,20 @@
+{
+  "prompt": "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+  "prompt_ids": [
+    248045,
+    846,
+    198,
+    9419,
+    248046,
+    198,
+    248045,
+    74455,
+    198,
+    248068,
+    271,
+    248069,
+    271
+  ],
+  "max_tokens": 4,
+  "text": "Hello! How can"
+}
