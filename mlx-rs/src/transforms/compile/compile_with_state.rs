@@ -77,8 +77,10 @@ where
             f: self,
             shapeless,
             id,
+            cached_compiled: None,
         };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -101,8 +103,14 @@ where
             let result = (self)(state, &args[0]);
             vec![result]
         };
-        let state = CompiledState { f, shapeless, id };
+        let state = CompiledState {
+            f,
+            shapeless,
+            id,
+            cached_compiled: None,
+        };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -125,8 +133,14 @@ where
             let result = (self)(state, (&args[0], &args[1]));
             vec![result]
         };
-        let state = CompiledState { f, shapeless, id };
+        let state = CompiledState {
+            f,
+            shapeless,
+            id,
+            cached_compiled: None,
+        };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -149,8 +163,14 @@ where
             let result = (self)(state, (&args[0], &args[1], &args[2]));
             vec![result]
         };
-        let state = CompiledState { f, shapeless, id };
+        let state = CompiledState {
+            f,
+            shapeless,
+            id,
+            cached_compiled: None,
+        };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -173,8 +193,10 @@ where
             f: self,
             shapeless,
             id,
+            cached_compiled: None,
         };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -197,8 +219,14 @@ where
             let result = (self)(state, &args[0])?;
             Ok(vec![result])
         };
-        let state = CompiledState { f, shapeless, id };
+        let state = CompiledState {
+            f,
+            shapeless,
+            id,
+            cached_compiled: None,
+        };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -221,8 +249,14 @@ where
             let result = (self)(state, (&args[0], &args[1]))?;
             Ok(vec![result])
         };
-        let state = CompiledState { f, shapeless, id };
+        let state = CompiledState {
+            f,
+            shapeless,
+            id,
+            cached_compiled: None,
+        };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -245,8 +279,14 @@ where
             let result = (self)(state, (&args[0], &args[1], &args[2]))?;
             Ok(vec![result])
         };
-        let state = CompiledState { f, shapeless, id };
+        let state = CompiledState {
+            f,
+            shapeless,
+            id,
+            cached_compiled: None,
+        };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
