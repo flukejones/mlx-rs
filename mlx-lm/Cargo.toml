@@ -28,3 +28,8 @@ minijinja = "2"
 
 [dev-dependencies]
 lazy_static = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "lm_decode"
+harness = false
