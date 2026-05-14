@@ -1,16 +1,29 @@
-//! Shared activation helpers.
+//! Shared activation helpers. Mirrors `mlx_lm.models.activations`.
 //!
-//! Mirrors `mlx_lm.models.activations`. Caller-owned cache slots are kept
-//! as no-ops at this milestone; the compile-fused variants land alongside
-//! `Compile::compile_with_id` infrastructure in a later milestone.
+//! Cache args are unit-struct no-ops: each helper is plain-ops with a
+//! `&mut FooCache` placeholder so call sites are stable when the
+//! compile-fused variant (caller-owned `Compiled` cache) lands.
 
-use mlx_rs::{error::Exception, nn, Array};
+use mlx_rs::{error::Exception, nn, ops::sigmoid, Array};
 
-/// Per-call cache slot for [`swiglu`]. No-op placeholder at this milestone.
+/// Placeholder cache slot for [`swiglu`]. Unit struct — no state.
 #[derive(Debug, Default)]
 pub struct SwigluCache;
 
-/// `silu(gate) * x`. Cache argument reserved for the compile-fused variant.
+/// `silu(gate) * x`.
 pub fn swiglu(_cache: &mut SwigluCache, gate: &Array, x: &Array) -> Result<Array, Exception> {
     nn::silu(gate)?.multiply(x)
+}
+
+/// Placeholder cache slot for [`attention_gate`]. Unit struct — no state.
+#[derive(Debug, Default)]
+pub struct AttentionGateCache;
+
+/// `sigmoid(gate) * output`.
+pub fn attention_gate(
+    _cache: &mut AttentionGateCache,
+    output: &Array,
+    gate: &Array,
+) -> Result<Array, Exception> {
+    sigmoid(gate)?.multiply(output)
 }
