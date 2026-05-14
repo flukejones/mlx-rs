@@ -4,10 +4,12 @@
 //! RMSNorm + output projection, matching
 //! `mlx_vlm.models.qwen3_5.language.Qwen3_5GatedDeltaNet`.
 
+use std::sync::OnceLock;
+
 use mlx_rs::{
     builder::Builder,
     error::Exception,
-    fast::rms_norm,
+    fast::{rms_norm, MetalKernel},
     macros::{ModuleParameters, Quantizable},
     module::{Module, Param},
     nn,
@@ -16,16 +18,37 @@ use mlx_rs::{
         zeros,
     },
     quantization::MaybeQuantized,
-    random, Array, Dtype,
+    random,
+    transforms::compile::{shape::ThreeArgs, CallMut, Compile, Compiled},
+    Array, Dtype,
 };
 
 use super::cache::LinearAttnCache;
 use super::config::TextConfig;
-use super::gated_delta::gated_delta_update_ops;
+use super::gated_delta::{
+    gated_delta_update_metal, gated_delta_update_ops, make_gated_delta_kernel, ComputeGCache,
+};
+
+/// Process-wide compiled instance of the GDN scan kernel. Python's reference
+/// builds the kernel once at module-import time; we mirror that so all 24
+/// `GatedDeltaNet` blocks share one handle.
+fn gdn_kernel() -> Result<&'static MetalKernel, Exception> {
+    static KERNEL: OnceLock<MetalKernel> = OnceLock::new();
+    if let Some(k) = KERNEL.get() {
+        return Ok(k);
+    }
+    let built = make_gated_delta_kernel()?;
+    Ok(KERNEL.get_or_init(|| built))
+}
 
 /// Gated RMSNorm from `Qwen3_5RMSNormGated`. Returns
 /// `silu(gate.astype(f32)) * rms_norm(hidden, weight)` cast back to `hidden.dtype`.
+///
+/// The trailing silu+multiply+cast triple runs through
+/// `transforms::compile` to match Python's `@partial(mx.compile,
+/// shapeless=True) _precise_swiglu`.
 fn rms_norm_gated(
+    cache: &mut PreciseSwigluCache,
     hidden: &Array,
     gate: &Array,
     weight: &Array,
@@ -36,12 +59,52 @@ fn rms_norm_gated(
         Some(&weight.as_dtype(Dtype::Float32)?),
         eps,
     )?;
+    precise_swiglu(cache, hidden, gate, &normed)
+}
+
+pub type PreciseSwigluCompiled = Compiled<
+    fn((&Array, &Array, &Array)) -> Result<Array, Exception>,
+    Box<dyn FnMut(&[Array]) -> Result<Vec<Array>, Exception> + Send + 'static>,
+    ThreeArgs,
+>;
+
+#[derive(Default)]
+pub struct PreciseSwigluCache(pub Option<PreciseSwigluCompiled>);
+
+impl std::fmt::Debug for PreciseSwigluCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreciseSwigluCache")
+            .field("filled", &self.0.is_some())
+            .finish()
+    }
+}
+
+/// `silu(gate.astype(f32)) * x.astype(f32)` cast back to `h.dtype`. Mirrors
+/// Python's `_precise_swiglu`. Caller-owned cache, same shape as
+/// [`crate::activations::swiglu`].
+fn precise_swiglu(
+    cache: &mut PreciseSwigluCache,
+    h: &Array,
+    gate: &Array,
+    x: &Array,
+) -> Result<Array, Exception> {
+    let compiled = cache.0.get_or_insert_with(|| {
+        Compile::<(&Array, &Array, &Array), Array, Exception>::compile(
+            precise_swiglu_inner as fn((&Array, &Array, &Array)) -> Result<Array, Exception>,
+            true,
+        )
+    });
+    CallMut::call_mut(compiled, (h, gate, x))
+}
+
+fn precise_swiglu_inner((h, gate, x): (&Array, &Array, &Array)) -> Result<Array, Exception> {
     let gate_silu = nn::silu(gate.as_dtype(Dtype::Float32)?)?;
-    gate_silu.multiply(&normed)?.as_dtype(hidden.dtype())
+    let x_f32 = x.as_dtype(Dtype::Float32)?;
+    gate_silu.multiply(&x_f32)?.as_dtype(h.dtype())
 }
 
 /// The Gated DeltaNet decoder block.
-#[derive(Debug, Clone, ModuleParameters, Quantizable)]
+#[derive(Debug, ModuleParameters, Quantizable)]
 pub struct GatedDeltaNet {
     pub num_v_heads: i32,
     pub num_k_heads: i32,
@@ -89,6 +152,10 @@ pub struct GatedDeltaNet {
     #[quantizable]
     #[param]
     pub out_proj: MaybeQuantized<nn::Linear>,
+
+    /// Per-block compiled-graph caches for the GDN scan + gated RMS norm.
+    precise_swiglu_cache: PreciseSwigluCache,
+    compute_g_cache: ComputeGCache,
 }
 
 impl GatedDeltaNet {
@@ -156,6 +223,8 @@ impl GatedDeltaNet {
             a_log: Param::new(a_log),
             norm_weight: Param::new(norm_weight),
             out_proj: MaybeQuantized::Original(out_proj),
+            precise_swiglu_cache: PreciseSwigluCache::default(),
+            compute_g_cache: ComputeGCache::default(),
         })
     }
 
@@ -232,17 +301,36 @@ impl GatedDeltaNet {
             .as_ref()
             .and_then(|c| c.recurrent_state.as_ref())
             .cloned();
-        let (out, new_state) = gated_delta_update_ops(
-            &q_normed,
-            &k_normed,
-            &v,
-            &a_arr,
-            &b_arr,
-            &self.a_log.value,
-            &self.dt_bias.value,
-            state_in.as_ref(),
-            mask,
-        )?;
+        // Kernel requires Dk to be a multiple of the SIMD width (32). The
+        // ops path covers every other case including a non-None mask.
+        let use_kernel = mask.is_none() && self.head_k_dim % 32 == 0;
+        let (out, new_state) = if use_kernel {
+            gated_delta_update_metal(
+                gdn_kernel()?,
+                &mut self.compute_g_cache,
+                &q_normed,
+                &k_normed,
+                &v,
+                &a_arr,
+                &b_arr,
+                &self.a_log.value,
+                &self.dt_bias.value,
+                state_in.as_ref(),
+            )?
+        } else {
+            gated_delta_update_ops(
+                &mut self.compute_g_cache,
+                &q_normed,
+                &k_normed,
+                &v,
+                &a_arr,
+                &b_arr,
+                &self.a_log.value,
+                &self.dt_bias.value,
+                state_in.as_ref(),
+                mask,
+            )?
+        };
 
         if let Some(cache) = cache {
             cache.recurrent_state = Some(new_state);
@@ -250,7 +338,13 @@ impl GatedDeltaNet {
         }
 
         // Apply the gated RMS norm with the per-head `z`.
-        let gated = rms_norm_gated(&out, &z, &self.norm_weight.value, self.eps)?;
+        let gated = rms_norm_gated(
+            &mut self.precise_swiglu_cache,
+            &out,
+            &z,
+            &self.norm_weight.value,
+            self.eps,
+        )?;
         let flat = reshape(&gated, &[b, s, self.num_v_heads * self.head_v_dim])?;
         self.out_proj.forward(&flat)
     }
@@ -338,7 +432,7 @@ mod tests {
 
     /// `linear_key_head_dim = 32` so the kernel `dk_ok` gate is satisfied;
     /// the rest matches the synthetic text-only config used elsewhere.
-    fn head_k_dim_32_config() -> TextConfig {
+    fn kernel_eligible_config() -> TextConfig {
         let json = serde_json::json!({
             "model_type": "qwen3_5_text",
             "hidden_size": 64,
@@ -367,8 +461,8 @@ mod tests {
     }
 
     #[test]
-    fn chained_24_blocks_produce_expected_shape() {
-        let cfg = head_k_dim_32_config();
+    fn chained_kernel_blocks_match_ops_24_layers() {
+        let cfg = kernel_eligible_config();
         let layers: usize = 24;
 
         let mut blocks: Vec<GatedDeltaNet> = (0..layers)

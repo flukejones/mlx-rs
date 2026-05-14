@@ -1,7 +1,7 @@
 //! Gated DeltaNet (Mamba2-style) recurrent operator used by every
-//! `linear_attention` layer of Qwen3.5. This module ships the pure-ops
-//! scan (`gated_delta_update_ops`) that mirrors `mlx_lm.models.gated_delta`.
-//! A Metal kernel fast path lands separately.
+//! `linear_attention` layer of Qwen3.5. Provides both a pure-ops scan
+//! (`gated_delta_update_ops`) and a Metal kernel fast path
+//! (`gated_delta_update_metal`) that mirror `mlx_lm.models.gated_delta`.
 //!
 //! Shapes (matching the Python reference):
 //! - `q`, `k`: `[B, T, Hk, Dk]`
@@ -13,19 +13,60 @@
 
 use mlx_rs::{
     error::Exception,
+    fast::{metal_kernel, MetalKernel, MetalKernelConfig},
     nn,
     ops::{
         exp as exp_op, expand_dims, indexing::take_axis, r#where, repeat_axis, reshape, sigmoid,
         stack_axis, zeros, zeros_dtype,
     },
-    Array, Dtype,
+    transforms::compile::{shape::ThreeArgs, CallMut, Compile, Compiled},
+    Array, Dtype, Stream,
 };
+
+/// Apple-Silicon SIMD lane width (`simd_sum` quad-pair). The GDN kernel
+/// reduces across the key dimension via `simd_sum`, so `Dk` must be a
+/// multiple of this constant for the kernel path to be usable.
+const SIMD_WIDTH: i32 = 32;
+
+pub type ComputeGCompiled = Compiled<
+    fn((&Array, &Array, &Array)) -> Result<Array, Exception>,
+    Box<dyn FnMut(&[Array]) -> Result<Vec<Array>, Exception> + Send + 'static>,
+    ThreeArgs,
+>;
+
+/// Cached compiled-graph slot for [`compute_g`]. Owned by the calling
+/// [`super::gated_delta_block::GatedDeltaNet`].
+#[derive(Default)]
+pub struct ComputeGCache(pub Option<ComputeGCompiled>);
+
+impl std::fmt::Debug for ComputeGCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ComputeGCache")
+            .field("filled", &self.0.is_some())
+            .finish()
+    }
+}
 
 /// Compute the per-step decay `g = exp(-exp(A_log) * softplus(a + dt_bias))`.
 ///
-/// Mirrors Python's `compute_g`. The 5-op chain is run inline here; a
-/// `transforms::compile`-fused fast path lands separately.
-pub fn compute_g(a_log: &Array, a: &Array, dt_bias: &Array) -> Result<Array, Exception> {
+/// Caller passes a `&mut ComputeGCache` owned by the surrounding block.
+/// Mirrors Python's `@partial(mx.compile, shapeless=True) compute_g`.
+pub fn compute_g(
+    cache: &mut ComputeGCache,
+    a_log: &Array,
+    a: &Array,
+    dt_bias: &Array,
+) -> Result<Array, Exception> {
+    let compiled = cache.0.get_or_insert_with(|| {
+        Compile::<(&Array, &Array, &Array), Array, Exception>::compile(
+            compute_g_inner as fn((&Array, &Array, &Array)) -> Result<Array, Exception>,
+            true,
+        )
+    });
+    CallMut::call_mut(compiled, (a_log, a, dt_bias))
+}
+
+fn compute_g_inner((a_log, a, dt_bias): (&Array, &Array, &Array)) -> Result<Array, Exception> {
     let a_log_f32 = a_log.as_dtype(Dtype::Float32)?;
     let inner = a.add(dt_bias)?;
     let s = nn::softplus(&inner)?;
@@ -114,6 +155,7 @@ pub fn step_ops(
 /// `(y, final_state)`.
 #[allow(clippy::too_many_arguments)]
 pub fn gated_delta_update_ops(
+    compute_g_cache: &mut ComputeGCache,
     q: &Array,
     k: &Array,
     v: &Array,
@@ -139,7 +181,7 @@ pub fn gated_delta_update_ops(
     let dv = v_shape[3];
 
     let beta = sigmoid(b)?;
-    let g = compute_g(a_log, a, dt_bias)?;
+    let g = compute_g(compute_g_cache, a_log, a, dt_bias)?;
 
     let owned_state;
     let state = match state {
@@ -183,6 +225,168 @@ pub fn gated_delta_update_ops(
     let y = stack_axis(&ys, 1)?;
     Ok((y, state))
 }
+
+/// Compile a fresh GDN scan kernel.
+///
+/// The caller is expected to cache the returned handle for the lifetime of
+/// the block — see [`gated_delta_update_metal`] for why per-call recreation
+/// breaks chained launches.
+pub fn make_gated_delta_kernel() -> Result<MetalKernel, Exception> {
+    metal_kernel(
+        "qwen3_5_gated_delta_step",
+        &["q", "k", "v", "g", "beta", "state_in", "T"],
+        &["y", "state_out"],
+        GATED_DELTA_STEP_SOURCE,
+        "",
+        true,
+        false,
+    )
+}
+
+/// Metal-kernel fast path for the gated-delta T-step scan. Mirrors
+/// `mlx_lm.models.gated_delta._make_gated_delta_kernel` from the Python
+/// reference, plumbed through `mlx_rs::fast::metal_kernel`.
+#[allow(clippy::too_many_arguments)]
+pub fn gated_delta_update_metal(
+    kernel: &MetalKernel,
+    compute_g_cache: &mut ComputeGCache,
+    q: &Array,
+    k: &Array,
+    v: &Array,
+    a: &Array,
+    b: &Array,
+    a_log: &Array,
+    dt_bias: &Array,
+    state: Option<&Array>,
+) -> Result<(Array, Array), Exception> {
+    let q_shape = q.shape();
+    let v_shape = v.shape();
+    if q_shape.len() != 4 || v_shape.len() != 4 {
+        return Err(Exception::custom(
+            "gated_delta_update_metal: q/v must be 4-D",
+        ));
+    }
+    let batch = q_shape[0];
+    let time = q_shape[1];
+    let hk = q_shape[2];
+    let dk = q_shape[3];
+    let hv = v_shape[2];
+    let dv = v_shape[3];
+
+    if dk % SIMD_WIDTH != 0 {
+        return Err(Exception::custom(format!(
+            "gated_delta_update_metal: Dk={dk} must be a multiple of {SIMD_WIDTH}"
+        )));
+    }
+
+    let beta = sigmoid(b)?;
+    let g = compute_g(compute_g_cache, a_log, a, dt_bias)?;
+    let owned_state;
+    let state_in = match state {
+        Some(s) => s.clone(),
+        None => {
+            owned_state = zeros::<f32>(&[batch, hv, dv, dk])?;
+            owned_state
+        }
+    };
+
+    let input_dtype = q.dtype();
+    let state_dtype = state_in.dtype();
+    let config = MetalKernelConfig::new()
+        .add_output([batch, time, hv, dv], input_dtype)
+        .add_output(state_in.shape().to_vec(), state_dtype)
+        .grid(SIMD_WIDTH, dv, batch * hv)
+        .thread_group(SIMD_WIDTH, 4, 1)
+        .add_template("InT", input_dtype)?
+        .add_template("StT", state_dtype)?
+        .add_template("Dk", dk)?
+        .add_template("Dv", dv)?
+        .add_template("Hk", hk)?
+        .add_template("Hv", hv)?;
+
+    let t_arr = Array::from_int(time);
+    let outs = kernel.apply(
+        &[q.clone(), k.clone(), v.clone(), g, beta, state_in, t_arr],
+        config,
+        Stream::default(),
+    )?;
+    if outs.len() != 2 {
+        return Err(Exception::custom(format!(
+            "gated_delta_update_metal: expected 2 outputs, got {}",
+            outs.len()
+        )));
+    }
+    let mut it = outs.into_iter();
+    let y = it.next().unwrap();
+    let state_out = it.next().unwrap();
+    Ok((y, state_out))
+}
+
+const GATED_DELTA_STEP_SOURCE: &str = r#"
+    auto n = thread_position_in_grid.z;
+    auto b_idx = n / Hv;
+    auto hv_idx = n % Hv;
+    auto hk_idx = hv_idx / (Hv / Hk);
+    constexpr int n_per_t = Dk / 32;
+
+    auto q_ = q + b_idx * T * Hk * Dk + hk_idx * Dk;
+    auto k_ = k + b_idx * T * Hk * Dk + hk_idx * Dk;
+    auto v_ = v + b_idx * T * Hv * Dv + hv_idx * Dv;
+    y += b_idx * T * Hv * Dv + hv_idx * Dv;
+
+    auto dk_idx = thread_position_in_threadgroup.x;
+    auto dv_idx = thread_position_in_grid.y;
+    // dispatch_threads rounds y up to the threadgroup multiple (4);
+    // skip overshoot when Dv % 4 != 0.
+    if (dv_idx >= Dv) return;
+
+    auto i_state = state_in + (n * Dv + dv_idx) * Dk;
+    auto o_state = state_out + (n * Dv + dv_idx) * Dk;
+
+    float state[n_per_t];
+    for (int i = 0; i < n_per_t; ++i) {
+      auto s_idx = n_per_t * dk_idx + i;
+      state[i] = static_cast<float>(i_state[s_idx]);
+    }
+
+    auto g_ = g + b_idx * T * Hv;
+    auto beta_ = beta + b_idx * T * Hv;
+
+    for (int t = 0; t < T; ++t) {
+      float kv_mem = 0.0f;
+      for (int i = 0; i < n_per_t; ++i) {
+        auto s_idx = n_per_t * dk_idx + i;
+        state[i] = state[i] * g_[hv_idx];
+        kv_mem += state[i] * static_cast<float>(k_[s_idx]);
+      }
+      kv_mem = simd_sum(kv_mem);
+
+      auto delta = (static_cast<float>(v_[dv_idx]) - kv_mem) * beta_[hv_idx];
+
+      float out = 0.0f;
+      for (int i = 0; i < n_per_t; ++i) {
+        auto s_idx = n_per_t * dk_idx + i;
+        state[i] = state[i] + static_cast<float>(k_[s_idx]) * delta;
+        out += state[i] * static_cast<float>(q_[s_idx]);
+      }
+      out = simd_sum(out);
+      if (thread_index_in_simdgroup == 0) {
+        y[dv_idx] = static_cast<InT>(out);
+      }
+
+      q_ += Hk * Dk;
+      k_ += Hk * Dk;
+      v_ += Hv * Dv;
+      y += Hv * Dv;
+      g_ += Hv;
+      beta_ += Hv;
+    }
+
+    for (int i = 0; i < n_per_t; ++i) {
+      auto s_idx = n_per_t * dk_idx + i;
+      o_state[s_idx] = static_cast<StT>(state[i]);
+    }
+"#;
 
 /// Index the time axis at `t` and squeeze it out. `x[:, t]` in numpy / mlx.
 fn slice_t(x: &Array, t: i32) -> Result<Array, Exception> {
@@ -231,7 +435,8 @@ mod tests {
         let a_log = rand(&[hv]);
         let dt_bias = rand(&[hv]);
         let a = rand(&[2, 3, hv]);
-        let g = compute_g(&a_log, &a, &dt_bias).unwrap();
+        let mut cache = ComputeGCache::default();
+        let g = compute_g(&mut cache, &a_log, &a, &dt_bias).unwrap();
         assert_eq!(g.shape(), &[2, 3, hv]);
         // g = exp(-exp(A_log_pos) * softplus(...)) <= 1.0 strictly.
         let max = g.max(None).unwrap().item::<f32>();
@@ -252,8 +457,10 @@ mod tests {
         let a_log = rand(&[hv]);
         let dt_bias = rand(&[hv]);
 
+        let mut cache = ComputeGCache::default();
         let (y, state) =
-            gated_delta_update_ops(&q, &k, &v, &a, &bb, &a_log, &dt_bias, None, None).unwrap();
+            gated_delta_update_ops(&mut cache, &q, &k, &v, &a, &bb, &a_log, &dt_bias, None, None)
+                .unwrap();
         assert_eq!(y.shape(), &[b, t, hv, dv]);
         assert_eq!(state.shape(), &[b, hv, dv, dk]);
     }
@@ -279,8 +486,10 @@ mod tests {
         let a_log = Array::from_slice(&[-30.0_f32], &[hv]); // exp(-30) ≈ 0 -> g ≈ 1
         let dt_bias = Array::from_slice(&[0.0_f32], &[hv]);
 
+        let mut cache = ComputeGCache::default();
         let (y, _state) =
-            gated_delta_update_ops(&q, &k, &v, &a, &bb, &a_log, &dt_bias, None, None).unwrap();
+            gated_delta_update_ops(&mut cache, &q, &k, &v, &a, &bb, &a_log, &dt_bias, None, None)
+                .unwrap();
         let y_flat = flatten_f32(&y);
         // Manual derivation:
         //   g ≈ 1, beta = 0.5, state starts zero -> kv_mem = 0
@@ -295,6 +504,199 @@ mod tests {
         //   y[Dv=1] = 0.125*1 + 0*1 = 0.125
         assert!((y_flat[0] - 0.25).abs() < 1e-5, "y[0] = {}", y_flat[0]);
         assert!((y_flat[1] - 0.125).abs() < 1e-5, "y[1] = {}", y_flat[1]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_kernel_matches_ops_chandra_shape() {
+        // Chandra-q8 shapes: Hk=16, Hv=32, Dk=Dv=128, bf16. Smaller batch +
+        // time so the test stays fast.
+        let (b, t, hk, dk, hv, dv) = (1, 4, 16, 128, 32, 128);
+        let q = rand(&[b, t, hk, dk]).as_dtype(Dtype::Bfloat16).unwrap();
+        let k = rand(&[b, t, hk, dk]).as_dtype(Dtype::Bfloat16).unwrap();
+        let v = rand(&[b, t, hv, dv]).as_dtype(Dtype::Bfloat16).unwrap();
+        let a = rand(&[b, t, hv]).as_dtype(Dtype::Bfloat16).unwrap();
+        let bb = rand(&[b, t, hv]).as_dtype(Dtype::Bfloat16).unwrap();
+        let a_log = rand(&[hv]).as_dtype(Dtype::Bfloat16).unwrap();
+        let dt_bias = rand(&[hv]).as_dtype(Dtype::Bfloat16).unwrap();
+
+        let kernel = make_gated_delta_kernel().unwrap();
+        let mut cache_ops = ComputeGCache::default();
+        let mut cache_kern = ComputeGCache::default();
+        let (y_ops, _state_ops) = gated_delta_update_ops(
+            &mut cache_ops,
+            &q,
+            &k,
+            &v,
+            &a,
+            &bb,
+            &a_log,
+            &dt_bias,
+            None,
+            None,
+        )
+        .unwrap();
+        let (y_kern, _state_kern) = gated_delta_update_metal(
+            &kernel,
+            &mut cache_kern,
+            &q,
+            &k,
+            &v,
+            &a,
+            &bb,
+            &a_log,
+            &dt_bias,
+            None,
+        )
+        .unwrap();
+
+        let y_ops_flat = flatten_f32(&y_ops);
+        let y_kern_flat = flatten_f32(&y_kern);
+        let mut max_y = 0.0_f32;
+        for (a, b) in y_ops_flat.iter().zip(&y_kern_flat) {
+            let d = (a - b).abs();
+            if d > max_y {
+                max_y = d;
+            }
+        }
+        eprintln!("chandra shape max_abs(y) = {max_y}");
+        // bf16 tolerance, scaled by GQA broadcast + repeated state updates.
+        assert!(
+            max_y < 0.5,
+            "kernel diverged on chandra shape: max_abs={max_y}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_kernel_matches_ops_path() {
+        // Tiny shapes that satisfy the kernel's `Dk % 32 == 0` requirement
+        // (Dk=32, Dv=32, Hk=Hv=1, B=1, T=4).
+        let (b, t, hk, dk, hv, dv) = (1, 4, 1, 32, 1, 32);
+        let q = rand(&[b, t, hk, dk]);
+        let k = rand(&[b, t, hk, dk]);
+        let v = rand(&[b, t, hv, dv]);
+        let a = rand(&[b, t, hv]);
+        let bb = rand(&[b, t, hv]);
+        let a_log = rand(&[hv]);
+        let dt_bias = rand(&[hv]);
+
+        let kernel = make_gated_delta_kernel().unwrap();
+        let mut cache_ops = ComputeGCache::default();
+        let mut cache_kern = ComputeGCache::default();
+        let (y_ops, state_ops) = gated_delta_update_ops(
+            &mut cache_ops,
+            &q,
+            &k,
+            &v,
+            &a,
+            &bb,
+            &a_log,
+            &dt_bias,
+            None,
+            None,
+        )
+        .unwrap();
+        let (y_kern, state_kern) = gated_delta_update_metal(
+            &kernel,
+            &mut cache_kern,
+            &q,
+            &k,
+            &v,
+            &a,
+            &bb,
+            &a_log,
+            &dt_bias,
+            None,
+        )
+        .unwrap();
+        let y_ops_flat = flatten_f32(&y_ops);
+        let y_kern_flat = flatten_f32(&y_kern);
+        let mut max_y = 0.0_f32;
+        for (a, b) in y_ops_flat.iter().zip(&y_kern_flat) {
+            let d = (a - b).abs();
+            if d > max_y {
+                max_y = d;
+            }
+        }
+        assert!(max_y < 1e-3, "kernel/y vs ops/y max_abs={max_y}");
+        let s_ops_flat = flatten_f32(&state_ops);
+        let s_kern_flat = flatten_f32(&state_kern);
+        let mut max_s = 0.0_f32;
+        for (a, b) in s_ops_flat.iter().zip(&s_kern_flat) {
+            let d = (a - b).abs();
+            if d > max_s {
+                max_s = d;
+            }
+        }
+        assert!(max_s < 1e-3, "kernel/state vs ops/state max_abs={max_s}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn chained_kernel_matches_ops_24_recurrent_steps() {
+        let (b, t, hk, dk, hv, dv) = (1, 4, 1, 32, 1, 32);
+        let layers = 24;
+        let q = rand(&[b, t, hk, dk]);
+        let k = rand(&[b, t, hk, dk]);
+        let v = rand(&[b, t, hv, dv]);
+        let a = rand(&[b, t, hv]);
+        let bb = rand(&[b, t, hv]);
+        let a_log = rand(&[hv]);
+        let dt_bias = rand(&[hv]);
+        let kernel = make_gated_delta_kernel().unwrap();
+
+        let mut state_kern: Option<Array> = None;
+        let mut state_ops: Option<Array> = None;
+        let mut cache_kern = ComputeGCache::default();
+        let mut cache_ops = ComputeGCache::default();
+        for _ in 0..layers {
+            let (_, sk) = gated_delta_update_metal(
+                &kernel,
+                &mut cache_kern,
+                &q,
+                &k,
+                &v,
+                &a,
+                &bb,
+                &a_log,
+                &dt_bias,
+                state_kern.as_ref(),
+            )
+            .unwrap();
+            let (_, so) = gated_delta_update_ops(
+                &mut cache_ops,
+                &q,
+                &k,
+                &v,
+                &a,
+                &bb,
+                &a_log,
+                &dt_bias,
+                state_ops.as_ref(),
+                None,
+            )
+            .unwrap();
+            state_kern = Some(sk);
+            state_ops = Some(so);
+        }
+        let sk = state_kern.unwrap();
+        let so = state_ops.unwrap();
+        let dim: i32 = sk.shape().iter().product();
+        let fk = reshape(&sk, &[dim]).unwrap();
+        let fo = reshape(&so, &[dim]).unwrap();
+        eval([&fk, &fo]).unwrap();
+        let vk: Vec<f32> = fk.as_slice::<f32>().to_vec();
+        let vo: Vec<f32> = fo.as_slice::<f32>().to_vec();
+        let max = vk
+            .iter()
+            .zip(&vo)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max < 1e-3,
+            "kernel/state vs ops/state after {layers} chained calls max_abs={max}"
+        );
     }
 
     #[test]
@@ -314,9 +716,20 @@ mod tests {
         let dt_bias = rand(&[hv]);
 
         let mask = Array::from_slice(&[true, false], &[b, t]);
-        let (y, _) =
-            gated_delta_update_ops(&q, &k, &v, &a, &bb, &a_log, &dt_bias, None, Some(&mask))
-                .unwrap();
+        let mut cache = ComputeGCache::default();
+        let (y, _) = gated_delta_update_ops(
+            &mut cache,
+            &q,
+            &k,
+            &v,
+            &a,
+            &bb,
+            &a_log,
+            &dt_bias,
+            None,
+            Some(&mask),
+        )
+        .unwrap();
         assert_eq!(y.shape(), &[b, t, hv, dv]);
         let y_flat = flatten_f32(&y);
         // y[:, t=1] must be zero.
