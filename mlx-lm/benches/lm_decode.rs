@@ -347,7 +347,7 @@ fn maybe_bench_qwen3_kv_decode_only(
             .map(|_| {
                 let mut c = QuantizedKVCache::with_config(256, 64, kv_bits);
                 if with_v2_lean {
-                    c = c.with_quantized_matmul();
+                    c = c.with_quantized_matmul().with_fused_kernel();
                 }
                 Some(c)
             })

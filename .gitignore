@@ -19,6 +19,7 @@ settings.json
 
 # Local cache
 cache/
+!mlx-lm/src/cache/
 
 # Inspiration
 inspiration/

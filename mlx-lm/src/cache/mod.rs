@@ -14,6 +14,17 @@ use mlx_rs::{
 use crate::error::Error;
 use crate::utils::{quantized_scaled_dot_product_attention, QuantizedKeys, QuantizedValues};
 
+pub mod fused_quantized_sdpa;
+
+use std::sync::OnceLock;
+
+use fused_quantized_sdpa::{fused_qsdpa_decode, make_fused_qsdpa_kernel, FusedQsdpaInputs};
+
+fn cached_fused_qsdpa_kernel() -> &'static mlx_rs::fast::MetalKernel {
+    static KERNEL: OnceLock<mlx_rs::fast::MetalKernel> = OnceLock::new();
+    KERNEL.get_or_init(|| make_fused_qsdpa_kernel().expect("make_fused_qsdpa_kernel"))
+}
+
 /// Default step in tokens for [`KVCache`]'s pre-allocated buffer growth.
 pub const DEFAULT_KV_CACHE_STEP: i32 = 256;
 
@@ -443,6 +454,8 @@ pub struct QuantizedKVCache {
     dtype: Option<Dtype>,
     /// Route scores/attend through `quantized_matmul` (V2 LEAN).
     use_quantized_matmul: bool,
+    /// Use the in-tree fused qsdpa Metal kernel for n_q=1 decode.
+    use_fused_kernel: bool,
 }
 
 impl QuantizedKVCache {
@@ -473,12 +486,21 @@ impl QuantizedKVCache {
             bits,
             dtype: None,
             use_quantized_matmul: false,
+            use_fused_kernel: false,
         }
     }
 
     /// V2 LEAN: scores/attend via `quantized_matmul`.
     pub fn with_quantized_matmul(mut self) -> Self {
         self.use_quantized_matmul = true;
+        self
+    }
+
+    /// Opt into the in-tree fused quantized SDPA Metal kernel for n_q=1
+    /// decode. Requires `with_quantized_matmul()`; falls back to V2 LEAN
+    /// for unsupported shapes (`n_q > 1`, `bits ∉ {4, 8}`, `n_k > 4096`).
+    pub fn with_fused_kernel(mut self) -> Self {
+        self.use_fused_kernel = true;
         self
     }
 
@@ -583,6 +605,7 @@ impl QuantizedKVCache {
             bits,
             dtype: None,
             use_quantized_matmul: false,
+            use_fused_kernel: false,
         })
     }
 
@@ -771,25 +794,62 @@ impl KeyValueCache for QuantizedKVCache {
 
         let ((k_wq, k_s, k_b), (v_wq, v_s, v_b)) = self.append_quantised(keys, values)?;
 
-        let q_keys = QuantizedKeys {
-            keys: k_wq,
-            scales: k_s,
-            biases: k_b,
-        };
-        let q_values = QuantizedValues {
-            values: v_wq,
-            scales: v_s,
-            biases: v_b,
-        };
-        quantized_scaled_dot_product_attention(
-            queries.clone(),
-            q_keys,
-            q_values,
-            scale,
-            mask,
-            self.group_size,
-            self.bits,
-        )
+        let q_shape = queries.shape();
+        let head_dim = q_shape[q_shape.len() - 1];
+        let n_q = q_shape[q_shape.len() - 2];
+        let h_q = q_shape[1];
+        let h_kv = k_wq.shape()[1];
+        let n_k_cache = k_wq.shape()[2];
+
+        let fused_supported = self.use_fused_kernel
+            && n_q == 1
+            && matches!(self.bits, 4 | 8)
+            && head_dim % (32 / self.bits) == 0
+            && head_dim % self.group_size == 0
+            && h_q % h_kv == 0
+            && n_k_cache <= 4096;
+
+        if fused_supported {
+            fused_qsdpa_decode(
+                cached_fused_qsdpa_kernel(),
+                FusedQsdpaInputs {
+                    q: queries,
+                    k_wq: &k_wq,
+                    k_scales: &k_s,
+                    k_biases: &k_b,
+                    v_wq: &v_wq,
+                    v_scales: &v_s,
+                    v_biases: &v_b,
+                    mask,
+                    scale,
+                    head_dim,
+                    group_size: self.group_size,
+                    bits: self.bits,
+                    h_q,
+                    h_kv,
+                },
+            )
+        } else {
+            let q_keys = QuantizedKeys {
+                keys: k_wq,
+                scales: k_s,
+                biases: k_b,
+            };
+            let q_values = QuantizedValues {
+                values: v_wq,
+                scales: v_s,
+                biases: v_b,
+            };
+            quantized_scaled_dot_product_attention(
+                queries.clone(),
+                q_keys,
+                q_values,
+                scale,
+                mask,
+                self.group_size,
+                self.bits,
+            )
+        }
     }
 }
 
