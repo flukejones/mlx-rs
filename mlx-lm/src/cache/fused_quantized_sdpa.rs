@@ -397,6 +397,7 @@ pub fn fused_qsdpa_decode(
 mod tests {
     use super::*;
     use mlx_rs::ops::{dequantize, quantize, softmax_axis};
+    use mlx_rs::random::{key, normal};
     use mlx_rs::transforms::eval;
 
     fn max_abs(a: &Array, b: &Array) -> f32 {
@@ -521,12 +522,12 @@ mod tests {
     }
 
     fn run(b: i32, h_q: i32, h_kv: i32, n_k: i32, d: i32, bits: i32, group_size: i32) {
-        let prng = mlx_rs::random::key(11).unwrap();
-        let q = mlx_rs::random::normal::<f32>(&[b, h_q, 1, d], None, None, &prng).unwrap();
-        let prng = mlx_rs::random::key(22).unwrap();
-        let k = mlx_rs::random::normal::<f32>(&[b, h_kv, n_k, d], None, None, &prng).unwrap();
-        let prng = mlx_rs::random::key(33).unwrap();
-        let v = mlx_rs::random::normal::<f32>(&[b, h_kv, n_k, d], None, None, &prng).unwrap();
+        let prng = key(11).unwrap();
+        let q = normal::<f32>(&[b, h_q, 1, d], None, None, &prng).unwrap();
+        let prng = key(22).unwrap();
+        let k = normal::<f32>(&[b, h_kv, n_k, d], None, None, &prng).unwrap();
+        let prng = key(33).unwrap();
+        let v = normal::<f32>(&[b, h_kv, n_k, d], None, None, &prng).unwrap();
 
         let (k_wq, k_scales, k_biases) = quantize(&k, group_size, bits).unwrap();
         let (v_wq, v_scales, v_biases) = quantize(&v, group_size, bits).unwrap();
@@ -610,8 +611,8 @@ mod tests {
     /// kernel uses flat-offset indexing into the buffers).
     #[test]
     fn check_quantize_output_strides() {
-        let prng = mlx_rs::random::key(42).unwrap();
-        let arr = mlx_rs::random::normal::<f32>(&[2, 4, 8, 128], None, None, &prng).unwrap();
+        let prng = key(42).unwrap();
+        let arr = normal::<f32>(&[2, 4, 8, 128], None, None, &prng).unwrap();
         let (wq, scales, biases) = quantize(&arr, 64, 4).unwrap();
         eval([&wq, &scales, &biases]).unwrap();
         eprintln!("wq:      shape={:?} strides={:?}", wq.shape(), wq.strides());

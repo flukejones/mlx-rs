@@ -14,6 +14,7 @@
 //! layer, not per token.
 
 use mlx_rs::error::Exception;
+use mlx_rs::linalg::qr_device;
 use mlx_rs::ops::{expand_dims, sign};
 use mlx_rs::random::{key, normal_device};
 use mlx_rs::transforms::eval;
@@ -26,21 +27,9 @@ use crate::error::Error;
 /// independent streams. Matches 0xSero's `seed + 1000` convention.
 const QJL_SEED_OFFSET: u64 = 1000;
 
-/// Generate the random orthogonal rotation matrix Π for a single layer.
-///
-/// Procedure (Algorithm 1 of TurboQuant; matches 0xSero `rotation.py`):
-/// 1. Sample `G ~ N(0, 1)^{d×d}` from the seeded PRNG.
-/// 2. `(Q, R) = qr(G)` (Householder QR — deterministic given `G`).
-/// 3. Multiply each column of `Q` by `sign(diag(R)[col])`. This makes the
-///    overall determinant +1 (so Π is a *rotation*, not a reflection;
-///    important because we want `Πᵀ Π = I` *and* a single orientation
-///    convention across runs).
-///
-/// Determinism: same `seed` ⇒ bit-identical matrix across runs and devices.
-///
-/// Cost: one `[d, d]` Gaussian + one QR on CPU. For `d ∈ {64, 128}` this is
-/// sub-millisecond; the matrix is then evaluated and reused for the entire
-/// lifetime of the cache.
+/// Random orthogonal Π for a single layer (TurboQuant Algorithm 1).
+/// QR of a seeded `[d,d]` Gaussian, sign-fixed by `sign(diag(R))` so
+/// `det(Π) = +1`. Deterministic per `seed`; built once on CPU per layer.
 pub fn generate_rotation_matrix(d: i32, seed: u64) -> Result<Array, Error> {
     assert!(d > 0, "rotation matrix dim must be positive");
 
@@ -51,7 +40,7 @@ pub fn generate_rotation_matrix(d: i32, seed: u64) -> Result<Array, Error> {
     let cpu = StreamOrDevice::cpu();
     let g = normal_device::<f32>(&[d, d], None, None, &prng, &cpu).map_err(Error::from)?;
 
-    let (q, r) = mlx_rs::linalg::qr_device(&g, &cpu).map_err(Error::from)?;
+    let (q, r) = qr_device(&g, &cpu).map_err(Error::from)?;
 
     // diag(R) is `[d]`; sign(...) gives ±1 per column. Reshape to `[1, d]`
     // so the broadcast in `q * diag_sign` scales each *column* of Q (column j

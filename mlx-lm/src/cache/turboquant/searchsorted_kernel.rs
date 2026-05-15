@@ -24,16 +24,9 @@ pub const MAX_BOUNDARIES: i32 = 16;
 
 const KERNEL_NAME: &str = "tq_searchsorted_bucket";
 
-/// Metal source. Templated on `T` (the value/boundary dtype) and `K`
-/// (the actual number of decision boundaries, ≤ MAX_BOUNDARIES). The
-/// total element count `n_total` is passed as a scalar buffer rather
-/// than a template — mlx-rs's `metal_kernel` declares each input as a
-/// buffer-named parameter, and template names can't collide with buffer
-/// names.
-///
-/// The kernel runs one thread per value. Threads form a flat 1-D grid
-/// covering the entire input tensor; bounds-checking against `n_total`
-/// handles non-multiple-of-threadgroup tails.
+/// Templated on `T` (dtype) and `K` (#boundaries, ≤ MAX_BOUNDARIES).
+/// One thread per value over a flat 1-D grid; `n_total` passed as a
+/// scalar buffer (can't share a name with a template constant).
 const KERNEL_SOURCE: &str = r#"
     uint gid = thread_position_in_grid.x;
     if (gid >= uint(n_total)) {

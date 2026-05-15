@@ -113,15 +113,8 @@ impl TurboQuantMSE {
         &self.pi
     }
 
-    /// Quantize `x` of shape `[..., d]`.
-    ///
-    /// Steps:
-    /// 1. `r = ‖x‖` along the last axis (kept in input dtype).
-    /// 2. `u = x / (r + ε)`.
-    /// 3. `y = u · Πᵀ` (cast to fp32 for the rotation to keep the
-    ///    Lloyd-Max search numerically clean — the codebook is fp32).
-    /// 4. Bucket lookup via the Metal kernel against the fp32 boundaries.
-    /// 5. Pack the resulting `uint8` indices.
+    /// Quantize `x` of shape `[..., d]`. Norm-divide → rotate by Πᵀ
+    /// (cast to fp32 for Lloyd-Max) → bucket lookup → pack indices.
     pub fn quantize(&self, x: &Array) -> Result<MSEQuantized, Exception> {
         if x.shape()[x.ndim() - 1] != self.d {
             return Err(Exception::custom(format!(
@@ -201,17 +194,9 @@ pub struct ProdQuantized {
     pub norms: Array,
 }
 
-/// Two-stage TurboQuant for unbiased inner-product estimation.
-///
-/// Stage 1: MSE-quantize at `(bits - 1)` bits via [`TurboQuantMSE`].
-/// Stage 2: take the residual `x - x̂_mse`, project through a fixed
-/// Gaussian `S`, and store its sign pattern. The residual's L2 norm is
-/// stored separately so the dequant path can rescale.
-///
-/// At inference time [`Self::attention_score`] computes `⟨q, x̂⟩` without
-/// materialising the dequantised key — the only path that turns
-/// TurboQuant into a *throughput* win (vs the affine `QuantizedKVCache`,
-/// which always dequantises on read).
+/// Two-stage TurboQuant for unbiased `⟨q, k⟩`: MSE-quantize at
+/// `(bits - 1)` bits, then store the residual's QJL sign sketch.
+/// [`Self::attention_score`] computes scores without dequantising K.
 #[derive(Debug)]
 pub struct TurboQuantProd {
     d: i32,
@@ -320,23 +305,9 @@ impl TurboQuantProd {
         mse_part.add(&qjl_part)
     }
 
-    /// Compute attention logits `⟨q_i, K_j⟩` for every `(i, j)` pair
-    /// **without dequantising K and without materialising replicated
-    /// GQA tensors**.
-    ///
-    /// Shapes:
-    /// - `query`: `[B, H_q, n_q, d]` in any float dtype.
-    /// - `q` (the packed K): inner shapes `[B, H_kv, n_k, ...]` per field.
-    /// - `h_kv`: number of K/V heads (must divide `query.shape()[1]`).
-    ///
-    /// Returns scores `[B, H_q, n_q, n_k]` fp32. Grouped-query attention
-    /// is handled by the kernel via `h_kv = h_q / n_rep`.
-    ///
-    /// Routes through the fused [`tq_attention_score_kernel`] Metal
-    /// kernel which reads the packed indices and signs directly — no
-    /// dense intermediates allocated. The pure-ops formulation is
-    /// retained as a `#[cfg(test)]` reference in
-    /// [`Self::attention_score_scalar_reference`].
+    /// `⟨q_i, K_j⟩` scores without dequantising K or replicating GQA.
+    /// `query: [B, H_q, n_q, d]`, `q.*: [B, H_kv, n_k, ...]`. Returns
+    /// `[B, H_q, n_q, n_k]` fp32 via the fused tq_attention_score kernel.
     pub fn attention_score(
         &self,
         query: &Array,
@@ -442,6 +413,7 @@ impl TurboQuantMSE {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mlx_rs::random::{key, normal};
 
     fn max_abs(a: &Array) -> f32 {
         a.abs().unwrap().max(None).unwrap().item::<f32>()
@@ -449,8 +421,8 @@ mod tests {
 
     /// Sample unit-norm vectors uniformly on `S^{d-1}` via Gaussian + L2-normalise.
     fn sample_unit_vectors(d: i32, n: i32, seed: u64) -> Array {
-        let prng = mlx_rs::random::key(seed).unwrap();
-        let raw = mlx_rs::random::normal::<f32>(&[n, d], None, None, &prng).unwrap();
+        let prng = key(seed).unwrap();
+        let raw = normal::<f32>(&[n, d], None, None, &prng).unwrap();
         let norms = raw.square().unwrap().sum_axis(-1, true).unwrap().sqrt().unwrap();
         raw.divide(&norms).unwrap()
     }
@@ -577,12 +549,12 @@ mod tests {
 
         // Random (non-unit) vectors so the norm scaling exercises both
         // legs of the formula.
-        let prng_q = mlx_rs::random::key(13).unwrap();
-        let prng_k = mlx_rs::random::key(99).unwrap();
+        let prng_q = key(13).unwrap();
+        let prng_k = key(99).unwrap();
         let query =
-            mlx_rs::random::normal::<f32>(&[1, 1, n_q, d], None, None, &prng_q).unwrap();
+            normal::<f32>(&[1, 1, n_q, d], None, None, &prng_q).unwrap();
         let keys =
-            mlx_rs::random::normal::<f32>(&[1, 1, n_k, d], None, None, &prng_k).unwrap();
+            normal::<f32>(&[1, 1, n_k, d], None, None, &prng_k).unwrap();
 
         let enc = q.quantize(&keys).unwrap();
         let est = q.attention_score(&query, &enc, 1).unwrap();
@@ -617,12 +589,12 @@ mod tests {
         let d = 128;
         let q = TurboQuantProd::new(d, 3, 37).unwrap();
 
-        let prng_q = mlx_rs::random::key(2).unwrap();
-        let prng_k = mlx_rs::random::key(4).unwrap();
+        let prng_q = key(2).unwrap();
+        let prng_k = key(4).unwrap();
         let query =
-            mlx_rs::random::normal::<f32>(&[1, 1, 4, d], None, None, &prng_q).unwrap();
+            normal::<f32>(&[1, 1, 4, d], None, None, &prng_q).unwrap();
         let keys =
-            mlx_rs::random::normal::<f32>(&[1, 1, 8, d], None, None, &prng_k).unwrap();
+            normal::<f32>(&[1, 1, 8, d], None, None, &prng_k).unwrap();
         let enc = q.quantize(&keys).unwrap();
 
         let asym = q.attention_score(&query, &enc, 1).unwrap();
@@ -641,9 +613,9 @@ mod tests {
         let d = 64;
         let a = TurboQuantProd::new(d, 3, 1).unwrap();
         let b = TurboQuantProd::new(d, 3, 2).unwrap();
-        let prng_k = mlx_rs::random::key(5).unwrap();
+        let prng_k = key(5).unwrap();
         let keys =
-            mlx_rs::random::normal::<f32>(&[1, 1, 4, d], None, None, &prng_k).unwrap();
+            normal::<f32>(&[1, 1, 4, d], None, None, &prng_k).unwrap();
         let ea = a.quantize(&keys).unwrap();
         let eb = b.quantize(&keys).unwrap();
         // Indices won't match because Π differs.
@@ -675,12 +647,12 @@ mod tests {
         let d = 128;
         let q = TurboQuantProd::new(d, 3, 71).unwrap();
 
-        let prng_q = mlx_rs::random::key(7).unwrap();
-        let prng_k = mlx_rs::random::key(11).unwrap();
+        let prng_q = key(7).unwrap();
+        let prng_k = key(11).unwrap();
         let query =
-            mlx_rs::random::normal::<f32>(&[1, 1, 4, d], None, None, &prng_q).unwrap();
+            normal::<f32>(&[1, 1, 4, d], None, None, &prng_q).unwrap();
         let keys =
-            mlx_rs::random::normal::<f32>(&[1, 1, 16, d], None, None, &prng_k).unwrap();
+            normal::<f32>(&[1, 1, 16, d], None, None, &prng_k).unwrap();
         let enc = q.quantize(&keys).unwrap();
 
         let kernel_path = q.attention_score(&query, &enc, 1).unwrap();

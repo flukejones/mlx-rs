@@ -232,6 +232,8 @@ pub fn tq_attention_score_kernel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::turboquant::packing::{pack_indices, pack_signs};
+    use mlx_rs::random::{key, normal, uniform};
     use mlx_rs::transforms::eval;
 
     /// Slow scalar reference that mirrors the kernel formula exactly,
@@ -328,15 +330,15 @@ mod tests {
         let d_signs_packed = (d + 7) / 8;
         let n_clusters = 1 << eff_bits;
 
-        let prng = mlx_rs::random::key(123).unwrap();
-        let q_pi = mlx_rs::random::normal::<f32>(&[b, h_q, n_q, d], None, None, &prng).unwrap();
-        let prng = mlx_rs::random::key(456).unwrap();
-        let q_s = mlx_rs::random::normal::<f32>(&[b, h_q, n_q, d], None, None, &prng).unwrap();
+        let prng = key(123).unwrap();
+        let q_pi = normal::<f32>(&[b, h_q, n_q, d], None, None, &prng).unwrap();
+        let prng = key(456).unwrap();
+        let q_s = normal::<f32>(&[b, h_q, n_q, d], None, None, &prng).unwrap();
 
         // Build packed MSE indices by drawing uint8 in [0, n_clusters) per coord
         // then packing.
-        let prng = mlx_rs::random::key(789).unwrap();
-        let mse_per_coord = mlx_rs::random::uniform::<_, f32>(
+        let prng = key(789).unwrap();
+        let mse_per_coord = uniform::<_, f32>(
             0.0,
             n_clusters as f32,
             &[b, h_kv, n_k, d],
@@ -345,24 +347,23 @@ mod tests {
         .unwrap()
         .as_dtype(Dtype::Uint8)
         .unwrap();
-        let mse_packed =
-            super::super::packing::pack_indices(&mse_per_coord, eff_bits).unwrap();
+        let mse_packed = pack_indices(&mse_per_coord, eff_bits).unwrap();
         // Build random ±1 signs and pack.
-        let prng = mlx_rs::random::key(101).unwrap();
+        let prng = key(101).unwrap();
         let raw_signs =
-            mlx_rs::random::normal::<f32>(&[b, h_kv, n_k, d], None, None, &prng).unwrap();
-        let signs_packed = super::super::packing::pack_signs(&raw_signs).unwrap();
+            normal::<f32>(&[b, h_kv, n_k, d], None, None, &prng).unwrap();
+        let signs_packed = pack_signs(&raw_signs).unwrap();
 
         let cents: Vec<f32> = (0..n_clusters)
             .map(|i| -1.0 + 2.0 * (i as f32 + 0.5) / n_clusters as f32)
             .collect();
         let centroids = Array::from_slice(&cents, &[n_clusters]);
-        let prng = mlx_rs::random::key(202).unwrap();
+        let prng = key(202).unwrap();
         let key_norms =
-            mlx_rs::random::uniform::<_, f32>(0.1f32, 1.0f32, &[b, h_kv, n_k], &prng).unwrap();
-        let prng = mlx_rs::random::key(303).unwrap();
+            uniform::<_, f32>(0.1f32, 1.0f32, &[b, h_kv, n_k], &prng).unwrap();
+        let prng = key(303).unwrap();
         let res_norms =
-            mlx_rs::random::uniform::<_, f32>(0.0f32, 0.5f32, &[b, h_kv, n_k], &prng).unwrap();
+            uniform::<_, f32>(0.0f32, 0.5f32, &[b, h_kv, n_k], &prng).unwrap();
         let qjl_scale = (std::f32::consts::FRAC_PI_2.sqrt()) / d as f32;
         let _ = mask;
         (

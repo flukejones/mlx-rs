@@ -468,19 +468,10 @@ impl KeyValueCache for TurboQuantKVCache {
         m
     }
 
-    /// TurboQuant-specific override that **skips K dequant** on the hot
-    /// path. Routes scores through the fused [`super::tq_score_kernel`]
-    /// for the quant-store portion and a dense matmul for the recent
-    /// buffer; V dequant still happens (unavoidable for softmax-weighted
-    /// average — V is used in only one matmul, the symmetric trade-off
-    /// the paper makes).
-    ///
-    /// Grouped-query attention handling: if `n_heads_q > n_heads_kv`
-    /// (the qwen3 / llama-3.2 case) the cached K/V state is replicated
-    /// across the query-head dimension via `repeat_axis::<f32>(1, n_rep)` before
-    /// the kernel call, matching what `mlx_rs::fast::SDPA` does
-    /// internally. For non-GQA models (n_q == n_kv) the replication is
-    /// a no-op.
+    /// Skips K dequant: scores route through the fused
+    /// `tq_score_kernel` for the quant-store + a dense matmul for the
+    /// recent buffer. V still dequants for the softmax-weighted attend.
+    /// GQA replicates the cached state via `repeat_axis`.
     fn attention(
         &mut self,
         queries: &Array,
@@ -639,6 +630,7 @@ impl Default for TurboQuantKVCache {
 mod tests {
     use super::*;
     use crate::cache::KeyValueCache;
+    use mlx_rs::random::{key, normal};
     use mlx_rs::transforms::eval;
 
     fn make_cfg(head_dim: i32, buffer: i32) -> TurboQuantConfig {
@@ -654,8 +646,8 @@ mod tests {
 
     /// `[B=1, H=2, S, D]` Gaussian sample.
     fn token_block(s: i32, d: i32, seed: u64) -> Array {
-        let prng = mlx_rs::random::key(seed).unwrap();
-        mlx_rs::random::normal::<f32>(&[1, 2, s, d], None, None, &prng).unwrap()
+        let prng = key(seed).unwrap();
+        normal::<f32>(&[1, 2, s, d], None, None, &prng).unwrap()
     }
 
     #[test]
@@ -785,12 +777,12 @@ mod tests {
         let s_q = 8;
         // Build [1, n_kv, s_k, d] K/V and [1, n_q, s_q, d] Q manually so
         // we can drive an explicit GQA case (token_block uses H=2).
-        let prng = mlx_rs::random::key(81).unwrap();
-        let k = mlx_rs::random::normal::<f32>(&[1, n_kv, s_k, d], None, None, &prng).unwrap();
-        let prng = mlx_rs::random::key(82).unwrap();
-        let v = mlx_rs::random::normal::<f32>(&[1, n_kv, s_k, d], None, None, &prng).unwrap();
-        let prng = mlx_rs::random::key(83).unwrap();
-        let q = mlx_rs::random::normal::<f32>(&[1, n_q, s_q, d], None, None, &prng).unwrap();
+        let prng = key(81).unwrap();
+        let k = normal::<f32>(&[1, n_kv, s_k, d], None, None, &prng).unwrap();
+        let prng = key(82).unwrap();
+        let v = normal::<f32>(&[1, n_kv, s_k, d], None, None, &prng).unwrap();
+        let prng = key(83).unwrap();
+        let q = normal::<f32>(&[1, n_q, s_q, d], None, None, &prng).unwrap();
         let scale = (d as f32).sqrt().recip();
 
         let mut c = TurboQuantKVCache::new(make_cfg(d, 128)).unwrap();
@@ -832,12 +824,12 @@ mod tests {
         let d = 64;
         let n_heads = 4;
         let s = 8;
-        let prng = mlx_rs::random::key(111).unwrap();
-        let k = mlx_rs::random::normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
-        let prng = mlx_rs::random::key(112).unwrap();
-        let v = mlx_rs::random::normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
-        let prng = mlx_rs::random::key(113).unwrap();
-        let q = mlx_rs::random::normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
+        let prng = key(111).unwrap();
+        let k = normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
+        let prng = key(112).unwrap();
+        let v = normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
+        let prng = key(113).unwrap();
+        let q = normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
         let scale = (d as f32).sqrt().recip();
 
         // Boolean causal mask via the same op `create_causal_mask` uses:
@@ -891,12 +883,12 @@ mod tests {
         let n_kv = 8;
         let n_q = 16;
         let s = 32;
-        let prng = mlx_rs::random::key(101).unwrap();
-        let k_f32 = mlx_rs::random::normal::<f32>(&[1, n_kv, s, d], None, None, &prng).unwrap();
-        let prng = mlx_rs::random::key(102).unwrap();
-        let v_f32 = mlx_rs::random::normal::<f32>(&[1, n_kv, s, d], None, None, &prng).unwrap();
-        let prng = mlx_rs::random::key(103).unwrap();
-        let q_f32 = mlx_rs::random::normal::<f32>(&[1, n_q, s, d], None, None, &prng).unwrap();
+        let prng = key(101).unwrap();
+        let k_f32 = normal::<f32>(&[1, n_kv, s, d], None, None, &prng).unwrap();
+        let prng = key(102).unwrap();
+        let v_f32 = normal::<f32>(&[1, n_kv, s, d], None, None, &prng).unwrap();
+        let prng = key(103).unwrap();
+        let q_f32 = normal::<f32>(&[1, n_q, s, d], None, None, &prng).unwrap();
         let k = k_f32.as_dtype(Dtype::Bfloat16).unwrap();
         let v = v_f32.as_dtype(Dtype::Bfloat16).unwrap();
         let q = q_f32.as_dtype(Dtype::Bfloat16).unwrap();
@@ -950,12 +942,12 @@ mod tests {
         let d = 64;
         let n_heads = 4;
         let s = 8;
-        let prng = mlx_rs::random::key(91).unwrap();
-        let k = mlx_rs::random::normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
-        let prng = mlx_rs::random::key(92).unwrap();
-        let v = mlx_rs::random::normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
-        let prng = mlx_rs::random::key(93).unwrap();
-        let q = mlx_rs::random::normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
+        let prng = key(91).unwrap();
+        let k = normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
+        let prng = key(92).unwrap();
+        let v = normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
+        let prng = key(93).unwrap();
+        let q = normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
         let scale = (d as f32).sqrt().recip();
 
         // Causal mask: [s, s], -inf above diagonal, 0 on/below.

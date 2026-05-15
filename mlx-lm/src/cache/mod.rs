@@ -3,8 +3,9 @@ use std::path::Path;
 
 use mlx_rs::{
     error::Exception,
+    fast::{scaled_dot_product_attention, MetalKernel, ScaledDotProductAttentionMask},
     ops::{
-        dequantize,
+        concatenate_axis, dequantize,
         indexing::{Ellipsis, IndexOp, TryIndexMutOp},
         quantize, zeros_dtype,
     },
@@ -21,8 +22,8 @@ use std::sync::OnceLock;
 
 use fused_quantized_sdpa::{fused_qsdpa_decode, make_fused_qsdpa_kernel, FusedQsdpaInputs};
 
-fn cached_fused_qsdpa_kernel() -> &'static mlx_rs::fast::MetalKernel {
-    static KERNEL: OnceLock<mlx_rs::fast::MetalKernel> = OnceLock::new();
+fn cached_fused_qsdpa_kernel() -> &'static MetalKernel {
+    static KERNEL: OnceLock<MetalKernel> = OnceLock::new();
     KERNEL.get_or_init(|| make_fused_qsdpa_kernel().expect("make_fused_qsdpa_kernel"))
 }
 
@@ -96,12 +97,12 @@ pub trait KeyValueCache {
         mask: Option<&Array>,
     ) -> Result<Array, Exception> {
         let (k_full, v_full) = self.update_and_fetch(keys, values)?;
-        mlx_rs::fast::scaled_dot_product_attention(
+        scaled_dot_product_attention(
             queries.clone(),
             k_full,
             v_full,
             scale,
-            mask.map(mlx_rs::fast::ScaledDotProductAttentionMask::Array),
+            mask.map(ScaledDotProductAttentionMask::Array),
             None,
         )
     }
@@ -414,28 +415,17 @@ impl KeyValueCache for KVCache {
     }
 }
 
-/// Quantised KV cache.
+/// Affine-quantised KV cache. Stores K/V as packed-uint32
+/// `(wq, scales, biases)` triples in step-allocated buffers.
 ///
-/// Mirrors Python `mlx_lm.models.cache.QuantizedKVCache`. Stores K and V
-/// as packed-uint32 `(wq, scales, biases)` triples in pre-allocated
-/// step-sized buffers (same growth pattern as [`KVCache`]). On
-/// `update_and_fetch`, new tokens are quantised in one call, slice-written
-/// into the buffer, then the populated `[:offset, :]` portion is
-/// dequantised back to a plain `(K, V)` pair for the standard SDPA path.
+/// Default path is dequantise-on-read. Opt-in builders for the faster
+/// paths: [`Self::with_quantized_matmul`] (V2 LEAN — keep K/V packed
+/// across score + attend), [`Self::with_rotation`] (V2 rotated — Π
+/// pre-quantize), [`Self::with_fused_kernel`] (single-dispatch Metal
+/// kernel for n_q=1 decode).
 ///
-/// This is the Python default behaviour: dequantise-on-read keeps the
-/// SDPA call path unchanged. A future enhancement could route through
-/// `mlx_rs::ops::quantized_matmul` to skip the dequantise step entirely;
-/// Python doesn't do that either, so the perf-vs-complexity trade-off
-/// has not been validated.
-///
-/// Memory savings vs fp16 K/V buffer:
-/// - `bits=8 group=64` → ~2× reduction.
-/// - `bits=4 group=64` → ~4× reduction.
-///
-/// Last-axis (head_dim) must be a multiple of `group_size` (mlx-c
-/// requirement). For chandra-q8 with `head_dim = 128` and the default
-/// `group_size = 64` this is satisfied.
+/// Memory: `bits=8` → ~2×, `bits=4` → ~4× reduction vs fp16.
+/// `head_dim` must be a multiple of `group_size`.
 #[derive(Debug, Clone)]
 pub struct QuantizedKVCache {
     /// Quantised K buffer: `[B, H, capacity, head_dim / el_per_int]` uint32.
@@ -808,12 +798,12 @@ impl KeyValueCache for QuantizedKVCache {
     ) -> Result<Array, Exception> {
         if !self.use_quantized_matmul {
             let (k_full, v_full) = self.update_and_fetch(keys, values)?;
-            return mlx_rs::fast::scaled_dot_product_attention(
+            return scaled_dot_product_attention(
                 queries.clone(),
                 k_full,
                 v_full,
                 scale,
-                mask.map(mlx_rs::fast::ScaledDotProductAttentionMask::Array),
+                mask.map(ScaledDotProductAttentionMask::Array),
                 None,
             );
         }
@@ -1048,8 +1038,8 @@ impl KeyValueCache for RotatingKVCache {
             let tail_v = buf_v.index((Ellipsis, split..self.max_size, ..));
             let new_k = buf_k.index((Ellipsis, self.keep..split, ..));
             let new_v = buf_v.index((Ellipsis, self.keep..split, ..));
-            let out_k = mlx_rs::ops::concatenate_axis(&[head_k, tail_k, new_k], -2)?;
-            let out_v = mlx_rs::ops::concatenate_axis(&[head_v, tail_v, new_v], -2)?;
+            let out_k = concatenate_axis(&[head_k, tail_k, new_k], -2)?;
+            let out_v = concatenate_axis(&[head_v, tail_v, new_v], -2)?;
             Ok((out_k, out_v))
         }
     }
@@ -1072,27 +1062,15 @@ fn parse_meta_or(meta: &HashMap<String, String>, key: &str, default: i32) -> Res
         .map(|v| v.unwrap_or(default))
 }
 
-/// Build a uniform prompt cache for a decoder-only model.
-///
-/// One [`KVCache`] per layer (or `Vec<Option<KVCache>>` if `Vec<Option<_>>`
-/// is what the model expects — wrap with `.into_iter().map(Some).collect()`).
-/// For hybrid models (qwen3.5) call that model's own `make_caches` instead.
-///
-/// `max_kv_size` is reserved for future use by sliding-window models; the
-/// plain `KVCache` ignores it.
+/// One [`KVCache`] per layer for a decoder-only model. For hybrid
+/// models (qwen3.5) use that model's own `make_caches`. `max_kv_size`
+/// is reserved for sliding-window models.
 pub fn make_prompt_cache(num_layers: usize, _max_kv_size: Option<i32>) -> Vec<KVCache> {
     (0..num_layers).map(|_| KVCache::new()).collect()
 }
 
-/// Build a TurboQuant cache for a decoder-only model: one
-/// [`turboquant::cache::TurboQuantKVCache`] per layer, each with an
-/// independently-seeded rotation so layers don't share Π / S. Per-layer
-/// seed = `base_seed + layer_idx`.
-///
-/// Use when memory or context-length is the bottleneck and the existing
-/// `make_prompt_cache` / `QuantizedKVCache` paths don't deliver enough
-/// reduction. For hybrid models (qwen3.5) call that model's own
-/// `make_caches_with_tq` factory instead.
+/// One [`turboquant::cache::TurboQuantKVCache`] per layer with seed
+/// `base_seed + layer_idx` (per-layer independent Π / S).
 pub fn make_turboquant_kv_cache(
     num_layers: usize,
     head_dim: i32,
@@ -1292,6 +1270,7 @@ fn state_slot_names(class_name: &str) -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mlx_rs::random::{key, normal};
     use mlx_rs::{ops::concatenate_axis, transforms::eval, Dtype};
 
     /// Make a fresh `[B=1, H=2, S, D=4]` float32 array filled with sequential
@@ -1639,9 +1618,9 @@ mod tests {
         let mut caches = make_turboquant_kv_cache(2, 64, 17).unwrap();
         // Push enough tokens to trigger a flush so the quant store is
         // non-empty on disk. cfg.buffer_size defaults to 128, so push 130.
-        let prng = mlx_rs::random::key(9).unwrap();
-        let k = mlx_rs::random::normal::<f32>(&[1, 2, 130, 64], None, None, &prng).unwrap();
-        let v = mlx_rs::random::normal::<f32>(&[1, 2, 130, 64], None, None, &prng).unwrap();
+        let prng = key(9).unwrap();
+        let k = normal::<f32>(&[1, 2, 130, 64], None, None, &prng).unwrap();
+        let v = normal::<f32>(&[1, 2, 130, 64], None, None, &prng).unwrap();
         caches[0].update_and_fetch(k.clone(), v.clone()).unwrap();
         caches[1].update_and_fetch(k, v).unwrap();
 
