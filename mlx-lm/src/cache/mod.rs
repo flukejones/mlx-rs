@@ -15,6 +15,7 @@ use crate::error::Error;
 use crate::utils::{quantized_scaled_dot_product_attention, QuantizedKeys, QuantizedValues};
 
 pub mod fused_quantized_sdpa;
+pub mod turboquant;
 
 use std::sync::OnceLock;
 
@@ -452,6 +453,8 @@ pub struct QuantizedKVCache {
     bits: i32,
     /// Dtype of the original K/V inputs (preserved for dequantise output).
     dtype: Option<Dtype>,
+    /// Random orthogonal rotation Π applied pre-quantize (V2 rotated).
+    rotation: Option<Array>,
     /// Route scores/attend through `quantized_matmul` (V2 LEAN).
     use_quantized_matmul: bool,
     /// Use the in-tree fused qsdpa Metal kernel for n_q=1 decode.
@@ -485,9 +488,16 @@ impl QuantizedKVCache {
             group_size,
             bits,
             dtype: None,
+            rotation: None,
             use_quantized_matmul: false,
             use_fused_kernel: false,
         }
+    }
+
+    /// V2 rotated: random orthogonal Π applied to K/V pre-quantize.
+    pub fn with_rotation(mut self, head_dim: i32, seed: u64) -> Result<Self, Error> {
+        self.rotation = Some(turboquant::rotation::generate_rotation_matrix(head_dim, seed)?);
+        Ok(self)
     }
 
     /// V2 LEAN: scores/attend via `quantized_matmul`.
@@ -523,8 +533,17 @@ impl QuantizedKVCache {
             self.dtype = Some(keys.dtype());
         }
 
-        let (new_k_wq, new_k_scales, new_k_biases) = quantize(&keys, self.group_size, self.bits)?;
-        let (new_v_wq, new_v_scales, new_v_biases) = quantize(&values, self.group_size, self.bits)?;
+        let (keys_to_q, values_to_q) = if let Some(pi) = self.rotation.as_ref() {
+            let pi_t = pi.as_dtype(keys.dtype())?.transpose_axes(&[1, 0])?;
+            (keys.matmul(&pi_t)?, values.matmul(&pi_t)?)
+        } else {
+            (keys, values)
+        };
+
+        let (new_k_wq, new_k_scales, new_k_biases) =
+            quantize(&keys_to_q, self.group_size, self.bits)?;
+        let (new_v_wq, new_v_scales, new_v_biases) =
+            quantize(&values_to_q, self.group_size, self.bits)?;
 
         self.grow_to_fit(
             &new_k_wq,
@@ -604,6 +623,7 @@ impl QuantizedKVCache {
             group_size,
             bits,
             dtype: None,
+            rotation: None,
             use_quantized_matmul: false,
             use_fused_kernel: false,
         })
@@ -763,9 +783,15 @@ impl KeyValueCache for QuantizedKVCache {
         values: Array,
     ) -> Result<(Array, Array), Exception> {
         let ((k_wq, k_s, k_b), (v_wq, v_s, v_b)) = self.append_quantised(keys, values)?;
-        let k_out = dequantize(&k_wq, &k_s, &k_b, self.group_size, self.bits)?;
-        let v_out = dequantize(&v_wq, &v_s, &v_b, self.group_size, self.bits)?;
-        Ok((k_out, v_out))
+        let k_dense = dequantize(&k_wq, &k_s, &k_b, self.group_size, self.bits)?;
+        let v_dense = dequantize(&v_wq, &v_s, &v_b, self.group_size, self.bits)?;
+
+        if let Some(pi) = self.rotation.as_ref() {
+            let pi_cast = pi.as_dtype(k_dense.dtype())?;
+            Ok((k_dense.matmul(&pi_cast)?, v_dense.matmul(&pi_cast)?))
+        } else {
+            Ok((k_dense, v_dense))
+        }
     }
 
     /// V2 LEAN: keep K/V packed and dispatch through
@@ -794,7 +820,14 @@ impl KeyValueCache for QuantizedKVCache {
 
         let ((k_wq, k_s, k_b), (v_wq, v_s, v_b)) = self.append_quantised(keys, values)?;
 
-        let q_shape = queries.shape();
+        let queries_for_sdpa = if let Some(pi) = self.rotation.as_ref() {
+            let pi_t = pi.as_dtype(queries.dtype())?.transpose_axes(&[1, 0])?;
+            queries.matmul(&pi_t)?
+        } else {
+            queries.clone()
+        };
+
+        let q_shape = queries_for_sdpa.shape();
         let head_dim = q_shape[q_shape.len() - 1];
         let n_q = q_shape[q_shape.len() - 2];
         let h_q = q_shape[1];
@@ -809,11 +842,11 @@ impl KeyValueCache for QuantizedKVCache {
             && h_q % h_kv == 0
             && n_k_cache <= 4096;
 
-        if fused_supported {
+        let out = if fused_supported {
             fused_qsdpa_decode(
                 cached_fused_qsdpa_kernel(),
                 FusedQsdpaInputs {
-                    q: queries,
+                    q: &queries_for_sdpa,
                     k_wq: &k_wq,
                     k_scales: &k_s,
                     k_biases: &k_b,
@@ -828,7 +861,7 @@ impl KeyValueCache for QuantizedKVCache {
                     h_q,
                     h_kv,
                 },
-            )
+            )?
         } else {
             let q_keys = QuantizedKeys {
                 keys: k_wq,
@@ -841,14 +874,21 @@ impl KeyValueCache for QuantizedKVCache {
                 biases: v_b,
             };
             quantized_scaled_dot_product_attention(
-                queries.clone(),
+                queries_for_sdpa,
                 q_keys,
                 q_values,
                 scale,
                 mask,
                 self.group_size,
                 self.bits,
-            )
+            )?
+        };
+
+        if let Some(pi) = self.rotation.as_ref() {
+            let pi_cast = pi.as_dtype(out.dtype())?;
+            out.matmul(&pi_cast)
+        } else {
+            Ok(out)
         }
     }
 }
