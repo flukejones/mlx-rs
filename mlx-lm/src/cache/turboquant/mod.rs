@@ -4,5 +4,6 @@
 
 pub mod codebook;
 pub mod packing;
+pub mod quantizer;
 pub mod rotation;
 pub mod searchsorted_kernel;
