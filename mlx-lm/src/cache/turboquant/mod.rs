@@ -2,6 +2,7 @@
 //! Π-rotation + Lloyd-Max codebook + optional 1-bit QJL residual.
 //! Reference: <https://github.com/0xSero/turboquant>.
 
+pub mod cache;
 pub mod codebook;
 pub mod packing;
 pub mod quantizer;
