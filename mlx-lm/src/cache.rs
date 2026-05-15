@@ -691,6 +691,168 @@ impl KeyValueCache for QuantizedKVCache {
     }
 }
 
+/// Sliding-window KV cache with rotation.
+///
+/// Mirrors Python `mlx_lm.models.cache.RotatingKVCache`. The buffer is
+/// pre-allocated to `[B, H, max_size, D]` once the first append happens.
+/// While `offset < max_size` it behaves like a plain growing buffer. Once
+/// full, new tokens overwrite the oldest **non-keep** slot in rotation:
+/// the first `keep` slots are always retained (typically used to pin the
+/// system prompt or BOS region).
+///
+/// `update_and_fetch` returns the populated buffer in temporal order:
+/// `[keep prefix | older tail of rotating region | newer head of rotating region]`.
+///
+/// Not used by qwen3/llama/qwen3.5 today; lays infra for future
+/// sliding-window models (e.g. Gemma3).
+#[derive(Debug, Clone)]
+pub struct RotatingKVCache {
+    keys: Option<Array>,
+    values: Option<Array>,
+    /// Real token count seen so far (monotonic; not bounded by max_size).
+    offset: i32,
+    /// Write head into the rotating region `[keep..max_size]`. Bounded
+    /// `0 <= idx < max_size - keep` once the rotating region is reached.
+    idx: i32,
+    /// Sliding-window capacity in tokens.
+    max_size: i32,
+    /// Number of head tokens to pin in the first `keep` slots.
+    keep: i32,
+}
+
+impl RotatingKVCache {
+    /// New empty cache. `max_size` is the rotating-window capacity in
+    /// tokens; `keep` is the number of leading tokens that are never
+    /// overwritten (must satisfy `0 <= keep < max_size`).
+    pub fn new(max_size: i32, keep: i32) -> Self {
+        assert!(max_size > 0, "max_size must be positive");
+        assert!(
+            keep >= 0 && keep < max_size,
+            "keep must be in [0, max_size)"
+        );
+        Self {
+            keys: None,
+            values: None,
+            offset: 0,
+            idx: 0,
+            max_size,
+            keep,
+        }
+    }
+
+    fn alloc_like(template: &Array, capacity: i32) -> Result<Array, Exception> {
+        let shape = template.shape();
+        let mut buf_shape = shape.to_vec();
+        let t_axis = buf_shape.len() - 2;
+        buf_shape[t_axis] = capacity;
+        zeros_dtype(&buf_shape, template.dtype())
+    }
+}
+
+impl KeyValueCache for RotatingKVCache {
+    fn offset(&self) -> i32 {
+        self.offset
+    }
+
+    fn max_size(&self) -> Option<i32> {
+        Some(self.max_size)
+    }
+
+    fn is_trimmable(&self) -> bool {
+        // Trim is only well-defined while the rotating region hasn't wrapped.
+        self.offset <= self.max_size
+    }
+
+    fn trim(&mut self, n: i32) -> i32 {
+        if !self.is_trimmable() {
+            return 0;
+        }
+        let trimmed = n.min(self.offset).max(0);
+        self.offset -= trimmed;
+        self.idx = (self.offset - self.keep).max(0);
+        trimmed
+    }
+
+    fn class_name(&self) -> &'static str {
+        "RotatingKVCache"
+    }
+
+    fn state(&self) -> Vec<Array> {
+        match (self.keys.as_ref(), self.values.as_ref()) {
+            (Some(k), Some(v)) => vec![k.clone(), v.clone()],
+            _ => Vec::new(),
+        }
+    }
+
+    fn meta_state(&self) -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        m.insert("offset".into(), self.offset.to_string());
+        m.insert("idx".into(), self.idx.to_string());
+        m.insert("max_size".into(), self.max_size.to_string());
+        m.insert("keep".into(), self.keep.to_string());
+        m
+    }
+
+    fn update_and_fetch(
+        &mut self,
+        keys: Array,
+        values: Array,
+    ) -> Result<(Array, Array), Exception> {
+        let key_shape = keys.shape();
+        let t_axis = key_shape.len() - 2;
+        let s = key_shape[t_axis];
+
+        // Allocate the rotating buffer on first append.
+        if self.keys.is_none() {
+            self.keys = Some(Self::alloc_like(&keys, self.max_size)?);
+            self.values = Some(Self::alloc_like(&values, self.max_size)?);
+        }
+        let buf_k = self.keys.as_mut().expect("just allocated");
+        let buf_v = self.values.as_mut().expect("just allocated");
+
+        // Bulk-prompt path (S > 1): handled by writing in order; if the
+        // prompt exceeds max_size the oldest entries are dropped (matches
+        // Python's behaviour for prefill into a rotating cache).
+        for i in 0..s {
+            let slot = if self.offset < self.max_size {
+                self.offset
+            } else {
+                self.keep + self.idx
+            };
+            let token_k = keys.index((Ellipsis, i..i + 1, ..));
+            let token_v = values.index((Ellipsis, i..i + 1, ..));
+            buf_k.try_index_mut((Ellipsis, slot..slot + 1, ..), token_k)?;
+            buf_v.try_index_mut((Ellipsis, slot..slot + 1, ..), token_v)?;
+
+            self.offset += 1;
+            if self.offset > self.max_size {
+                self.idx = (self.idx + 1) % (self.max_size - self.keep);
+            }
+        }
+
+        // Return the populated buffer in temporal order.
+        if self.offset <= self.max_size {
+            let end = self.offset;
+            Ok((
+                buf_k.index((Ellipsis, 0..end, ..)),
+                buf_v.index((Ellipsis, 0..end, ..)),
+            ))
+        } else {
+            // [0..keep] head + [keep+idx..max_size] older tail + [keep..keep+idx] newer head.
+            let head_k = buf_k.index((Ellipsis, 0..self.keep, ..));
+            let head_v = buf_v.index((Ellipsis, 0..self.keep, ..));
+            let split = self.keep + self.idx;
+            let tail_k = buf_k.index((Ellipsis, split..self.max_size, ..));
+            let tail_v = buf_v.index((Ellipsis, split..self.max_size, ..));
+            let new_k = buf_k.index((Ellipsis, self.keep..split, ..));
+            let new_v = buf_v.index((Ellipsis, self.keep..split, ..));
+            let out_k = mlx_rs::ops::concatenate_axis(&[head_k, tail_k, new_k], -2)?;
+            let out_v = mlx_rs::ops::concatenate_axis(&[head_v, tail_v, new_v], -2)?;
+            Ok((out_k, out_v))
+        }
+    }
+}
+
 // -------- Prompt cache helpers (Python `mlx_lm.models.cache` parity) --------
 
 fn parse_meta(meta: &HashMap<String, String>, key: &str) -> Result<i32, Error> {
@@ -1172,6 +1334,42 @@ mod tests {
             }
             _ => panic!("expected plain KVCache"),
         }
+    }
+
+    #[test]
+    fn rotating_kvcache_grows_until_full_then_rotates() {
+        // max_size=4, keep=1 → after 4 tokens the buffer is full; further
+        // tokens overwrite slots [1,2,3] in rotation.
+        let mut cache = RotatingKVCache::new(4, 1);
+        // Append 4 single tokens — fills buffer 0..4 in order.
+        for i in 0..4 {
+            let k = token_block(1, i as f32);
+            let v = token_block(1, 100.0 + i as f32);
+            let (out_k, _) = cache.update_and_fetch(k, v).unwrap();
+            eval([&out_k]).unwrap();
+        }
+        assert_eq!(cache.offset(), 4);
+        assert!(cache.is_trimmable());
+
+        // 5th token: writes into slot keep+idx = 1+0 = 1, rotates idx to 1.
+        let k5 = token_block(1, 99.0);
+        let v5 = token_block(1, 199.0);
+        let (out_k, _) = cache.update_and_fetch(k5.clone(), v5).unwrap();
+        eval([&out_k]).unwrap();
+        assert_eq!(cache.offset(), 5);
+        assert!(!cache.is_trimmable(), "trim disabled once wrapped");
+        // Output shape should still be max_size along the token axis.
+        assert_eq!(out_k.shape()[out_k.shape().len() - 2], 4);
+    }
+
+    #[test]
+    fn rotating_kvcache_trim_before_wrap() {
+        let mut cache = RotatingKVCache::new(8, 0);
+        cache
+            .update_and_fetch(token_block(5, 0.0), token_block(5, 0.0))
+            .unwrap();
+        assert_eq!(cache.trim(2), 2);
+        assert_eq!(cache.offset(), 3);
     }
 
     #[test]
