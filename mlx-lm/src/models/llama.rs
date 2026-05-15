@@ -462,6 +462,12 @@ impl Model {
     pub fn model_type(&self) -> &str {
         &self.args.model_type
     }
+
+    /// Number of transformer layers — the length any per-layer cache
+    /// `Vec<Option<C>>` must have.
+    pub fn layer_count(&self) -> usize {
+        self.args.num_hidden_layers as usize
+    }
 }
 
 impl<C> Module<ModelInput<'_, C>> for Model

@@ -23,7 +23,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use mlx_lm::cache::ConcatKeyValueCache;
+use mlx_lm::cache::{ConcatKeyValueCache, QuantizedKVCache};
 use mlx_lm::models::{
     llama::{load_llama_model, Generate as LlamaGenerate, Model as LlamaModel},
     qwen3::{load_qwen3_model, Generate as Qwen3Generate, Model as Qwen3Model},
@@ -313,6 +313,125 @@ fn maybe_bench_llama(c: &mut Criterion, label: &str, repo_id: &str) {
     group.finish();
 }
 
+/// Bench a qwen3 cell with a `QuantizedKVCache` of the given `bits`
+/// (long_prompt only — KV-quant only moves the needle at long context).
+fn maybe_bench_qwen3_kv_quant(c: &mut Criterion, label: &str, repo_id: &str, kv_bits: i32) {
+    let Some(dir) = ensure_model(repo_id) else {
+        return;
+    };
+    let mut model = match load_qwen3_model(&dir) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skipping qwen3 {label}: load failed: {e:?}");
+            return;
+        }
+    };
+    let long = synthetic_prompt(LONG_PROMPT_LEN, 1000);
+
+    let make_cache = |n: usize| -> Vec<Option<QuantizedKVCache>> {
+        (0..n)
+            .map(|_| Some(QuantizedKVCache::with_config(256, 64, kv_bits)))
+            .collect()
+    };
+
+    let num_layers = model.layer_count();
+    {
+        let mut cache = make_cache(num_layers);
+        let mut tokens = Vec::new();
+        let gen = Qwen3Generate::<QuantizedKVCache>::new(&mut model, &mut cache, 0.0, &long);
+        for (tok, n) in gen.zip(0..WARMUP_TOKENS) {
+            tokens.push(tok.unwrap());
+            if n == 0 {
+                eval(&tokens).unwrap();
+            }
+        }
+        eval(&tokens).unwrap();
+    }
+
+    let mut group = c.benchmark_group(format!("qwen3_decode_{label}"));
+    group.throughput(Throughput::Elements(DECODE_TOKENS as u64));
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+    group.bench_function(
+        BenchmarkId::new("long_prompt", LONG_PROMPT_LEN as i32),
+        |b| {
+            b.iter(|| {
+                let mut cache = make_cache(num_layers);
+                let mut tokens = Vec::with_capacity(DECODE_TOKENS as usize);
+                let gen =
+                    Qwen3Generate::<QuantizedKVCache>::new(&mut model, &mut cache, 0.0, &long);
+                for (tok, n) in gen.zip(0..DECODE_TOKENS) {
+                    tokens.push(tok.unwrap());
+                    if n == 0 {
+                        eval(&tokens).unwrap();
+                    }
+                }
+                eval(&tokens).unwrap();
+            });
+        },
+    );
+    group.finish();
+}
+
+/// Mirror of [`maybe_bench_qwen3_kv_quant`] for the Llama path.
+fn maybe_bench_llama_kv_quant(c: &mut Criterion, label: &str, repo_id: &str, kv_bits: i32) {
+    let Some(dir) = ensure_model(repo_id) else {
+        return;
+    };
+    let mut model = match load_llama_model(&dir) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skipping llama {label}: load failed: {e:?}");
+            return;
+        }
+    };
+    let long = synthetic_prompt(LONG_PROMPT_LEN, 1000);
+
+    let make_cache = |n: usize| -> Vec<Option<QuantizedKVCache>> {
+        (0..n)
+            .map(|_| Some(QuantizedKVCache::with_config(256, 64, kv_bits)))
+            .collect()
+    };
+
+    let num_layers = model.layer_count();
+    {
+        let mut cache = make_cache(num_layers);
+        let mut tokens = Vec::new();
+        let gen = LlamaGenerate::<QuantizedKVCache>::new(&mut model, &mut cache, 0.0, &long);
+        for (tok, n) in gen.zip(0..WARMUP_TOKENS) {
+            tokens.push(tok.unwrap());
+            if n == 0 {
+                eval(&tokens).unwrap();
+            }
+        }
+        eval(&tokens).unwrap();
+    }
+
+    let mut group = c.benchmark_group(format!("llama_decode_{label}"));
+    group.throughput(Throughput::Elements(DECODE_TOKENS as u64));
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+    group.bench_function(
+        BenchmarkId::new("long_prompt", LONG_PROMPT_LEN as i32),
+        |b| {
+            b.iter(|| {
+                let mut cache = make_cache(num_layers);
+                let mut tokens = Vec::with_capacity(DECODE_TOKENS as usize);
+                let gen =
+                    LlamaGenerate::<QuantizedKVCache>::new(&mut model, &mut cache, 0.0, &long);
+                for (tok, n) in gen.zip(0..DECODE_TOKENS) {
+                    tokens.push(tok.unwrap());
+                    if n == 0 {
+                        eval(&tokens).unwrap();
+                    }
+                }
+                eval(&tokens).unwrap();
+            });
+        },
+    );
+    group.finish();
+}
+
 /// Chat-rendered "Hello" short prompt for the Qwen3.5 tokenizer.
 const QWEN3_5_SHORT_PROMPT: &[i32] = &[
     248045, 846, 198, 9419, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271,
@@ -498,6 +617,33 @@ fn bench_decode(c: &mut Criterion) {
     // the chandra-ocr-2 text-only model.
     maybe_bench_qwen3_5(c, "4b_q8", "mlx-community/Qwen3.5-4B-MLX-8bit");
     maybe_bench_qwen3_5(c, "9b_q8", "mlx-community/Qwen3.5-9B-8bit");
+
+    // KV-quant cells: largest decoder-only quant base × {KV q8, KV q4},
+    // long_prompt only (KV quant only moves the needle at long context).
+    maybe_bench_qwen3_kv_quant(
+        c,
+        "large_q4_kv8",
+        "mlx-community/Qwen3-1.7B-4bit",
+        8,
+    );
+    maybe_bench_qwen3_kv_quant(
+        c,
+        "large_q4_kv4",
+        "mlx-community/Qwen3-1.7B-4bit",
+        4,
+    );
+    maybe_bench_llama_kv_quant(
+        c,
+        "large_q4_kv8",
+        "mlx-community/Llama-3.2-3B-Instruct-4bit",
+        8,
+    );
+    maybe_bench_llama_kv_quant(
+        c,
+        "large_q4_kv4",
+        "mlx-community/Llama-3.2-3B-Instruct-4bit",
+        4,
+    );
 
     // Vision-tower prefill on the chandra-ocr-2-8bit-mlx checkpoint (the only
     // public mlx conversion of chandra). Measures `VisionModel::forward` for
