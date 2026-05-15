@@ -23,6 +23,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::time::Instant;
 use mlx_lm::cache::{ConcatKeyValueCache, QuantizedKVCache};
 use mlx_lm::models::{
     llama::{load_llama_model, Generate as LlamaGenerate, Model as LlamaModel},
@@ -43,6 +44,10 @@ use mlx_rs::{
 
 const DECODE_TOKENS: i32 = 100;
 const LONG_PROMPT_LEN: usize = 1024;
+/// Long-context cells (KV-quant / V2 LEAN bandwidth-bound regime).
+const VERY_LONG_PROMPT_LEN: usize = 8192;
+/// Decode-only step count (prefill excluded from timing).
+const DECODE_ONLY_STEPS: i32 = 50;
 const SHORT_PROMPT_LEN: usize = 13;
 const WARMUP_TOKENS: i32 = 4;
 const SAMPLE_SIZE: usize = 10;
@@ -308,6 +313,98 @@ fn maybe_bench_llama(c: &mut Criterion, label: &str, repo_id: &str) {
         BenchmarkId::new("long_prompt", LONG_PROMPT_LEN as i32),
         |b| {
             b.iter(|| run(&mut model, &long));
+        },
+    );
+    group.finish();
+}
+
+/// Decode-only bench: prefill outside the timing band, then time
+/// `DECODE_ONLY_STEPS` decode steps from a fresh post-prefill clone.
+/// `with_v2_lean` flips `QuantizedKVCache::with_quantized_matmul()`.
+fn maybe_bench_qwen3_kv_decode_only(
+    c: &mut Criterion,
+    label: &str,
+    repo_id: &str,
+    kv_bits: i32,
+    with_v2_lean: bool,
+    prompt_len: usize,
+) {
+    let Some(dir) = ensure_model(repo_id) else {
+        return;
+    };
+    let mut model = match load_qwen3_model(&dir) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skipping qwen3 {label}: load failed: {e:?}");
+            return;
+        }
+    };
+    let prompt = synthetic_prompt(prompt_len, 1000);
+    let num_layers = model.layer_count();
+
+    let make_cache = |n: usize| -> Vec<Option<QuantizedKVCache>> {
+        (0..n)
+            .map(|_| {
+                let mut c = QuantizedKVCache::with_config(256, 64, kv_bits);
+                if with_v2_lean {
+                    c = c.with_quantized_matmul();
+                }
+                Some(c)
+            })
+            .collect()
+    };
+
+    // Build a post-prefill cache once. Run one decode step so prefill
+    // and the warmup pass are out of the way before we clone the state.
+    let mut seeded_cache: Vec<Option<QuantizedKVCache>> = {
+        let mut cache = make_cache(num_layers);
+        let mut tokens = Vec::new();
+        let gen = Qwen3Generate::<QuantizedKVCache>::new(&mut model, &mut cache, 0.0, &prompt);
+        for (tok, n) in gen.zip(0..WARMUP_TOKENS) {
+            tokens.push(tok.unwrap());
+            if n == 0 {
+                eval(&tokens).unwrap();
+            }
+        }
+        eval(&tokens).unwrap();
+        cache
+    };
+
+    let mut group = c.benchmark_group(format!("qwen3_decode_only_{label}"));
+    group.throughput(Throughput::Elements(DECODE_ONLY_STEPS as u64));
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+    group.bench_function(
+        BenchmarkId::new("post_prefill", DECODE_ONLY_STEPS),
+        |b| {
+            b.iter_custom(|iters| {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    let mut cache = seeded_cache.clone();
+                    if let Some(Some(c0)) = cache.first() {
+                        let _ = c0;
+                    }
+                    let seed = Array::from_slice(&[0i32], &[1, 1]);
+                    eval([&seed]).unwrap();
+
+                    let start = Instant::now();
+                    let mut tokens = Vec::with_capacity(DECODE_ONLY_STEPS as usize);
+                    let gen = Qwen3Generate::<QuantizedKVCache>::new(
+                        &mut model, &mut cache, 0.0, &seed,
+                    );
+                    for (tok, n) in gen.zip(0..DECODE_ONLY_STEPS) {
+                        tokens.push(tok.unwrap());
+                        if n == 0 {
+                            eval(&tokens).unwrap();
+                        }
+                    }
+                    eval(&tokens).unwrap();
+                    total += start.elapsed();
+                    drop(cache);
+                }
+                let _ = &mut seeded_cache;
+                total
+            });
         },
     );
     group.finish();
@@ -617,6 +714,42 @@ fn bench_decode(c: &mut Criterion) {
     // the chandra-ocr-2 text-only model.
     maybe_bench_qwen3_5(c, "4b_q8", "mlx-community/Qwen3.5-4B-MLX-8bit");
     maybe_bench_qwen3_5(c, "9b_q8", "mlx-community/Qwen3.5-9B-8bit");
+
+    // Decode-only (prefill excluded) comparison of dequant-on-read vs
+    // V2 LEAN. Matches sharpner's methodology so numbers can be compared
+    // directly to his V2 LEAN ≈ fp16 result.
+    maybe_bench_qwen3_kv_decode_only(
+        c,
+        "large_q4_kv8_dequant_t1024",
+        "mlx-community/Qwen3-1.7B-4bit",
+        8,
+        false,
+        LONG_PROMPT_LEN,
+    );
+    maybe_bench_qwen3_kv_decode_only(
+        c,
+        "large_q4_kv8_v2lean_t1024",
+        "mlx-community/Qwen3-1.7B-4bit",
+        8,
+        true,
+        LONG_PROMPT_LEN,
+    );
+    maybe_bench_qwen3_kv_decode_only(
+        c,
+        "large_q4_kv8_dequant_t8192",
+        "mlx-community/Qwen3-1.7B-4bit",
+        8,
+        false,
+        VERY_LONG_PROMPT_LEN,
+    );
+    maybe_bench_qwen3_kv_decode_only(
+        c,
+        "large_q4_kv8_v2lean_t8192",
+        "mlx-community/Qwen3-1.7B-4bit",
+        8,
+        true,
+        VERY_LONG_PROMPT_LEN,
+    );
 
     // KV-quant cells: largest decoder-only quant base × {KV q8, KV q4},
     // long_prompt only (KV quant only moves the needle at long context).

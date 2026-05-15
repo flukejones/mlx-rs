@@ -12,6 +12,7 @@ use mlx_rs::{
 };
 
 use crate::error::Error;
+use crate::utils::{quantized_scaled_dot_product_attention, QuantizedKeys, QuantizedValues};
 
 /// Default step in tokens for [`KVCache`]'s pre-allocated buffer growth.
 pub const DEFAULT_KV_CACHE_STEP: i32 = 256;
@@ -440,6 +441,8 @@ pub struct QuantizedKVCache {
     bits: i32,
     /// Dtype of the original K/V inputs (preserved for dequantise output).
     dtype: Option<Dtype>,
+    /// Route scores/attend through `quantized_matmul` (V2 LEAN).
+    use_quantized_matmul: bool,
 }
 
 impl QuantizedKVCache {
@@ -469,11 +472,77 @@ impl QuantizedKVCache {
             group_size,
             bits,
             dtype: None,
+            use_quantized_matmul: false,
         }
+    }
+
+    /// V2 LEAN: scores/attend via `quantized_matmul`.
+    pub fn with_quantized_matmul(mut self) -> Self {
+        self.use_quantized_matmul = true;
+        self
     }
 
     fn ceil_step(s: i32, step: i32) -> i32 {
         ((s + step - 1) / step) * step
+    }
+
+    /// Append (keys, values), quantise into the buffer, return packed views
+    /// sliced to populated `[..., :offset, ...]` rows. Shared back-end for
+    /// `update_and_fetch` and the V2 LEAN `attention` override.
+    #[allow(clippy::type_complexity)]
+    fn append_quantised(
+        &mut self,
+        keys: Array,
+        values: Array,
+    ) -> Result<((Array, Array, Array), (Array, Array, Array)), Exception> {
+        let s = keys.shape()[keys.shape().len() - 2];
+
+        if self.dtype.is_none() {
+            self.dtype = Some(keys.dtype());
+        }
+
+        let (new_k_wq, new_k_scales, new_k_biases) = quantize(&keys, self.group_size, self.bits)?;
+        let (new_v_wq, new_v_scales, new_v_biases) = quantize(&values, self.group_size, self.bits)?;
+
+        self.grow_to_fit(
+            &new_k_wq,
+            &new_k_scales,
+            &new_k_biases,
+            &new_v_wq,
+            &new_v_scales,
+            &new_v_biases,
+        )?;
+
+        let start = self.offset;
+        let end = self.offset + s;
+        let k_wq_buf = self.keys_wq.as_mut().expect("buffer just allocated");
+        let k_s_buf = self.keys_scales.as_mut().expect("buffer just allocated");
+        let k_b_buf = self.keys_biases.as_mut().expect("buffer just allocated");
+        let v_wq_buf = self.values_wq.as_mut().expect("buffer just allocated");
+        let v_s_buf = self.values_scales.as_mut().expect("buffer just allocated");
+        let v_b_buf = self.values_biases.as_mut().expect("buffer just allocated");
+
+        k_wq_buf.try_index_mut((Ellipsis, start..end, ..), new_k_wq)?;
+        k_s_buf.try_index_mut((Ellipsis, start..end, ..), new_k_scales)?;
+        k_b_buf.try_index_mut((Ellipsis, start..end, ..), new_k_biases)?;
+        v_wq_buf.try_index_mut((Ellipsis, start..end, ..), new_v_wq)?;
+        v_s_buf.try_index_mut((Ellipsis, start..end, ..), new_v_scales)?;
+        v_b_buf.try_index_mut((Ellipsis, start..end, ..), new_v_biases)?;
+
+        self.offset = end;
+
+        Ok((
+            (
+                k_wq_buf.index((Ellipsis, 0..end, ..)),
+                k_s_buf.index((Ellipsis, 0..end, ..)),
+                k_b_buf.index((Ellipsis, 0..end, ..)),
+            ),
+            (
+                v_wq_buf.index((Ellipsis, 0..end, ..)),
+                v_s_buf.index((Ellipsis, 0..end, ..)),
+                v_b_buf.index((Ellipsis, 0..end, ..)),
+            ),
+        ))
     }
 
     /// Reconstruct from previously-persisted `state` + `meta_state`.
@@ -513,6 +582,7 @@ impl QuantizedKVCache {
             group_size,
             bits,
             dtype: None,
+            use_quantized_matmul: false,
         })
     }
 
@@ -669,58 +739,57 @@ impl KeyValueCache for QuantizedKVCache {
         keys: Array,
         values: Array,
     ) -> Result<(Array, Array), Exception> {
-        let s = keys.shape()[keys.shape().len() - 2];
+        let ((k_wq, k_s, k_b), (v_wq, v_s, v_b)) = self.append_quantised(keys, values)?;
+        let k_out = dequantize(&k_wq, &k_s, &k_b, self.group_size, self.bits)?;
+        let v_out = dequantize(&v_wq, &v_s, &v_b, self.group_size, self.bits)?;
+        Ok((k_out, v_out))
+    }
 
-        // Remember the input dtype for the dequantise return.
-        if self.dtype.is_none() {
-            self.dtype = Some(keys.dtype());
+    /// V2 LEAN: keep K/V packed and dispatch through
+    /// `quantized_scaled_dot_product_attention` (two `quantized_matmul`
+    /// kernels). Skips the per-step K/V dequant. Falls through to the
+    /// dense-SDPA default when the V2 LEAN flag is off.
+    fn attention(
+        &mut self,
+        queries: &Array,
+        keys: Array,
+        values: Array,
+        scale: f32,
+        mask: Option<&Array>,
+    ) -> Result<Array, Exception> {
+        if !self.use_quantized_matmul {
+            let (k_full, v_full) = self.update_and_fetch(keys, values)?;
+            return mlx_rs::fast::scaled_dot_product_attention(
+                queries.clone(),
+                k_full,
+                v_full,
+                scale,
+                mask.map(mlx_rs::fast::ScaledDotProductAttentionMask::Array),
+                None,
+            );
         }
 
-        // Quantise the new tokens. mlx-c quantises along the last axis;
-        // K/V shapes `[B, H, S, D]` are accepted directly.
-        let (new_k_wq, new_k_scales, new_k_biases) = quantize(&keys, self.group_size, self.bits)?;
-        let (new_v_wq, new_v_scales, new_v_biases) = quantize(&values, self.group_size, self.bits)?;
+        let ((k_wq, k_s, k_b), (v_wq, v_s, v_b)) = self.append_quantised(keys, values)?;
 
-        self.grow_to_fit(
-            &new_k_wq,
-            &new_k_scales,
-            &new_k_biases,
-            &new_v_wq,
-            &new_v_scales,
-            &new_v_biases,
-        )?;
-
-        // Slice-write into the [offset:offset+s] rows.
-        let start = self.offset;
-        let end = self.offset + s;
-        let k_wq_buf = self.keys_wq.as_mut().expect("buffer just allocated");
-        let k_s_buf = self.keys_scales.as_mut().expect("buffer just allocated");
-        let k_b_buf = self.keys_biases.as_mut().expect("buffer just allocated");
-        let v_wq_buf = self.values_wq.as_mut().expect("buffer just allocated");
-        let v_s_buf = self.values_scales.as_mut().expect("buffer just allocated");
-        let v_b_buf = self.values_biases.as_mut().expect("buffer just allocated");
-
-        k_wq_buf.try_index_mut((Ellipsis, start..end, ..), new_k_wq)?;
-        k_s_buf.try_index_mut((Ellipsis, start..end, ..), new_k_scales)?;
-        k_b_buf.try_index_mut((Ellipsis, start..end, ..), new_k_biases)?;
-        v_wq_buf.try_index_mut((Ellipsis, start..end, ..), new_v_wq)?;
-        v_s_buf.try_index_mut((Ellipsis, start..end, ..), new_v_scales)?;
-        v_b_buf.try_index_mut((Ellipsis, start..end, ..), new_v_biases)?;
-
-        self.offset = end;
-
-        // Dequantise the [:offset] populated slice and return as plain
-        // (K, V) for the standard SDPA path.
-        let k_wq_view = k_wq_buf.index((Ellipsis, 0..end, ..));
-        let k_s_view = k_s_buf.index((Ellipsis, 0..end, ..));
-        let k_b_view = k_b_buf.index((Ellipsis, 0..end, ..));
-        let v_wq_view = v_wq_buf.index((Ellipsis, 0..end, ..));
-        let v_s_view = v_s_buf.index((Ellipsis, 0..end, ..));
-        let v_b_view = v_b_buf.index((Ellipsis, 0..end, ..));
-
-        let k_out = dequantize(&k_wq_view, &k_s_view, &k_b_view, self.group_size, self.bits)?;
-        let v_out = dequantize(&v_wq_view, &v_s_view, &v_b_view, self.group_size, self.bits)?;
-        Ok((k_out, v_out))
+        let q_keys = QuantizedKeys {
+            keys: k_wq,
+            scales: k_s,
+            biases: k_b,
+        };
+        let q_values = QuantizedValues {
+            values: v_wq,
+            scales: v_s,
+            biases: v_b,
+        };
+        quantized_scaled_dot_product_attention(
+            queries.clone(),
+            q_keys,
+            q_values,
+            scale,
+            mask,
+            self.group_size,
+            self.bits,
+        )
     }
 }
 
