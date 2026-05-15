@@ -71,6 +71,14 @@ for V3. Hybrid models (qwen3.5) build their own via
 
 ### Worked examples
 
+Runnable binaries under `examples/lm/src/bin/`:
+
+- `kv_v2_lean_fused` — V2 LEAN + fused qsdpa kernel (short-context).
+- `kv_v2_lean_long_context` — V2 LEAN at T=8192 (fused kernel falls back).
+- `kv_turboquant_v3` — TurboQuant V3 K3V2.
+
+Test/bench references (no model loading needed for the bench helper):
+
 - `mlx-lm/benches/lm_decode.rs::maybe_bench_qwen3_kv_decode_only` —
   end-to-end V2 LEAN + fused construction, prefill outside criterion
   timing band.
