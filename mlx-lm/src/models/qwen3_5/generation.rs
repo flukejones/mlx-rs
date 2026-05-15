@@ -166,6 +166,36 @@ impl<'a> Generate<'a> {
             finished: false,
         }
     }
+
+    /// Build a text-only generator with externally-provided caches.
+    ///
+    /// Symmetric with [`qwen3::Generate::new`] / [`llama::Generate::new`]:
+    /// caller is expected to construct the `Vec<LayerCache>` (typically
+    /// via [`super::cache::make_caches`] or, for TurboQuant, a future
+    /// `make_caches_with_tq` factory) and own it across decode steps.
+    ///
+    /// This is the entry point opening the door to non-default caches
+    /// (TurboQuant, prompt-cache reuse, etc.) on the hybrid model.
+    pub fn with_caches(
+        model: &'a mut LanguageModel,
+        prompt_ids: Array,
+        caches: Vec<LayerCache>,
+        stop: StopCriteria,
+        params: SamplingParams,
+    ) -> Self {
+        Self {
+            model,
+            caches,
+            stop,
+            params,
+            seed: Some(PrefillSeed::Tokens(prompt_ids)),
+            next_token: None,
+            cursor: 0,
+            rope_delta: None,
+            produced: 0,
+            finished: false,
+        }
+    }
 }
 
 impl<'a> Iterator for Generate<'a> {
