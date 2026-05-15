@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use image::DynamicImage;
+use mlx_lm::chat_template::{ChatMessage, ChatTemplate};
 use mlx_lm::models::qwen3_5::{
     config::ModelConfig,
     generation::{Generate, SamplingParams, StopCriteria},
@@ -74,7 +75,7 @@ pub struct AppState {
     pub image_processor: Qwen35ImageProcessor,
     pub tokenizer: Tokenizer,
     pub cfg: ModelConfig,
-    pub chat_template: String,
+    pub chat_template: ChatTemplate,
 }
 
 impl AppState {
@@ -97,8 +98,8 @@ impl AppState {
             .with_context(|| "loading preprocessor_config.json")?;
         let tokenizer = Tokenizer::from_file(dir.join("tokenizer.json"))
             .map_err(|e| anyhow!("loading tokenizer.json: {e}"))?;
-        let chat_template = std::fs::read_to_string(dir.join("chat_template.jinja"))
-            .with_context(|| "reading chat_template.jinja")?;
+        let chat_template = ChatTemplate::from_dir(dir)
+            .with_context(|| "loading chat template")?;
         Ok(Self {
             model: Mutex::new(model),
             vision: Mutex::new(vision),
@@ -109,39 +110,21 @@ impl AppState {
         })
     }
 
-    /// Render a user prompt through the checkpoint's Jinja chat template. When
-    /// `image_present` is true, the rendered prompt contains a single image
-    /// placeholder block whose `<|image_pad|>` tokens will be replaced by
-    /// vision features at runtime.
+    /// Render a user prompt through the checkpoint's Jinja chat template.
+    /// When `image_present` is true, the user message uses the parts-list
+    /// content form with a single image placeholder; the template emits
+    /// `<|image_pad|>` tokens that the vision tower replaces at runtime.
     pub fn render_chat_prompt(
         &self,
         user_message: &str,
         image_present: bool,
     ) -> Result<String> {
-        let mut env = minijinja::Environment::new();
-        env.set_unknown_method_callback(
-            minijinja_contrib::pycompat::unknown_method_callback,
-        );
-        env.add_template("chat", &self.chat_template)?;
-        let tmpl = env.get_template("chat")?;
-        let content = if image_present {
-            // The Qwen3.5 chat template treats a list-of-parts content with
-            // an `image` part as a vision message.
-            minijinja::value::Value::from_serialize(vec![
-                serde_json::json!({"type": "image"}),
-                serde_json::json!({"type": "text", "text": user_message}),
-            ])
+        let msg = if image_present {
+            ChatMessage::user_with_image(user_message)
         } else {
-            minijinja::value::Value::from(user_message)
+            ChatMessage::user(user_message)
         };
-        let ctx = minijinja::context! {
-            messages => vec![minijinja::context!{
-                role => "user",
-                content => content,
-            }],
-            add_generation_prompt => true,
-        };
-        Ok(tmpl.render(ctx)?)
+        Ok(self.chat_template.render(&[msg], true)?)
     }
 
     /// Run text-only generation.

@@ -24,7 +24,8 @@ clap = { version = "4", features = ["derive"] }
 idna_adapter = "1.2" 
 thiserror = "2"
 serde_json = "1"
-minijinja = "2"
+minijinja = { version = "2", features = ["loop_controls"] }
+minijinja-contrib = { version = "2", features = ["pycompat"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff", "webp", "gif"] }
 
 [dev-dependencies]

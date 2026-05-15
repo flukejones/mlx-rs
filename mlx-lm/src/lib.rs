@@ -1,5 +1,6 @@
 pub mod activations;
 pub mod cache;
+pub mod chat_template;
 pub mod error;
 // pub mod generate;
 pub mod models;
