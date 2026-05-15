@@ -4,3 +4,4 @@
 
 pub mod packing;
 pub mod rotation;
+pub mod searchsorted_kernel;
