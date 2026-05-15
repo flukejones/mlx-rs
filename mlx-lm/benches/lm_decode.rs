@@ -620,6 +620,13 @@ fn bench_decode(c: &mut Criterion) {
 
     // KV-quant cells: largest decoder-only quant base × {KV q8, KV q4},
     // long_prompt only (KV quant only moves the needle at long context).
+    // Plus a bf16-base cell to isolate KV-quant effect from weight quant.
+    maybe_bench_qwen3_kv_quant(
+        c,
+        "large_bf16_kv8",
+        "mlx-community/Qwen3-1.7B-bf16",
+        8,
+    );
     maybe_bench_qwen3_kv_quant(
         c,
         "large_q4_kv8",
