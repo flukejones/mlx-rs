@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::path::Path;
+
 use mlx_rs::{
     error::Exception,
     ops::{
@@ -7,6 +10,8 @@ use mlx_rs::{
     },
     Array, Dtype,
 };
+
+use crate::error::Error;
 
 /// Default step in tokens for [`KVCache`]'s pre-allocated buffer growth.
 pub const DEFAULT_KV_CACHE_STEP: i32 = 256;
@@ -46,6 +51,24 @@ pub trait KeyValueCache {
     /// shorter). Default implementation is a no-op.
     fn trim(&mut self, _n: i32) -> i32 {
         0
+    }
+
+    /// Stable identifier matching Python `mlx_lm.models.cache` class names.
+    /// Used as metadata when persisting and to dispatch on load.
+    fn class_name(&self) -> &'static str {
+        "DefaultCache"
+    }
+
+    /// Per-layer arrays to persist. Order is significant — must match the
+    /// order [`KeyValueCache::from_state`] consumes. Default returns empty.
+    fn state(&self) -> Vec<Array> {
+        Vec::new()
+    }
+
+    /// String-keyed scalars (offset, step, bits, etc.) to persist alongside
+    /// [`state`](Self::state). Default returns empty.
+    fn meta_state(&self) -> HashMap<String, String> {
+        HashMap::new()
     }
 }
 
@@ -87,6 +110,18 @@ where
 
     fn trim(&mut self, n: i32) -> i32 {
         T::trim(self, n)
+    }
+
+    fn class_name(&self) -> &'static str {
+        T::class_name(self)
+    }
+
+    fn state(&self) -> Vec<Array> {
+        T::state(self)
+    }
+
+    fn meta_state(&self) -> HashMap<String, String> {
+        T::meta_state(self)
     }
 }
 
@@ -157,6 +192,38 @@ impl KVCache {
             }
             None => 0,
         }
+    }
+
+    /// Reconstruct from previously-persisted `state` + `meta_state`.
+    /// `state` must be `[keys, values]` in that order. The cache adopts the
+    /// arrays directly as its buffer (no copy); `offset` is read from
+    /// metadata. The buffer's pre-existing capacity becomes the new
+    /// capacity — subsequent `update_and_fetch` will grow in `step` chunks
+    /// from there.
+    pub fn from_state(
+        mut state: Vec<Array>,
+        meta: &HashMap<String, String>,
+    ) -> Result<Self, Error> {
+        if state.len() != 2 {
+            return Err(Error::Other(
+                format!("KVCache::from_state expected 2 arrays, got {}", state.len()).into(),
+            ));
+        }
+        let values = state.pop().expect("len checked");
+        let keys = state.pop().expect("len checked");
+        let offset = parse_meta(meta, "offset")?;
+        let step = meta
+            .get("step")
+            .map(|s| s.parse::<i32>())
+            .transpose()
+            .map_err(|e| Error::Other(format!("KVCache.step parse: {e}").into()))?
+            .unwrap_or(DEFAULT_KV_CACHE_STEP);
+        Ok(Self {
+            keys: Some(keys),
+            values: Some(values),
+            offset,
+            step,
+        })
     }
 
     /// Ceiling-divide `s` up to the next multiple of `step`.
@@ -241,6 +308,30 @@ impl KeyValueCache for KVCache {
         let trimmed = n.min(self.offset).max(0);
         self.offset -= trimmed;
         trimmed
+    }
+
+    fn class_name(&self) -> &'static str {
+        "KVCache"
+    }
+
+    fn state(&self) -> Vec<Array> {
+        match (self.keys.as_ref(), self.values.as_ref()) {
+            (Some(k), Some(v)) => {
+                let end = self.offset;
+                vec![
+                    k.index((Ellipsis, 0..end, ..)),
+                    v.index((Ellipsis, 0..end, ..)),
+                ]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn meta_state(&self) -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        m.insert("offset".into(), self.offset.to_string());
+        m.insert("step".into(), self.step.to_string());
+        m
     }
 
     fn update_and_fetch(
@@ -350,6 +441,46 @@ impl QuantizedKVCache {
 
     fn ceil_step(s: i32, step: i32) -> i32 {
         ((s + step - 1) / step) * step
+    }
+
+    /// Reconstruct from previously-persisted `state` + `meta_state`.
+    /// `state` order: `[k_wq, k_scales, k_biases, v_wq, v_scales, v_biases]`.
+    pub fn from_state(
+        mut state: Vec<Array>,
+        meta: &HashMap<String, String>,
+    ) -> Result<Self, Error> {
+        if state.len() != 6 {
+            return Err(Error::Other(
+                format!(
+                    "QuantizedKVCache::from_state expected 6 arrays, got {}",
+                    state.len()
+                )
+                .into(),
+            ));
+        }
+        let v_b = state.pop().unwrap();
+        let v_s = state.pop().unwrap();
+        let v_wq = state.pop().unwrap();
+        let k_b = state.pop().unwrap();
+        let k_s = state.pop().unwrap();
+        let k_wq = state.pop().unwrap();
+        let offset = parse_meta(meta, "offset")?;
+        let step = parse_meta_or(meta, "step", DEFAULT_KV_CACHE_STEP)?;
+        let group_size = parse_meta_or(meta, "group_size", 64)?;
+        let bits = parse_meta_or(meta, "bits", 8)?;
+        Ok(Self {
+            keys_wq: Some(k_wq),
+            keys_scales: Some(k_s),
+            keys_biases: Some(k_b),
+            values_wq: Some(v_wq),
+            values_scales: Some(v_s),
+            values_biases: Some(v_b),
+            offset,
+            step,
+            group_size,
+            bits,
+            dtype: None,
+        })
     }
 
     /// Grow each of the six pre-allocated buffers so they have room for
@@ -468,6 +599,38 @@ impl KeyValueCache for QuantizedKVCache {
         trimmed
     }
 
+    fn class_name(&self) -> &'static str {
+        "QuantizedKVCache"
+    }
+
+    fn state(&self) -> Vec<Array> {
+        let end = self.offset;
+        let slot = |a: &Option<Array>| a.as_ref().map(|x| x.index((Ellipsis, 0..end, ..)));
+        match (
+            slot(&self.keys_wq),
+            slot(&self.keys_scales),
+            slot(&self.keys_biases),
+            slot(&self.values_wq),
+            slot(&self.values_scales),
+            slot(&self.values_biases),
+        ) {
+            (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) => vec![a, b, c, d, e, f],
+            _ => Vec::new(),
+        }
+    }
+
+    fn meta_state(&self) -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        m.insert("offset".into(), self.offset.to_string());
+        m.insert("step".into(), self.step.to_string());
+        m.insert("group_size".into(), self.group_size.to_string());
+        m.insert("bits".into(), self.bits.to_string());
+        if let Some(dt) = self.dtype {
+            m.insert("dtype".into(), format!("{dt:?}"));
+        }
+        m
+    }
+
     fn update_and_fetch(
         &mut self,
         keys: Array,
@@ -528,8 +691,192 @@ impl KeyValueCache for QuantizedKVCache {
     }
 }
 
-/// TODO: A generic KV Cache
-pub struct DefaultKeyValueCache {}
+// -------- Prompt cache helpers (Python `mlx_lm.models.cache` parity) --------
+
+fn parse_meta(meta: &HashMap<String, String>, key: &str) -> Result<i32, Error> {
+    meta.get(key)
+        .ok_or_else(|| Error::Other(format!("missing meta key {key:?}").into()))?
+        .parse::<i32>()
+        .map_err(|e| Error::Other(format!("meta {key:?} parse: {e}").into()))
+}
+
+fn parse_meta_or(meta: &HashMap<String, String>, key: &str, default: i32) -> Result<i32, Error> {
+    meta.get(key)
+        .map(|s| s.parse::<i32>())
+        .transpose()
+        .map_err(|e| Error::Other(format!("meta {key:?} parse: {e}").into()))
+        .map(|v| v.unwrap_or(default))
+}
+
+/// Build a uniform prompt cache for a decoder-only model.
+///
+/// One [`KVCache`] per layer (or `Vec<Option<KVCache>>` if `Vec<Option<_>>`
+/// is what the model expects — wrap with `.into_iter().map(Some).collect()`).
+/// For hybrid models (qwen3.5) call that model's own `make_caches` instead.
+///
+/// `max_kv_size` is reserved for future use by sliding-window models; the
+/// plain `KVCache` ignores it.
+pub fn make_prompt_cache(num_layers: usize, _max_kv_size: Option<i32>) -> Vec<KVCache> {
+    (0..num_layers).map(|_| KVCache::new()).collect()
+}
+
+/// Return `true` iff every cache in the slice supports `trim` with a
+/// non-zero argument.
+pub fn can_trim_prompt_cache<C: KeyValueCache>(caches: &[C]) -> bool {
+    !caches.is_empty() && caches.iter().all(|c| c.is_trimmable())
+}
+
+/// Trim the trailing `n` tokens from every cache in the slice. Returns the
+/// minimum number of tokens actually trimmed (some caches may be shorter).
+pub fn trim_prompt_cache<C: KeyValueCache>(caches: &mut [C], n: i32) -> i32 {
+    if !can_trim_prompt_cache(caches) || n <= 0 {
+        return 0;
+    }
+    caches.iter_mut().map(|c| c.trim(n)).min().unwrap_or(0)
+}
+
+/// Save a prompt cache to a `.safetensors` file, mirroring Python's
+/// wire format: per-layer arrays keyed `layer.{i}.{slot}` and per-layer
+/// metadata keyed `layer.{i}.{key}` plus a flat `layer.{i}.class_name`.
+/// `extra_metadata` is merged into the metadata map under unprefixed keys.
+pub fn save_prompt_cache<C: KeyValueCache>(
+    path: impl AsRef<Path>,
+    caches: &[C],
+    extra_metadata: Option<&HashMap<String, String>>,
+) -> Result<(), Error> {
+    let mut arrays: Vec<(String, Array)> = Vec::new();
+    let mut metadata: HashMap<String, String> = HashMap::new();
+
+    for (i, c) in caches.iter().enumerate() {
+        let class_name = c.class_name();
+        metadata.insert(format!("layer.{i}.class_name"), class_name.to_string());
+        for (k, v) in c.meta_state() {
+            metadata.insert(format!("layer.{i}.{k}"), v);
+        }
+        let slot_names = state_slot_names(class_name);
+        let state = c.state();
+        if !state.is_empty() && state.len() != slot_names.len() {
+            return Err(Error::Other(
+                format!(
+                    "{class_name}.state() returned {} arrays, expected {}",
+                    state.len(),
+                    slot_names.len()
+                )
+                .into(),
+            ));
+        }
+        for (slot, a) in slot_names.iter().zip(state.into_iter()) {
+            arrays.push((format!("layer.{i}.{slot}"), a));
+        }
+    }
+
+    if let Some(extra) = extra_metadata {
+        for (k, v) in extra {
+            metadata.insert(k.clone(), v.clone());
+        }
+    }
+    metadata.insert("num_layers".into(), caches.len().to_string());
+
+    let array_refs: Vec<(String, &Array)> = arrays.iter().map(|(k, a)| (k.clone(), a)).collect();
+    Array::save_safetensors(array_refs, Some(&metadata), path)?;
+    Ok(())
+}
+
+/// One layer's worth of loaded prompt-cache state. Caller dispatches on the
+/// variant to recover the original cache type.
+#[derive(Debug, Clone)]
+pub enum LoadedCache {
+    /// `class_name == "KVCache"`.
+    Plain(KVCache),
+    /// `class_name == "QuantizedKVCache"`.
+    Quantized(QuantizedKVCache),
+}
+
+impl LoadedCache {
+    /// Discriminant matching Python `class_name`.
+    pub fn class_name(&self) -> &'static str {
+        match self {
+            LoadedCache::Plain(_) => "KVCache",
+            LoadedCache::Quantized(_) => "QuantizedKVCache",
+        }
+    }
+}
+
+/// Inverse of [`save_prompt_cache`]. Returns one [`LoadedCache`] per layer
+/// plus any extra metadata that wasn't prefixed with `layer.{i}.`.
+pub fn load_prompt_cache(
+    path: impl AsRef<Path>,
+) -> Result<(Vec<LoadedCache>, HashMap<String, String>), Error> {
+    let (mut arrays, mut meta) = Array::load_safetensors_with_metadata(path)?;
+
+    let num_layers: usize = meta
+        .remove("num_layers")
+        .ok_or_else(|| Error::Other("prompt cache missing num_layers meta".into()))?
+        .parse()
+        .map_err(|e| Error::Other(format!("num_layers parse: {e}").into()))?;
+
+    let mut layers: Vec<LoadedCache> = Vec::with_capacity(num_layers);
+    for i in 0..num_layers {
+        let class_name = meta
+            .remove(&format!("layer.{i}.class_name"))
+            .ok_or_else(|| Error::Other(format!("missing layer.{i}.class_name").into()))?;
+
+        let prefix = format!("layer.{i}.");
+        let mut layer_meta: HashMap<String, String> = HashMap::new();
+        let keys: Vec<String> = meta
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for k in keys {
+            let suffix = k[prefix.len()..].to_string();
+            let v = meta.remove(&k).expect("just found");
+            layer_meta.insert(suffix, v);
+        }
+
+        let slot_names = state_slot_names(&class_name);
+        let mut state: Vec<Array> = Vec::with_capacity(slot_names.len());
+        for slot in slot_names {
+            let key = format!("layer.{i}.{slot}");
+            let a = arrays.remove(&key).ok_or_else(|| {
+                Error::Other(format!("missing array {key} for {class_name}").into())
+            })?;
+            state.push(a);
+        }
+
+        let loaded = match class_name.as_str() {
+            "KVCache" => LoadedCache::Plain(KVCache::from_state(state, &layer_meta)?),
+            "QuantizedKVCache" => {
+                LoadedCache::Quantized(QuantizedKVCache::from_state(state, &layer_meta)?)
+            }
+            other => {
+                return Err(Error::Other(
+                    format!("unsupported prompt-cache class {other}").into(),
+                ))
+            }
+        };
+        layers.push(loaded);
+    }
+
+    Ok((layers, meta))
+}
+
+/// Per-class state-array slot names, matching the order
+/// [`KeyValueCache::state`] returns them in.
+fn state_slot_names(class_name: &str) -> &'static [&'static str] {
+    match class_name {
+        "KVCache" => &["keys", "values"],
+        "QuantizedKVCache" => &[
+            "keys_wq",
+            "keys_scales",
+            "keys_biases",
+            "values_wq",
+            "values_scales",
+            "values_biases",
+        ],
+        _ => &[],
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -761,5 +1108,97 @@ mod tests {
         assert!(cache.is_trimmable());
         assert_eq!(cache.trim(2), 2);
         assert_eq!(cache.offset(), 3);
+    }
+
+    #[test]
+    fn make_prompt_cache_returns_per_layer() {
+        let caches = make_prompt_cache(4, None);
+        assert_eq!(caches.len(), 4);
+        for c in &caches {
+            assert_eq!(c.offset(), 0);
+        }
+    }
+
+    #[test]
+    fn trim_and_can_trim_helpers() {
+        let mut caches = make_prompt_cache(3, None);
+        assert!(!can_trim_prompt_cache(&caches[..0]));
+        assert!(can_trim_prompt_cache(&caches));
+        for c in caches.iter_mut() {
+            c.update_and_fetch(token_block(5, 0.0), token_block(5, 0.0))
+                .unwrap();
+        }
+        let trimmed = trim_prompt_cache(&mut caches, 2);
+        assert_eq!(trimmed, 2);
+        for c in &caches {
+            assert_eq!(c.offset(), 3);
+        }
+    }
+
+    #[test]
+    fn prompt_cache_kvcache_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.safetensors");
+
+        let mut caches = make_prompt_cache(2, None);
+        caches[0]
+            .update_and_fetch(token_block(3, 0.0), token_block(3, 1000.0))
+            .unwrap();
+        caches[1]
+            .update_and_fetch(token_block(2, 5.0), token_block(2, 2000.0))
+            .unwrap();
+
+        let mut extra = HashMap::new();
+        extra.insert("prompt_hash".into(), "deadbeef".into());
+        save_prompt_cache(&path, &caches, Some(&extra)).unwrap();
+
+        let (loaded, meta) = load_prompt_cache(&path).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(meta.get("prompt_hash"), Some(&"deadbeef".into()));
+
+        match &loaded[0] {
+            LoadedCache::Plain(c) => {
+                assert_eq!(c.offset(), 3);
+                assert_eq!(c.class_name(), "KVCache");
+                let state = c.state();
+                let diff = state[0]
+                    .subtract(&token_block(3, 0.0))
+                    .unwrap()
+                    .abs()
+                    .unwrap()
+                    .max(None)
+                    .unwrap();
+                assert!(diff.item::<f32>() < 1e-6);
+            }
+            _ => panic!("expected plain KVCache"),
+        }
+    }
+
+    #[test]
+    fn prompt_cache_quantized_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("qcache.safetensors");
+
+        let mut caches: Vec<QuantizedKVCache> =
+            (0..2).map(|_| QuantizedKVCache::with_config(64, 64, 8)).collect();
+        caches[0]
+            .update_and_fetch(quant_token_block(3, 0.0), quant_token_block(3, 100.0))
+            .unwrap();
+        caches[1]
+            .update_and_fetch(quant_token_block(4, 1.0), quant_token_block(4, 200.0))
+            .unwrap();
+
+        save_prompt_cache(&path, &caches, None).unwrap();
+
+        let (loaded, _) = load_prompt_cache(&path).unwrap();
+        assert_eq!(loaded.len(), 2);
+        match &loaded[0] {
+            LoadedCache::Quantized(c) => {
+                assert_eq!(c.offset(), 3);
+                assert_eq!(c.bits(), Some(8));
+                assert_eq!(c.group_size(), Some(64));
+            }
+            _ => panic!("expected quantized cache"),
+        }
     }
 }
