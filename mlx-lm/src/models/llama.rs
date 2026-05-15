@@ -154,11 +154,11 @@ where
         let mut keys = keys
             .reshape(&[B, L, self.n_kv_heads, -1])?
             .transpose_axes(&[0, 2, 1, 3])?;
-        let mut values = values
+        let values = values
             .reshape(&[B, L, self.n_kv_heads, -1])?
             .transpose_axes(&[0, 2, 1, 3])?;
 
-        if let Some(cache) = cache.as_mut() {
+        let output = if let Some(cache) = cache.as_mut() {
             let q_input = nn::RopeInputBuilder::new(&queries)
                 .offset(cache.offset())
                 .build()?;
@@ -168,18 +168,18 @@ where
                 .build()?;
             keys = self.rope.forward(k_input)?;
 
-            (keys, values) = cache.update_and_fetch(keys, values)?;
+            // Dispatch through the cache so quantised caches (TurboQuant)
+            // can fuse update + attention without dequantising K.
+            cache.attention(&queries, keys, values, self.scale, mask)?
         } else {
             queries = self.rope.forward(nn::RopeInput::new(&queries))?;
             keys = self.rope.forward(nn::RopeInput::new(&keys))?;
-        }
+            crate::utils::scaled_dot_product_attention::<&mut C>(
+                queries, keys, values, None, self.scale, mask,
+            )?
+        };
 
-        let output = crate::utils::scaled_dot_product_attention(
-            queries, keys, values, cache, self.scale, mask,
-        )?
-        .transpose_axes(&[0, 2, 1, 3])?
-        .reshape(&[B, L, -1])?;
-
+        let output = output.transpose_axes(&[0, 2, 1, 3])?.reshape(&[B, L, -1])?;
         self.o_proj.forward(&output)
     }
 

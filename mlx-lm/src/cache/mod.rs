@@ -70,6 +70,28 @@ pub trait KeyValueCache {
     fn meta_state(&self) -> HashMap<String, String> {
         HashMap::new()
     }
+
+    /// `softmax(scaled_q @ K.T) @ V` over the full cached history.
+    /// Default appends K/V then dispatches dense fused SDPA. Quantised
+    /// caches override to skip K/V dequant on the hot path.
+    fn attention(
+        &mut self,
+        queries: &Array,
+        keys: Array,
+        values: Array,
+        scale: f32,
+        mask: Option<&Array>,
+    ) -> Result<Array, Exception> {
+        let (k_full, v_full) = self.update_and_fetch(keys, values)?;
+        mlx_rs::fast::scaled_dot_product_attention(
+            queries.clone(),
+            k_full,
+            v_full,
+            scale,
+            mask.map(mlx_rs::fast::ScaledDotProductAttentionMask::Array),
+            None,
+        )
+    }
 }
 
 impl<T> KeyValueCache for &'_ mut T
@@ -122,6 +144,17 @@ where
 
     fn meta_state(&self) -> HashMap<String, String> {
         T::meta_state(self)
+    }
+
+    fn attention(
+        &mut self,
+        queries: &Array,
+        keys: Array,
+        values: Array,
+        scale: f32,
+        mask: Option<&Array>,
+    ) -> Result<Array, Exception> {
+        T::attention(self, queries, keys, values, scale, mask)
     }
 }
 
@@ -535,7 +568,7 @@ impl QuantizedKVCache {
                 self.values_scales.take(),
                 self.values_biases.take(),
             ];
-            for (g, o) in grown.iter_mut().zip(olds.into_iter()) {
+            for (g, o) in grown.iter_mut().zip(olds) {
                 if let Some(old) = o {
                     g.try_index_mut(
                         (Ellipsis, 0..self.offset, ..),
@@ -927,7 +960,7 @@ pub fn save_prompt_cache<C: KeyValueCache>(
                 .into(),
             ));
         }
-        for (slot, a) in slot_names.iter().zip(state.into_iter()) {
+        for (slot, a) in slot_names.iter().zip(state) {
             arrays.push((format!("layer.{i}.{slot}"), a));
         }
     }
@@ -1324,7 +1357,7 @@ mod tests {
                 assert_eq!(c.class_name(), "KVCache");
                 let state = c.state();
                 let diff = state[0]
-                    .subtract(&token_block(3, 0.0))
+                    .subtract(token_block(3, 0.0))
                     .unwrap()
                     .abs()
                     .unwrap()
