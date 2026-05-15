@@ -21,12 +21,15 @@ use mlx_rs::fast::MetalKernel;
 use mlx_rs::ops::{expand_dims, sum_axis};
 use mlx_rs::{Array, Dtype};
 
+use std::sync::OnceLock;
+
 use super::codebook::{decision_boundaries, get_codebook, Codebook};
-use super::packing::{pack_indices, pack_signs, unpack_indices, unpack_signs};
+use super::packing::{effective_bits, pack_indices, pack_signs, unpack_indices, unpack_signs};
 use super::rotation::{
     generate_qjl_matrix, generate_rotation_matrix, rotate_backward, rotate_forward,
 };
 use super::searchsorted_kernel::{make_searchsorted_kernel, searchsorted_bucket};
+use super::tq_score_kernel::{make_tq_score_kernel, tq_attention_score_kernel, TqScoreInputs};
 
 use crate::error::Error;
 
@@ -216,6 +219,10 @@ pub struct TurboQuantProd {
     mse: TurboQuantMSE,
     s: Array,
     qjl_scale: f32,
+    /// Lazy kernel handle for the fused attention-score path.
+    /// Built on first use via `OnceLock` so test-only paths that never
+    /// call `attention_score` don't pay the compilation cost.
+    score_kernel: OnceLock<mlx_rs::fast::MetalKernel>,
 }
 
 impl TurboQuantProd {
@@ -235,6 +242,7 @@ impl TurboQuantProd {
             mse,
             s,
             qjl_scale,
+            score_kernel: OnceLock::new(),
         })
     }
 
@@ -313,18 +321,71 @@ impl TurboQuantProd {
     }
 
     /// Compute attention logits `⟨q_i, K_j⟩` for every `(i, j)` pair
-    /// **without dequantising K**.
+    /// **without dequantising K and without materialising replicated
+    /// GQA tensors**.
     ///
     /// Shapes:
-    /// - `query`: `[B, H, n_q, d]` in any float dtype.
-    /// - `q` (the packed K): inner shapes `[B, H, n_k, ...]` per field.
+    /// - `query`: `[B, H_q, n_q, d]` in any float dtype.
+    /// - `q` (the packed K): inner shapes `[B, H_kv, n_k, ...]` per field.
+    /// - `h_kv`: number of K/V heads (must divide `query.shape()[1]`).
     ///
-    /// Returns scores `[B, H, n_q, n_k]` in fp32 (caller can cast / scale).
+    /// Returns scores `[B, H_q, n_q, n_k]` fp32. Grouped-query attention
+    /// is handled by the kernel via `h_kv = h_q / n_rep`.
     ///
-    /// Plain-ops reference implementation. The fused Metal kernel that
-    /// will replace this in a later commit must reproduce the same
-    /// formula exactly.
+    /// Routes through the fused [`tq_attention_score_kernel`] Metal
+    /// kernel which reads the packed indices and signs directly — no
+    /// dense intermediates allocated. The pure-ops formulation is
+    /// retained as a `#[cfg(test)]` reference in
+    /// [`Self::attention_score_scalar_reference`].
     pub fn attention_score(
+        &self,
+        query: &Array,
+        q: &ProdQuantized,
+        h_kv: i32,
+    ) -> Result<Array, Exception> {
+        // Project queries: q_pi = query · Πᵀ; q_s = query · Sᵀ. Both fp32.
+        let query_f32 = query.as_dtype(Dtype::Float32)?;
+        let q_pi = rotate_forward(self.mse.rotation(), &query_f32)?;
+        let s_t = self.s.transpose_axes(&[1, 0])?;
+        let q_s = query_f32.matmul(&s_t)?;
+        let h_q = query.shape()[1];
+
+        let key_norms_f32 = q.norms.as_dtype(Dtype::Float32)?;
+        let res_norms_f32 = q.residual_norms.as_dtype(Dtype::Float32)?;
+        let eff_bits = effective_bits(self.bits - 1);
+        let vpb = 8 / eff_bits;
+        let d_packed = (self.d + vpb - 1) / vpb;
+        let d_signs_packed = self.d.div_euclid(8) + i32::from(self.d % 8 != 0);
+
+        let kernel = self
+            .score_kernel
+            .get_or_init(|| make_tq_score_kernel().expect("make_tq_score_kernel"));
+        tq_attention_score_kernel(
+            kernel,
+            TqScoreInputs {
+                q_pi: &q_pi,
+                q_s: &q_s,
+                mse_indices_packed: &q.mse_indices,
+                signs_packed: &q.qjl_signs,
+                centroids: self.mse.codebook_centroids(),
+                key_norms: &key_norms_f32,
+                residual_norms: &res_norms_f32,
+                qjl_scale: self.qjl_scale,
+                d: self.d,
+                eff_bits,
+                d_packed,
+                d_signs_packed,
+                h_q,
+                h_kv,
+            },
+        )
+    }
+
+    /// Plain-ops reference for the asymmetric attention score. Retained
+    /// behind `#[cfg(test)]` so kernel regressions can be caught against
+    /// the slow but obviously-correct math.
+    #[cfg(test)]
+    pub(crate) fn attention_score_scalar_reference(
         &self,
         query: &Array,
         q: &ProdQuantized,
@@ -524,7 +585,7 @@ mod tests {
             mlx_rs::random::normal::<f32>(&[1, 1, n_k, d], None, None, &prng_k).unwrap();
 
         let enc = q.quantize(&keys).unwrap();
-        let est = q.attention_score(&query, &enc).unwrap();
+        let est = q.attention_score(&query, &enc, 1).unwrap();
 
         // True scores from un-quantised K.
         let keys_t = keys.transpose_axes(&[0, 1, 3, 2]).unwrap();
@@ -564,7 +625,7 @@ mod tests {
             mlx_rs::random::normal::<f32>(&[1, 1, 8, d], None, None, &prng_k).unwrap();
         let enc = q.quantize(&keys).unwrap();
 
-        let asym = q.attention_score(&query, &enc).unwrap();
+        let asym = q.attention_score(&query, &enc, 1).unwrap();
         let k_hat = q.dequantize(&enc).unwrap();
         let k_hat_t = k_hat.transpose_axes(&[0, 1, 3, 2]).unwrap();
         let sym = query.matmul(&k_hat_t).unwrap();
@@ -603,5 +664,32 @@ mod tests {
     #[should_panic(expected = "bits must be ≥ 2")]
     fn prod_rejects_bits_lt_2() {
         let _ = TurboQuantProd::new(64, 1, 0);
+    }
+
+    /// The kernel-routed `attention_score` agrees with the slow
+    /// plain-ops reference. This is the regression canary for C12 +
+    /// C13 — if the kernel and the formula diverge, this catches it
+    /// before any model integration.
+    #[test]
+    fn kernel_attention_score_matches_scalar_reference() {
+        let d = 128;
+        let q = TurboQuantProd::new(d, 3, 71).unwrap();
+
+        let prng_q = mlx_rs::random::key(7).unwrap();
+        let prng_k = mlx_rs::random::key(11).unwrap();
+        let query =
+            mlx_rs::random::normal::<f32>(&[1, 1, 4, d], None, None, &prng_q).unwrap();
+        let keys =
+            mlx_rs::random::normal::<f32>(&[1, 1, 16, d], None, None, &prng_k).unwrap();
+        let enc = q.quantize(&keys).unwrap();
+
+        let kernel_path = q.attention_score(&query, &enc, 1).unwrap();
+        let scalar_path = q.attention_score_scalar_reference(&query, &enc).unwrap();
+        let err = max_abs(&kernel_path.subtract(&scalar_path).unwrap());
+        // Tolerance scaled by D (fp32 accumulator drift).
+        assert!(
+            err < 1e-3 * d as f32,
+            "kernel vs scalar reference diverged: max abs = {err}"
+        );
     }
 }

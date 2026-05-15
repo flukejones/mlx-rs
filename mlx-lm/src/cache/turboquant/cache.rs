@@ -1,25 +1,14 @@
-//! `TurboQuantKVCache` — a [`KeyValueCache`] implementor using TurboQuant
-//! Algorithm 2 for keys and symmetric affine group-quant for values, with
-//! a configurable buffer of un-quantised recent tokens for quality.
-//!
-//! Phase 2a is **dequantise-on-read**: `update_and_fetch` returns dense
-//! `(K, V)` arrays so the existing SDPA path (`mlx_lm::utils::
-//! scaled_dot_product_attention`) consumes them unchanged. Throughput
-//! parity with the existing `QuantizedKVCache` is expected; the win
-//! arrives in Phase 3 via the `KeyValueCache::attention` trait method
-//! and the fused Metal kernel.
-//!
-//! Class-name dispatch: returns `"TurboQuantKVCache"` from
-//! `KeyValueCache::class_name`. `is_quantized` reports `false` so the
-//! SDPA wrapper takes its standard dense path (the convention shared with
-//! `QuantizedKVCache` — see commit `4cd27f8` for why).
+//! `TurboQuantKVCache` — TurboQuant Algorithm 2 for keys + affine group-
+//! quant for values, plus a buffer of un-quantised recent tokens. Score
+//! path uses the fused tq_attention_score kernel and skips K dequant;
+//! values dequant on read.
 
 use std::collections::HashMap;
 
 use mlx_rs::error::Exception;
 use mlx_rs::ops::{
     concatenate_axis, dequantize as mlx_dequantize, indexing::Ellipsis, indexing::IndexOp,
-    quantize as mlx_quantize,
+    quantize as mlx_quantize, r#where, repeat_axis, softmax_axis,
 };
 use mlx_rs::{Array, Dtype};
 
@@ -478,7 +467,157 @@ impl KeyValueCache for TurboQuantKVCache {
         }
         m
     }
+
+    /// TurboQuant-specific override that **skips K dequant** on the hot
+    /// path. Routes scores through the fused [`super::tq_score_kernel`]
+    /// for the quant-store portion and a dense matmul for the recent
+    /// buffer; V dequant still happens (unavoidable for softmax-weighted
+    /// average — V is used in only one matmul, the symmetric trade-off
+    /// the paper makes).
+    ///
+    /// Grouped-query attention handling: if `n_heads_q > n_heads_kv`
+    /// (the qwen3 / llama-3.2 case) the cached K/V state is replicated
+    /// across the query-head dimension via `repeat_axis::<f32>(1, n_rep)` before
+    /// the kernel call, matching what `mlx_rs::fast::SDPA` does
+    /// internally. For non-GQA models (n_q == n_kv) the replication is
+    /// a no-op.
+    fn attention(
+        &mut self,
+        queries: &Array,
+        keys: Array,
+        values: Array,
+        scale: f32,
+        mask: Option<&Array>,
+    ) -> Result<Array, Exception> {
+        // 1: append new (K, V) into the buffer (same shape as
+        // update_and_fetch's append phase). The buffer holds dense fp16
+        // tokens until it overflows, then the oldest excess flushes into
+        // the quant store.
+        if self.dtype.is_none() {
+            self.dtype = Some(keys.dtype());
+        }
+        let s = keys.shape()[Self::token_axis(keys.shape()) as usize];
+        self.offset += s;
+        match (self.key_buffer.take(), self.value_buffer.take()) {
+            (None, None) => {
+                self.key_buffer = Some(keys);
+                self.value_buffer = Some(values);
+            }
+            (Some(kb), Some(vb)) => {
+                self.key_buffer = Some(concatenate_axis(&[kb, keys], -2)?);
+                self.value_buffer = Some(concatenate_axis(&[vb, values], -2)?);
+            }
+            _ => unreachable!("buffer halves desynced"),
+        }
+        let buf_len = self.buffer_len();
+        if buf_len > self.cfg.buffer_size {
+            let n_flush = buf_len - self.cfg.buffer_size;
+            self.flush(n_flush)?;
+        }
+
+        let in_dtype = self.dtype.expect("dtype set above");
+
+        // 2: GQA expansion. queries arrive as [B, H_q, n_q, D]; cached
+        // K/V live at H_kv heads. If H_q > H_kv, replicate K/V across
+        // the query-head dimension.
+        let q_shape = queries.shape();
+        if q_shape.len() != 4 {
+            return Err(Exception::custom(format!(
+                "turboquant attention: queries must be 4-D [B,H,S,D], got {q_shape:?}"
+            )));
+        }
+        let n_heads_q = q_shape[1];
+        let n_heads_kv = match (self.quant_keys.as_ref(), self.key_buffer.as_ref()) {
+            (Some(q), _) => q.mse_indices.shape()[1],
+            (None, Some(kb)) => kb.shape()[1],
+            (None, None) => return Err(Exception::custom("turboquant attention: no K state")),
+        };
+        if n_heads_q % n_heads_kv != 0 {
+            return Err(Exception::custom(format!(
+                "turboquant attention: n_heads_q={n_heads_q} not a multiple of n_heads_kv={n_heads_kv}"
+            )));
+        }
+        let n_rep = n_heads_q / n_heads_kv;
+
+        // 3: scores over the quant store via the kernel — no GQA repeat,
+        // no dense materialisation. The kernel reads packed bytes and
+        // computes `h_kv = h_q / n_rep` internally.
+        let q_f32 = queries.as_dtype(Dtype::Float32)?;
+        let mut score_parts: Vec<Array> = Vec::with_capacity(2);
+        if let Some(quant_keys) = self.quant_keys.as_ref() {
+            let s_quant = self
+                .keys_quantizer
+                .attention_score(&q_f32, quant_keys, n_heads_kv)?;
+            score_parts.push(s_quant);
+        }
+
+        // 4: scores over the buffer (dense matmul). The buffer is bounded
+        // at `cfg.buffer_size` (default 128) so the `repeat_axis` here is
+        // cheap regardless of total context length.
+        if let Some(kb) = self.key_buffer.as_ref() {
+            let kb_expanded = if n_rep > 1 {
+                repeat_axis::<f32>(kb.clone(), n_rep, 1)?
+            } else {
+                kb.clone()
+            };
+            let kb_f32 = kb_expanded.as_dtype(Dtype::Float32)?;
+            let kb_t = kb_f32.transpose_axes(&[0, 1, 3, 2])?;
+            let s_buf = q_f32.matmul(&kb_t)?;
+            score_parts.push(s_buf);
+        }
+        let mut scores = match score_parts.len() {
+            0 => return Err(Exception::custom("turboquant attention: no scores")),
+            1 => score_parts.pop().unwrap(),
+            _ => concatenate_axis(&score_parts, -1)?,
+        };
+
+        // 5: scale, mask, softmax.
+        scores = scores.multiply(Array::from_f32(scale))?;
+        if let Some(m) = mask {
+            // `mlx_lm::utils::create_causal_mask` returns a *boolean*
+            // mask (true = attention allowed). Convert to the additive
+            // form softmax expects: `0` on allowed positions, `-inf` on
+            // disallowed. Pre-existing additive masks (fp32 / bf16 with
+            // -inf values) round-trip cleanly through this `where`.
+            let zero = Array::from_f32(0.0);
+            let ninf = Array::from_f32(f32::NEG_INFINITY);
+            let additive = if m.dtype() == Dtype::Bool {
+                r#where(m, zero, ninf)?
+            } else {
+                m.as_dtype(Dtype::Float32)?
+            };
+            scores = scores.add(&additive)?;
+        }
+        let probs = softmax_axis(&scores, -1, true)?;
+        let probs_t = probs.as_dtype(in_dtype)?;
+
+        // 6: assemble V_full (dequant quant-store V + dense buffer V),
+        // replicate across query-head groups, multiply by probs.
+        let v_quant = match self.quant_values.as_ref() {
+            None => None,
+            Some((wq, sc, b)) => Some(mlx_dequantize(
+                wq,
+                sc,
+                b,
+                self.cfg.value_group_size,
+                self.cfg.value_bits,
+            )?),
+        };
+        let v_full = match (v_quant, self.value_buffer.as_ref()) {
+            (None, None) => unreachable!("attention with no V"),
+            (Some(q), None) => q,
+            (None, Some(b)) => b.clone(),
+            (Some(q), Some(b)) => concatenate_axis(&[q, b.clone()], -2)?,
+        };
+        let v_full = if n_rep > 1 {
+            repeat_axis::<f32>(v_full, n_rep, 1)?
+        } else {
+            v_full
+        };
+        probs_t.matmul(&v_full)
+    }
 }
+
 
 /// `Default` is provided only to satisfy the `C: KeyValueCache + Default`
 /// bound used by the qwen3 / llama cache-init fallback path
@@ -632,6 +771,271 @@ mod tests {
             .unwrap();
         assert!(!c.is_trimmable());
         assert_eq!(c.trim(2), 0);
+    }
+
+    /// GQA case (n_heads_q = 4, n_heads_kv = 2). Override `attention` must
+    /// reproduce fp16 SDPA after replicating K/V across query-head groups.
+    /// Catches GQA broadcast bugs in the override.
+    #[test]
+    fn override_buffer_only_matches_fp16_sdpa_gqa() {
+        let d = 64;
+        let n_kv = 2;
+        let n_q = 4;
+        let s_k = 8;
+        let s_q = 8;
+        // Build [1, n_kv, s_k, d] K/V and [1, n_q, s_q, d] Q manually so
+        // we can drive an explicit GQA case (token_block uses H=2).
+        let prng = mlx_rs::random::key(81).unwrap();
+        let k = mlx_rs::random::normal::<f32>(&[1, n_kv, s_k, d], None, None, &prng).unwrap();
+        let prng = mlx_rs::random::key(82).unwrap();
+        let v = mlx_rs::random::normal::<f32>(&[1, n_kv, s_k, d], None, None, &prng).unwrap();
+        let prng = mlx_rs::random::key(83).unwrap();
+        let q = mlx_rs::random::normal::<f32>(&[1, n_q, s_q, d], None, None, &prng).unwrap();
+        let scale = (d as f32).sqrt().recip();
+
+        let mut c = TurboQuantKVCache::new(make_cfg(d, 128)).unwrap();
+        let out_tq = c.attention(&q, k.clone(), v.clone(), scale, None).unwrap();
+        mlx_rs::transforms::eval([&out_tq]).unwrap();
+
+        // Reference: fast SDPA handles GQA internally.
+        let out_ref = mlx_rs::fast::scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            scale,
+            None::<mlx_rs::fast::ScaledDotProductAttentionMask>,
+            None,
+        )
+        .unwrap();
+        mlx_rs::transforms::eval([&out_ref]).unwrap();
+
+        let err = out_tq
+            .subtract(&out_ref)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max(None)
+            .unwrap()
+            .item::<f32>();
+        assert!(
+            err < 1e-3,
+            "override GQA buffer-only vs fp16 SDPA diverged: max abs = {err}"
+        );
+    }
+
+    /// Override with a *boolean* causal mask (the format `mlx_lm::utils::
+    /// create_causal_mask` returns and the qwen3 prefill path passes
+    /// down). The override must internally convert bool → additive
+    /// (0 / -inf) before adding to scores.
+    #[test]
+    fn override_buffer_only_with_bool_mask_matches_fp16_sdpa() {
+        let d = 64;
+        let n_heads = 4;
+        let s = 8;
+        let prng = mlx_rs::random::key(111).unwrap();
+        let k = mlx_rs::random::normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
+        let prng = mlx_rs::random::key(112).unwrap();
+        let v = mlx_rs::random::normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
+        let prng = mlx_rs::random::key(113).unwrap();
+        let q = mlx_rs::random::normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
+        let scale = (d as f32).sqrt().recip();
+
+        // Boolean causal mask via the same op `create_causal_mask` uses:
+        // linds >= rinds (i.e. lower-triangular).
+        let mut bool_data = vec![false; (s * s) as usize];
+        for i in 0..s {
+            for j in 0..=i {
+                bool_data[(i * s + j) as usize] = true;
+            }
+        }
+        let bool_mask =
+            Array::from_slice(&bool_data.iter().map(|&b| b as u8).collect::<Vec<_>>(), &[s, s])
+                .as_dtype(Dtype::Bool)
+                .unwrap();
+
+        let mut c = TurboQuantKVCache::new(make_cfg(d, 128)).unwrap();
+        let out_tq = c.attention(&q, k.clone(), v.clone(), scale, Some(&bool_mask)).unwrap();
+        eval([&out_tq]).unwrap();
+
+        // fp16 SDPA accepts the bool mask directly via Array variant.
+        let out_ref = mlx_rs::fast::scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            scale,
+            Some(mlx_rs::fast::ScaledDotProductAttentionMask::Array(&bool_mask)),
+            None,
+        )
+        .unwrap();
+        eval([&out_ref]).unwrap();
+
+        let err = out_tq
+            .subtract(&out_ref)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max(None)
+            .unwrap()
+            .item::<f32>();
+        assert!(
+            err < 1e-3,
+            "override with bool mask vs fp16 SDPA diverged: max abs = {err}"
+        );
+    }
+
+    /// GQA + causal mask + bf16 dtype — closest possible match to the
+    /// qwen3 prefill path that the parity test exercises.
+    #[test]
+    fn override_buffer_only_gqa_causal_bf16_matches_fp16_sdpa() {
+        let d = 128;
+        let n_kv = 8;
+        let n_q = 16;
+        let s = 32;
+        let prng = mlx_rs::random::key(101).unwrap();
+        let k_f32 = mlx_rs::random::normal::<f32>(&[1, n_kv, s, d], None, None, &prng).unwrap();
+        let prng = mlx_rs::random::key(102).unwrap();
+        let v_f32 = mlx_rs::random::normal::<f32>(&[1, n_kv, s, d], None, None, &prng).unwrap();
+        let prng = mlx_rs::random::key(103).unwrap();
+        let q_f32 = mlx_rs::random::normal::<f32>(&[1, n_q, s, d], None, None, &prng).unwrap();
+        let k = k_f32.as_dtype(Dtype::Bfloat16).unwrap();
+        let v = v_f32.as_dtype(Dtype::Bfloat16).unwrap();
+        let q = q_f32.as_dtype(Dtype::Bfloat16).unwrap();
+        let scale = (d as f32).sqrt().recip();
+
+        let mut mask_data = vec![0.0f32; (s * s) as usize];
+        for i in 0..s {
+            for j in (i + 1)..s {
+                mask_data[(i * s + j) as usize] = f32::NEG_INFINITY;
+            }
+        }
+        let mask = Array::from_slice(&mask_data, &[s, s])
+            .as_dtype(Dtype::Bfloat16)
+            .unwrap();
+
+        let mut c = TurboQuantKVCache::new(make_cfg(d, 128)).unwrap();
+        let out_tq = c.attention(&q, k.clone(), v.clone(), scale, Some(&mask)).unwrap();
+        mlx_rs::transforms::eval([&out_tq]).unwrap();
+
+        let out_ref = mlx_rs::fast::scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            scale,
+            Some(mlx_rs::fast::ScaledDotProductAttentionMask::Array(&mask)),
+            None,
+        )
+        .unwrap();
+        mlx_rs::transforms::eval([&out_ref]).unwrap();
+
+        let err = out_tq
+            .subtract(&out_ref)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max(None)
+            .unwrap()
+            .item::<f32>();
+        // bf16 tolerance: looser than fp32 paths.
+        assert!(
+            err < 5e-2,
+            "override GQA+causal+bf16 vs fp16 SDPA diverged: max abs = {err}"
+        );
+    }
+
+    /// Override with a causal mask (the real prefill path). KL on a
+    /// model is dominated by mask handling — this catches the mask
+    /// shape / additive convention.
+    #[test]
+    fn override_buffer_only_with_causal_mask_matches_fp16_sdpa() {
+        let d = 64;
+        let n_heads = 4;
+        let s = 8;
+        let prng = mlx_rs::random::key(91).unwrap();
+        let k = mlx_rs::random::normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
+        let prng = mlx_rs::random::key(92).unwrap();
+        let v = mlx_rs::random::normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
+        let prng = mlx_rs::random::key(93).unwrap();
+        let q = mlx_rs::random::normal::<f32>(&[1, n_heads, s, d], None, None, &prng).unwrap();
+        let scale = (d as f32).sqrt().recip();
+
+        // Causal mask: [s, s], -inf above diagonal, 0 on/below.
+        let mut mask_data = vec![0.0f32; (s * s) as usize];
+        for i in 0..s {
+            for j in (i + 1)..s {
+                mask_data[(i * s + j) as usize] = f32::NEG_INFINITY;
+            }
+        }
+        let mask = Array::from_slice(&mask_data, &[s, s]);
+
+        let mut c = TurboQuantKVCache::new(make_cfg(d, 128)).unwrap();
+        let out_tq = c.attention(&q, k.clone(), v.clone(), scale, Some(&mask)).unwrap();
+        mlx_rs::transforms::eval([&out_tq]).unwrap();
+
+        let out_ref = mlx_rs::fast::scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            scale,
+            Some(mlx_rs::fast::ScaledDotProductAttentionMask::Array(&mask)),
+            None,
+        )
+        .unwrap();
+        mlx_rs::transforms::eval([&out_ref]).unwrap();
+
+        let err = out_tq
+            .subtract(&out_ref)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max(None)
+            .unwrap()
+            .item::<f32>();
+        assert!(
+            err < 1e-3,
+            "override with causal mask vs fp16 SDPA diverged: max abs = {err}"
+        );
+    }
+
+    /// The override `attention` matches `mlx_rs::fast::scaled_dot_product_attention`
+    /// on a buffer-only case (no flush, no quantisation engaged — the score
+    /// path collapses to a dense matmul). Catches softmax / mask / V matmul
+    /// bugs in isolation from the quantiser math.
+    #[test]
+    fn override_buffer_only_matches_fp16_sdpa() {
+        let d = 64;
+        let mut c = TurboQuantKVCache::new(make_cfg(d, 128)).unwrap();
+        let k = token_block(8, d, 70); // [1, 2, 8, 64]
+        let v = token_block(8, d, 71);
+        let q = token_block(8, d, 72);
+        let scale = (d as f32).sqrt().recip();
+
+        let out_tq = c.attention(&q, k.clone(), v.clone(), scale, None).unwrap();
+        mlx_rs::transforms::eval([&out_tq]).unwrap();
+
+        // Reference: dense SDPA on the same q/k/v.
+        let out_ref = mlx_rs::fast::scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            scale,
+            None::<mlx_rs::fast::ScaledDotProductAttentionMask>,
+            None,
+        )
+        .unwrap();
+        mlx_rs::transforms::eval([&out_ref]).unwrap();
+
+        let err = out_tq
+            .subtract(&out_ref)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max(None)
+            .unwrap()
+            .item::<f32>();
+        assert!(
+            err < 1e-3,
+            "override buffer-only vs fp16 SDPA diverged: max abs = {err}"
+        );
     }
 
     /// State + meta_state round-trip carries the structural shape (no

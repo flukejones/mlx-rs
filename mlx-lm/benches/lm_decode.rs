@@ -45,7 +45,7 @@ use mlx_rs::{
 
 const DECODE_TOKENS: i32 = 100;
 const LONG_PROMPT_LEN: usize = 1024;
-/// Long-context cells (KV-quant / V2 LEAN bandwidth-bound regime).
+/// Long-context cells (KV-quant / V2 LEAN / TurboQuant bandwidth-bound regime).
 const VERY_LONG_PROMPT_LEN: usize = 8192;
 /// Decode-only step count (prefill excluded from timing).
 const DECODE_ONLY_STEPS: i32 = 50;
@@ -597,6 +597,85 @@ fn maybe_bench_qwen3_turboquant(c: &mut Criterion, label: &str, repo_id: &str) {
     group.finish();
 }
 
+/// Like [`maybe_bench_qwen3_turboquant`] but parameterised on K/V bits
+/// and prompt length. Used by Phase 4 cells (long_prompt_8192,
+/// K=4/V=4 paper-neutral config).
+fn maybe_bench_qwen3_turboquant_full(
+    c: &mut Criterion,
+    label: &str,
+    repo_id: &str,
+    key_bits: i32,
+    value_bits: i32,
+    prompt_len: usize,
+) {
+    let Some(dir) = ensure_model(repo_id) else {
+        return;
+    };
+    let mut model = match load_qwen3_model(&dir) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skipping qwen3 {label}: load failed: {e:?}");
+            return;
+        }
+    };
+    let long = synthetic_prompt(prompt_len, 1000);
+    let head_dim = model.head_dim();
+    let num_layers = model.layer_count();
+
+    let make_cache = |n: usize| -> Vec<Option<TurboQuantKVCache>> {
+        (0..n)
+            .map(|i| {
+                let cfg = TurboQuantConfig {
+                    head_dim,
+                    key_bits,
+                    value_bits,
+                    value_group_size: 32,
+                    buffer_size: 128,
+                    seed: 0xC011_5EED + i as u64,
+                };
+                Some(TurboQuantKVCache::new(cfg).expect("TurboQuantKVCache::new failed"))
+            })
+            .collect()
+    };
+
+    {
+        let mut cache = make_cache(num_layers);
+        let mut tokens = Vec::new();
+        let gen = Qwen3Generate::<TurboQuantKVCache>::new(&mut model, &mut cache, 0.0, &long);
+        for (tok, n) in gen.zip(0..WARMUP_TOKENS) {
+            tokens.push(tok.unwrap());
+            if n == 0 {
+                eval(&tokens).unwrap();
+            }
+        }
+        eval(&tokens).unwrap();
+    }
+
+    let mut group = c.benchmark_group(format!("qwen3_decode_{label}"));
+    group.throughput(Throughput::Elements(DECODE_TOKENS as u64));
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+    group.bench_function(
+        BenchmarkId::new("long_prompt", prompt_len as i32),
+        |b| {
+            b.iter(|| {
+                let mut cache = make_cache(num_layers);
+                let mut tokens = Vec::with_capacity(DECODE_TOKENS as usize);
+                let gen =
+                    Qwen3Generate::<TurboQuantKVCache>::new(&mut model, &mut cache, 0.0, &long);
+                for (tok, n) in gen.zip(0..DECODE_TOKENS) {
+                    tokens.push(tok.unwrap());
+                    if n == 0 {
+                        eval(&tokens).unwrap();
+                    }
+                }
+                eval(&tokens).unwrap();
+            });
+        },
+    );
+    group.finish();
+}
+
 /// Mirror of [`maybe_bench_qwen3_turboquant`] for the Llama path.
 fn maybe_bench_llama_turboquant(c: &mut Criterion, label: &str, repo_id: &str) {
     let Some(dir) = ensure_model(repo_id) else {
@@ -942,6 +1021,35 @@ fn bench_decode(c: &mut Criterion) {
         "large_q4_tq_k3v2",
         "mlx-community/Llama-3.2-3B-Instruct-4bit",
     );
+
+    // Phase 4 / C16 cells: longer prompts + K4V4 quality-neutral config.
+    // The 8192-token prompt is where Python TurboQuant claims its 4-8x
+    // speedup over fp16; we want the same measurement on Apple Silicon
+    // through the fused score kernel.
+    maybe_bench_qwen3_turboquant_full(
+        c,
+        "large_bf16_tq_k3v2_8k",
+        "mlx-community/Qwen3-1.7B-bf16",
+        3,
+        2,
+        VERY_LONG_PROMPT_LEN,
+    );
+    maybe_bench_qwen3_turboquant_full(
+        c,
+        "large_bf16_tq_k4v4",
+        "mlx-community/Qwen3-1.7B-bf16",
+        4,
+        4,
+        LONG_PROMPT_LEN,
+    );
+
+    // Qwen3.5 hybrid TurboQuant cells: deferred. The qwen3.5 attention
+    // forward currently consumes `Option<&mut ConcatKeyValueCache>`
+    // (concretely typed) so the `FullAttentionTQ` LayerCache variant
+    // built by `make_caches_with_tq` doesn't flow through end-to-end
+    // yet. Tracked as Phase-4 follow-up; risk register #5.
+    //   maybe_bench_qwen3_5_turboquant(c, "4b_q8_tq_k3v2", ...);
+    //   maybe_bench_qwen3_5_turboquant(c, "9b_q8_tq_k3v2", ...);
 
     // Vision-tower prefill on the chandra-ocr-2-8bit-mlx checkpoint (the only
     // public mlx conversion of chandra). Measures `VisionModel::forward` for

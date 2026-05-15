@@ -8,3 +8,4 @@ pub mod packing;
 pub mod quantizer;
 pub mod rotation;
 pub mod searchsorted_kernel;
+pub mod tq_score_kernel;

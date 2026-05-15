@@ -27,7 +27,7 @@ use mlx_rs::{Array, Dtype};
 
 /// Effective on-disk bits used to pack a logical bit-width. 1/2/4/5/6/7/8 are
 /// stored at their natural width; 3 rounds up to 4 (matches 0xSero).
-fn effective_bits(bits: i32) -> i32 {
+pub fn effective_bits(bits: i32) -> i32 {
     match bits {
         1 => 1,
         2 => 2,
@@ -91,7 +91,10 @@ pub fn pack_indices(indices: &Array, bits: i32) -> Result<Array, Exception> {
     let scaled = grouped_u8.multiply(&weights)?;
 
     // Sum along the inner vpb axis → packed bytes `[..., d_packed]`.
-    scaled.sum_axis(-1, false)
+    // `sum_axis` widens uint8 to uint32 to avoid overflow; the values fit
+    // in uint8 by construction (each byte sums at most 8 bit-shifted
+    // values that all together fit in 8 bits), so cast back.
+    scaled.sum_axis(-1, false)?.as_dtype(Dtype::Uint8)
 }
 
 /// Inverse of [`pack_indices`]. Returns indices of shape `[..., d]`
