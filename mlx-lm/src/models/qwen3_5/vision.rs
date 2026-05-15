@@ -17,7 +17,7 @@
 use mlx_rs::{
     builder::Builder,
     error::Exception,
-    fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask},
+    fast::{scaled_dot_product_attention_pad_to_fused, ScaledDotProductAttentionMask},
     macros::{ModuleParameters, Quantizable},
     module::Module,
     nn,
@@ -323,7 +323,10 @@ impl VisionAttention {
 
         let mut outs = Vec::with_capacity(q_chunks.len());
         for ((qc, kc), vc) in q_chunks.iter().zip(k_chunks.iter()).zip(v_chunks.iter()) {
-            let out = scaled_dot_product_attention(
+            // head_dim = 72 for chandra ViT falls outside MLX's fused SDPA
+            // set ({64, 80, 128} for prefill). The pad-to-fused wrapper pads
+            // up to 80, runs the fused kernel, slices back to 72.
+            let out = scaled_dot_product_attention_pad_to_fused(
                 qc.clone(),
                 kc.clone(),
                 vc.clone(),
