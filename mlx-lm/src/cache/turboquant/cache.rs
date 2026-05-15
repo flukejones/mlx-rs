@@ -128,6 +128,12 @@ impl TurboQuantKVCache {
         &self.cfg
     }
 
+    /// Construct from a head_dim with all other config defaults — useful
+    /// when wiring with helpers that need a `From<head_dim>` style call.
+    pub fn with_head_dim(head_dim: i32) -> Result<Self, Error> {
+        Self::new(TurboQuantConfig::new(head_dim, 0))
+    }
+
     /// Reconstruct from previously-persisted `state` + `meta_state`.
     ///
     /// `state` ordering matches [`KeyValueCache::state`]: 11 arrays —
@@ -471,6 +477,22 @@ impl KeyValueCache for TurboQuantKVCache {
             m.insert("dtype".into(), format!("{dt:?}"));
         }
         m
+    }
+}
+
+/// `Default` is provided only to satisfy the `C: KeyValueCache + Default`
+/// bound used by the qwen3 / llama cache-init fallback path
+/// (`Qwen3Model::forward`: `if cache.is_empty() { fill with C::default() }`).
+///
+/// **It returns a placeholder cache with `head_dim = 128, seed = 0` — the
+/// caller is expected to pre-populate `Vec<Option<TurboQuantKVCache>>` with
+/// the correct config via `make_turboquant_kv_cache(...)` before passing
+/// into `Generate::new`.** If a caller passes an empty `Vec::new()` and lets
+/// the fallback engage, results will be wrong (every layer shares the same
+/// Π, and the head_dim is hard-coded).
+impl Default for TurboQuantKVCache {
+    fn default() -> Self {
+        Self::with_head_dim(128).expect("TurboQuantKVCache::default placeholder")
     }
 }
 

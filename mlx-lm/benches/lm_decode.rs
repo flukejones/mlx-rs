@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::time::Instant;
+use mlx_lm::cache::turboquant::cache::{TurboQuantConfig, TurboQuantKVCache};
 use mlx_lm::cache::{ConcatKeyValueCache, QuantizedKVCache};
 use mlx_lm::models::{
     llama::{load_llama_model, Generate as LlamaGenerate, Model as LlamaModel},
@@ -529,6 +530,138 @@ fn maybe_bench_llama_kv_quant(c: &mut Criterion, label: &str, repo_id: &str, kv_
     group.finish();
 }
 
+/// Bench a qwen3 cell with a `TurboQuantKVCache` at the default K=3 V=2
+/// config (long_prompt only). Phase 2a dequant-on-read; the Phase 3
+/// kernel will replace the score path without changing this wiring.
+fn maybe_bench_qwen3_turboquant(c: &mut Criterion, label: &str, repo_id: &str) {
+    let Some(dir) = ensure_model(repo_id) else {
+        return;
+    };
+    let mut model = match load_qwen3_model(&dir) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skipping qwen3 {label}: load failed: {e:?}");
+            return;
+        }
+    };
+    let long = synthetic_prompt(LONG_PROMPT_LEN, 1000);
+    let head_dim = model.head_dim();
+    let num_layers = model.layer_count();
+
+    let make_cache = |n: usize| -> Vec<Option<TurboQuantKVCache>> {
+        (0..n)
+            .map(|i| {
+                Some(
+                    TurboQuantKVCache::new(TurboQuantConfig::new(head_dim, 0xC011_5EED + i as u64))
+                        .expect("TurboQuantKVCache::new failed"),
+                )
+            })
+            .collect()
+    };
+
+    {
+        let mut cache = make_cache(num_layers);
+        let mut tokens = Vec::new();
+        let gen = Qwen3Generate::<TurboQuantKVCache>::new(&mut model, &mut cache, 0.0, &long);
+        for (tok, n) in gen.zip(0..WARMUP_TOKENS) {
+            tokens.push(tok.unwrap());
+            if n == 0 {
+                eval(&tokens).unwrap();
+            }
+        }
+        eval(&tokens).unwrap();
+    }
+
+    let mut group = c.benchmark_group(format!("qwen3_decode_{label}"));
+    group.throughput(Throughput::Elements(DECODE_TOKENS as u64));
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+    group.bench_function(
+        BenchmarkId::new("long_prompt", LONG_PROMPT_LEN as i32),
+        |b| {
+            b.iter(|| {
+                let mut cache = make_cache(num_layers);
+                let mut tokens = Vec::with_capacity(DECODE_TOKENS as usize);
+                let gen =
+                    Qwen3Generate::<TurboQuantKVCache>::new(&mut model, &mut cache, 0.0, &long);
+                for (tok, n) in gen.zip(0..DECODE_TOKENS) {
+                    tokens.push(tok.unwrap());
+                    if n == 0 {
+                        eval(&tokens).unwrap();
+                    }
+                }
+                eval(&tokens).unwrap();
+            });
+        },
+    );
+    group.finish();
+}
+
+/// Mirror of [`maybe_bench_qwen3_turboquant`] for the Llama path.
+fn maybe_bench_llama_turboquant(c: &mut Criterion, label: &str, repo_id: &str) {
+    let Some(dir) = ensure_model(repo_id) else {
+        return;
+    };
+    let mut model = match load_llama_model(&dir) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skipping llama {label}: load failed: {e:?}");
+            return;
+        }
+    };
+    let long = synthetic_prompt(LONG_PROMPT_LEN, 1000);
+    let head_dim = model.head_dim();
+    let num_layers = model.layer_count();
+
+    let make_cache = |n: usize| -> Vec<Option<TurboQuantKVCache>> {
+        (0..n)
+            .map(|i| {
+                Some(
+                    TurboQuantKVCache::new(TurboQuantConfig::new(head_dim, 0xC011_5EED + i as u64))
+                        .expect("TurboQuantKVCache::new failed"),
+                )
+            })
+            .collect()
+    };
+
+    {
+        let mut cache = make_cache(num_layers);
+        let mut tokens = Vec::new();
+        let gen = LlamaGenerate::<TurboQuantKVCache>::new(&mut model, &mut cache, 0.0, &long);
+        for (tok, n) in gen.zip(0..WARMUP_TOKENS) {
+            tokens.push(tok.unwrap());
+            if n == 0 {
+                eval(&tokens).unwrap();
+            }
+        }
+        eval(&tokens).unwrap();
+    }
+
+    let mut group = c.benchmark_group(format!("llama_decode_{label}"));
+    group.throughput(Throughput::Elements(DECODE_TOKENS as u64));
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+    group.bench_function(
+        BenchmarkId::new("long_prompt", LONG_PROMPT_LEN as i32),
+        |b| {
+            b.iter(|| {
+                let mut cache = make_cache(num_layers);
+                let mut tokens = Vec::with_capacity(DECODE_TOKENS as usize);
+                let gen =
+                    LlamaGenerate::<TurboQuantKVCache>::new(&mut model, &mut cache, 0.0, &long);
+                for (tok, n) in gen.zip(0..DECODE_TOKENS) {
+                    tokens.push(tok.unwrap());
+                    if n == 0 {
+                        eval(&tokens).unwrap();
+                    }
+                }
+                eval(&tokens).unwrap();
+            });
+        },
+    );
+    group.finish();
+}
+
 /// Chat-rendered "Hello" short prompt for the Qwen3.5 tokenizer.
 const QWEN3_5_SHORT_PROMPT: &[i32] = &[
     248045, 846, 198, 9419, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271,
@@ -783,6 +916,31 @@ fn bench_decode(c: &mut Criterion) {
         "large_q4_kv4",
         "mlx-community/Llama-3.2-3B-Instruct-4bit",
         4,
+    );
+
+    // TurboQuant KV-quant cells (dequant-on-read Phase 2a path).
+    // K=3 / V=2 by default. long_prompt only — KV quant only moves the
+    // needle at long context. Phase 3 wires the fused-score kernel; cell
+    // names stay the same so before/after comparison is direct.
+    maybe_bench_qwen3_turboquant(
+        c,
+        "large_bf16_tq_k3v2",
+        "mlx-community/Qwen3-1.7B-bf16",
+    );
+    maybe_bench_qwen3_turboquant(
+        c,
+        "large_q4_tq_k3v2",
+        "mlx-community/Qwen3-1.7B-4bit",
+    );
+    maybe_bench_llama_turboquant(
+        c,
+        "large_bf16_tq_k3v2",
+        "mlx-community/Llama-3.2-3B-Instruct-bf16",
+    );
+    maybe_bench_llama_turboquant(
+        c,
+        "large_q4_tq_k3v2",
+        "mlx-community/Llama-3.2-3B-Instruct-4bit",
     );
 
     // Vision-tower prefill on the chandra-ocr-2-8bit-mlx checkpoint (the only

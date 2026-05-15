@@ -468,6 +468,12 @@ impl Model {
     pub fn layer_count(&self) -> usize {
         self.args.num_hidden_layers as usize
     }
+
+    /// Per-head dimension. Required by quantised KV caches whose state
+    /// arrays are shaped `[B, H, S, D]`.
+    pub fn head_dim(&self) -> i32 {
+        self.args.head_dim
+    }
 }
 
 impl<C> Module<ModelInput<'_, C>> for Model
