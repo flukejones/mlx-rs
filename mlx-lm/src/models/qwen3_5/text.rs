@@ -8,14 +8,14 @@ use mlx_rs::{
     macros::{ModuleParameters, Quantizable},
     module::Module,
     nn,
-    ops::{arange, broadcast_to, reshape, sigmoid, split, transpose_axes},
+    ops::{arange, broadcast_to, reshape, split, transpose_axes},
     quantization::MaybeQuantized,
     Array,
 };
 
 use super::config::TextConfig;
 use super::rope::{apply_multimodal_rotary_pos_emb, MultimodalRope};
-use crate::activations::swiglu;
+use crate::activations::{attention_gate, swiglu};
 use crate::cache::{ConcatKeyValueCache, KeyValueCache};
 use crate::utils::{create_attention_mask, AttentionMask};
 
@@ -264,7 +264,7 @@ impl Attention {
         let output = transpose_axes(&output, &[0, 2, 1, 3])?;
         let output = reshape(&output, &[b, l, -1])?;
 
-        let gated = output.multiply(&sigmoid(&gate)?)?;
+        let gated = attention_gate(&output, &gate)?;
         self.o_proj.forward(&gated)
     }
 
