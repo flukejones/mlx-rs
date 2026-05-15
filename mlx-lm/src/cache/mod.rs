@@ -1084,6 +1084,30 @@ pub fn make_prompt_cache(num_layers: usize, _max_kv_size: Option<i32>) -> Vec<KV
     (0..num_layers).map(|_| KVCache::new()).collect()
 }
 
+/// Build a TurboQuant cache for a decoder-only model: one
+/// [`turboquant::cache::TurboQuantKVCache`] per layer, each with an
+/// independently-seeded rotation so layers don't share Π / S. Per-layer
+/// seed = `base_seed + layer_idx`.
+///
+/// Use when memory or context-length is the bottleneck and the existing
+/// `make_prompt_cache` / `QuantizedKVCache` paths don't deliver enough
+/// reduction. For hybrid models (qwen3.5) call that model's own
+/// `make_caches_with_tq` factory instead.
+pub fn make_turboquant_kv_cache(
+    num_layers: usize,
+    head_dim: i32,
+    base_seed: u64,
+) -> Result<Vec<turboquant::cache::TurboQuantKVCache>, Error> {
+    (0..num_layers)
+        .map(|i| {
+            turboquant::cache::TurboQuantKVCache::new(turboquant::cache::TurboQuantConfig::new(
+                head_dim,
+                base_seed.wrapping_add(i as u64),
+            ))
+        })
+        .collect()
+}
+
 /// Return `true` iff every cache in the slice supports `trim` with a
 /// non-zero argument.
 pub fn can_trim_prompt_cache<C: KeyValueCache>(caches: &[C]) -> bool {
@@ -1148,12 +1172,17 @@ pub fn save_prompt_cache<C: KeyValueCache>(
 
 /// One layer's worth of loaded prompt-cache state. Caller dispatches on the
 /// variant to recover the original cache type.
-#[derive(Debug, Clone)]
+///
+/// `TurboQuant` is boxed because `TurboQuantKVCache` is larger than the
+/// other variants — `clippy::large_enum_variant` would complain otherwise.
+#[derive(Debug)]
 pub enum LoadedCache {
     /// `class_name == "KVCache"`.
     Plain(KVCache),
     /// `class_name == "QuantizedKVCache"`.
     Quantized(QuantizedKVCache),
+    /// `class_name == "TurboQuantKVCache"`.
+    TurboQuant(Box<turboquant::cache::TurboQuantKVCache>),
 }
 
 impl LoadedCache {
@@ -1162,6 +1191,7 @@ impl LoadedCache {
         match self {
             LoadedCache::Plain(_) => "KVCache",
             LoadedCache::Quantized(_) => "QuantizedKVCache",
+            LoadedCache::TurboQuant(_) => "TurboQuantKVCache",
         }
     }
 }
@@ -1213,6 +1243,9 @@ pub fn load_prompt_cache(
             "QuantizedKVCache" => {
                 LoadedCache::Quantized(QuantizedKVCache::from_state(state, &layer_meta)?)
             }
+            "TurboQuantKVCache" => LoadedCache::TurboQuant(Box::new(
+                turboquant::cache::TurboQuantKVCache::from_state(state, &layer_meta)?,
+            )),
             other => {
                 return Err(Error::Other(
                     format!("unsupported prompt-cache class {other}").into(),
@@ -1237,6 +1270,20 @@ fn state_slot_names(class_name: &str) -> &'static [&'static str] {
             "values_wq",
             "values_scales",
             "values_biases",
+        ],
+        "TurboQuantKVCache" => &[
+            // Order matches `TurboQuantKVCache::state` / `from_state`.
+            "pi",
+            "s",
+            "key_mse_indices",
+            "key_qjl_signs",
+            "key_residual_norms",
+            "key_norms",
+            "value_wq",
+            "value_scales",
+            "value_biases",
+            "key_buffer",
+            "value_buffer",
         ],
         _ => &[],
     }
@@ -1572,6 +1619,49 @@ mod tests {
             .unwrap();
         assert_eq!(cache.trim(2), 2);
         assert_eq!(cache.offset(), 3);
+    }
+
+    #[test]
+    fn make_turboquant_kv_cache_returns_per_layer() {
+        let caches = make_turboquant_kv_cache(3, 64, 42).unwrap();
+        assert_eq!(caches.len(), 3);
+        for c in &caches {
+            assert_eq!(c.offset(), 0);
+            assert_eq!(c.class_name(), "TurboQuantKVCache");
+        }
+    }
+
+    #[test]
+    fn prompt_cache_turboquant_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tq_cache.safetensors");
+
+        let mut caches = make_turboquant_kv_cache(2, 64, 17).unwrap();
+        // Push enough tokens to trigger a flush so the quant store is
+        // non-empty on disk. cfg.buffer_size defaults to 128, so push 130.
+        let prng = mlx_rs::random::key(9).unwrap();
+        let k = mlx_rs::random::normal::<f32>(&[1, 2, 130, 64], None, None, &prng).unwrap();
+        let v = mlx_rs::random::normal::<f32>(&[1, 2, 130, 64], None, None, &prng).unwrap();
+        caches[0].update_and_fetch(k.clone(), v.clone()).unwrap();
+        caches[1].update_and_fetch(k, v).unwrap();
+
+        save_prompt_cache(&path, &caches, None).unwrap();
+
+        let (loaded, _) = load_prompt_cache(&path).unwrap();
+        assert_eq!(loaded.len(), 2);
+        match &loaded[0] {
+            LoadedCache::TurboQuant(c) => {
+                assert_eq!(c.offset(), 130);
+                assert_eq!(c.bits(), Some(3));
+                assert_eq!(c.group_size(), Some(32));
+                assert_eq!(c.config().head_dim, 64);
+                assert_eq!(c.config().seed, 17);
+            }
+            other => panic!(
+                "expected TurboQuant variant, got {}",
+                other.class_name()
+            ),
+        }
     }
 
     #[test]

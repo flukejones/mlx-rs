@@ -37,6 +37,7 @@ const NORM_EPS: f32 = 1e-10;
 /// One TurboQuant-MSE quantizer instance, scoped to a fixed `(d, bits)` and
 /// rotation seed. The rotation matrix, codebook, and kernel handle are all
 /// cached for the lifetime of the cache layer.
+#[derive(Debug)]
 pub struct TurboQuantMSE {
     d: i32,
     bits: i32,
@@ -48,6 +49,7 @@ pub struct TurboQuantMSE {
 }
 
 /// Output of [`TurboQuantMSE::quantize`].
+#[derive(Debug)]
 pub struct MSEQuantized {
     /// Bit-packed indices, shape `[..., d_packed]`, dtype `uint8`.
     pub packed_indices: Array,
@@ -183,6 +185,7 @@ impl TurboQuantMSE {
 // -------- Algorithm 2: inner-product quantizer (used for keys) --------
 
 /// Output of [`TurboQuantProd::quantize`].
+#[derive(Debug)]
 pub struct ProdQuantized {
     /// MSE-stage packed indices at `(bits - 1)` bits, shape
     /// `[..., d_packed_mse]`.
@@ -206,6 +209,7 @@ pub struct ProdQuantized {
 /// materialising the dequantised key — the only path that turns
 /// TurboQuant into a *throughput* win (vs the affine `QuantizedKVCache`,
 /// which always dequantises on read).
+#[derive(Debug)]
 pub struct TurboQuantProd {
     d: i32,
     bits: i32,

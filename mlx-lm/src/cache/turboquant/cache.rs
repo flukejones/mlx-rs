@@ -27,6 +27,29 @@ use super::quantizer::{ProdQuantized, TurboQuantProd};
 use crate::cache::KeyValueCache;
 use crate::error::Error;
 
+fn parse_meta_i32(meta: &HashMap<String, String>, key: &str) -> Result<i32, Error> {
+    meta.get(key)
+        .ok_or_else(|| Error::Other(format!("missing meta key {key:?}").into()))?
+        .parse::<i32>()
+        .map_err(|e| Error::Other(format!("meta {key:?} parse: {e}").into()))
+}
+
+fn parse_meta_u64(meta: &HashMap<String, String>, key: &str) -> Result<u64, Error> {
+    meta.get(key)
+        .ok_or_else(|| Error::Other(format!("missing meta key {key:?}").into()))?
+        .parse::<u64>()
+        .map_err(|e| Error::Other(format!("meta {key:?} parse: {e}").into()))
+}
+
+fn parse_dtype(s: &str) -> Option<Dtype> {
+    match s {
+        "Float32" => Some(Dtype::Float32),
+        "Float16" => Some(Dtype::Float16),
+        "Bfloat16" => Some(Dtype::Bfloat16),
+        _ => None,
+    }
+}
+
 /// Default TurboQuant configuration matching the 0xSero defaults:
 /// 3-bit keys, 2-bit values, group_size 32 for the value affine quant,
 /// 128 recent un-quantised tokens.
@@ -66,6 +89,7 @@ impl TurboQuantConfig {
 /// `concat(dequant(quant_store), buffer)` along the token axis.
 /// New tokens land in `buffer`; once `buffer.len() > buffer_size`,
 /// the oldest excess rows are flushed into the quantised store.
+#[derive(Debug)]
 pub struct TurboQuantKVCache {
     cfg: TurboQuantConfig,
     keys_quantizer: TurboQuantProd,
@@ -102,6 +126,86 @@ impl TurboQuantKVCache {
     /// Returns the configured options.
     pub fn config(&self) -> &TurboQuantConfig {
         &self.cfg
+    }
+
+    /// Reconstruct from previously-persisted `state` + `meta_state`.
+    ///
+    /// `state` ordering matches [`KeyValueCache::state`]: 11 arrays —
+    /// `[Π, S, k_mse, k_signs, k_res_norms, k_norms, v_wq, v_scales,
+    /// v_biases, key_buffer, value_buffer]`. Sub-stores recorded with
+    /// zero-shape arrays (because nothing had been flushed at save time)
+    /// reconstruct as empty `Option<…>`s.
+    pub fn from_state(
+        mut state: Vec<Array>,
+        meta: &HashMap<String, String>,
+    ) -> Result<Self, Error> {
+        if state.len() != 11 {
+            return Err(Error::Other(
+                format!(
+                    "TurboQuantKVCache::from_state expected 11 arrays, got {}",
+                    state.len()
+                )
+                .into(),
+            ));
+        }
+        let value_buffer_arr = state.pop().unwrap();
+        let key_buffer_arr = state.pop().unwrap();
+        let v_b = state.pop().unwrap();
+        let v_s = state.pop().unwrap();
+        let v_wq = state.pop().unwrap();
+        let k_norms = state.pop().unwrap();
+        let k_res_norms = state.pop().unwrap();
+        let k_signs = state.pop().unwrap();
+        let k_mse = state.pop().unwrap();
+        let _s_matrix = state.pop().unwrap(); // S is rebuilt from seed; serialised copy is informational
+        let _pi_matrix = state.pop().unwrap();
+
+        let cfg = TurboQuantConfig {
+            head_dim: parse_meta_i32(meta, "head_dim")?,
+            key_bits: parse_meta_i32(meta, "key_bits")?,
+            value_bits: parse_meta_i32(meta, "value_bits")?,
+            value_group_size: parse_meta_i32(meta, "value_group_size")?,
+            buffer_size: parse_meta_i32(meta, "buffer_size")?,
+            seed: parse_meta_u64(meta, "seed")?,
+        };
+        let offset = parse_meta_i32(meta, "offset")?;
+
+        // Rebuild the keys_quantizer fresh from seed — produces the same
+        // Π/S as save-time.
+        let keys_quantizer = TurboQuantProd::new(cfg.head_dim, cfg.key_bits, cfg.seed)?;
+
+        let quant_keys = if k_mse.shape().iter().product::<i32>() > 0 {
+            Some(ProdQuantized {
+                mse_indices: k_mse,
+                qjl_signs: k_signs,
+                residual_norms: k_res_norms,
+                norms: k_norms,
+            })
+        } else {
+            None
+        };
+        let quant_values = if v_wq.shape().iter().product::<i32>() > 0 {
+            Some((v_wq, v_s, v_b))
+        } else {
+            None
+        };
+        let key_buffer = (key_buffer_arr.shape().iter().product::<i32>() > 0)
+            .then_some(key_buffer_arr);
+        let value_buffer = (value_buffer_arr.shape().iter().product::<i32>() > 0)
+            .then_some(value_buffer_arr);
+
+        let dtype = meta.get("dtype").and_then(|s| parse_dtype(s));
+
+        Ok(Self {
+            cfg,
+            keys_quantizer,
+            quant_keys,
+            quant_values,
+            key_buffer,
+            value_buffer,
+            offset,
+            dtype,
+        })
     }
 
     fn token_axis(shape: &[i32]) -> i32 {
