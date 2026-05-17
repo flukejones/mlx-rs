@@ -145,18 +145,17 @@ where
 
     fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
         let nn::RopeInput { x, offset } = input.into();
-        let shape = x.shape();
-        let x = x.reshape(&[-1, x.dim(-2), x.dim(-1)])?;
-        let x = mlx_rs::fast::rope(
-            x,
+        // Pass 4-D `[B, N, T, D]` directly; old reshape zeroed all but
+        // head-0 on decode (T=1).
+        mlx_rs::fast::rope(
+            x.clone(),
             self.dimensions,
             self.traditional,
             None::<f32>,
             self.scale,
             offset,
             &self.freqs,
-        )?;
-        x.reshape(shape)
+        )
     }
 
     fn training_mode(&mut self, _mode: bool) {}

@@ -302,6 +302,19 @@ impl Array {
         <() as Guarded>::try_from_op(|_| unsafe { mlx_sys::mlx_array_eval(self.as_ptr()) })
     }
 
+    /// Block this thread until this array's backing buffer is ready.
+    ///
+    /// Unlike [`Array::eval`], this does not traverse the lazy graph — it
+    /// only waits for work that has already been scheduled for this array.
+    pub fn wait(&self) -> crate::error::Result<()> {
+        <() as Guarded>::try_from_op(|_| unsafe { mlx_sys::_mlx_array_wait(self.as_ptr()) })
+    }
+
+    /// Returns `true` if this array's backing buffer is ready without blocking.
+    pub fn is_available(&self) -> crate::error::Result<bool> {
+        bool::try_from_op(|res| unsafe { mlx_sys::_mlx_array_is_available(res, self.as_ptr()) })
+    }
+
     /// Access the value of a scalar array.
     /// If `T` does not match the array's `dtype` this will convert the type first.
     ///
@@ -1076,5 +1089,15 @@ mod tests {
         assert_eq!(array.item::<u8>(), 1);
 
         assert_eq!(array.as_slice::<f32>(), &[1.0]);
+    }
+
+    #[test]
+    fn wait_then_is_available_after_eval() {
+        let a = Array::from_slice(&[1.0_f32, 2.0, 3.0], &[3]);
+        let b = Array::from_slice(&[4.0_f32, 5.0, 6.0], &[3]);
+        let c = crate::ops::add(&a, &b).unwrap();
+        c.eval().unwrap();
+        c.wait().unwrap();
+        assert!(c.is_available().unwrap());
     }
 }

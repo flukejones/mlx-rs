@@ -9,10 +9,10 @@ use mlx_rs::{
     categorical,
     error::Exception,
     macros::{ModuleParameters, Quantizable},
-    module::{Module, ModuleParametersExt},
+    module::{Module, ModuleParameters},
     nn,
     ops::indexing::{IndexOp, NewAxis},
-    quantization::MaybeQuantized,
+    quantization::{MaybeQuantized, Quantizable as _},
     Array,
 };
 use serde::Deserialize;
@@ -22,6 +22,7 @@ use tokenizers::Tokenizer;
 use crate::{
     cache::KeyValueCache,
     error::Error,
+    quantization::{resolve_quantization, QuantizationConfig},
     utils::{
         create_attention_mask,
         rope::{initialize_rope, FloatOrString, RopeVariant},
@@ -44,6 +45,10 @@ pub struct ModelArgs {
     pub head_dim: i32,
     pub tie_word_embeddings: bool,
     pub rope_scaling: Option<HashMap<String, FloatOrString>>,
+    #[serde(default)]
+    pub quantization: Option<QuantizationConfig>,
+    #[serde(default)]
+    pub quantization_config: Option<QuantizationConfig>,
 }
 
 #[derive(Debug, Clone, ModuleParameters, Quantizable)]
@@ -133,7 +138,7 @@ pub struct AttentionInput<'a, C> {
 
 impl<C> Module<AttentionInput<'_, C>> for Attention
 where
-    C: KeyValueCache,
+    C: KeyValueCache + Default,
 {
     type Output = Array;
 
@@ -301,7 +306,7 @@ impl TransformerBlock {
 
 impl<C> Module<AttentionInput<'_, C>> for TransformerBlock
 where
-    C: KeyValueCache,
+    C: KeyValueCache + Default,
 {
     type Output = Array;
 
@@ -382,7 +387,7 @@ pub struct ModelInput<'a, C> {
 
 impl<C> Module<ModelInput<'_, C>> for Qwen3Model
 where
-    C: KeyValueCache,
+    C: KeyValueCache + Default,
 {
     type Output = Array;
 
@@ -409,7 +414,7 @@ where
         };
 
         if cache.is_empty() {
-            *cache = (0..self.layers.len()).map(|_| None).collect();
+            *cache = (0..self.layers.len()).map(|_| Some(C::default())).collect();
         }
 
         for (layer, c) in self.layers.iter_mut().zip(cache.iter_mut()) {
@@ -473,7 +478,7 @@ impl Model {
 
 impl<C> Module<ModelInput<'_, C>> for Model
 where
-    C: KeyValueCache,
+    C: KeyValueCache + Default,
 {
     type Output = Array;
 
@@ -521,18 +526,53 @@ pub struct WeightMap {
 pub fn load_qwen3_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
     let model_dir = model_dir.as_ref();
     let model_args = get_qwen3_model_args(model_dir)?;
+    let quant =
+        resolve_quantization(&model_args.quantization, &model_args.quantization_config).cloned();
     let mut model = Model::new(model_args)?;
-
-    let weights_index = model_dir.join("model.safetensors.index.json");
-    let json = std::fs::read_to_string(weights_index)?;
-    let weight_map: WeightMap = serde_json::from_str(&json)?;
-
-    let weight_files: HashSet<&String> = weight_map.weight_map.values().collect();
-
-    for weight_file in weight_files {
-        let weights_filename = model_dir.join(weight_file);
-        model.load_safetensors(weights_filename)?;
+    if let Some(q) = quant {
+        model = model.try_into_quantized(q.group_size, q.bits)?;
     }
+
+    let mut raw: HashMap<String, Array> = HashMap::new();
+    let weights_index = model_dir.join("model.safetensors.index.json");
+    if weights_index.exists() {
+        let json = std::fs::read_to_string(weights_index)?;
+        let weight_map: WeightMap = serde_json::from_str(&json)?;
+        let weight_files: HashSet<&String> = weight_map.weight_map.values().collect();
+        for weight_file in weight_files {
+            let path = model_dir.join(weight_file);
+            for (k, v) in Array::load_safetensors(&path).map_err(Error::LoadWeights)? {
+                raw.insert(k, v);
+            }
+        }
+    } else {
+        let path = model_dir.join("model.safetensors");
+        for (k, v) in Array::load_safetensors(&path).map_err(Error::LoadWeights)? {
+            raw.insert(k, v);
+        }
+    }
+
+    // QuantizedLinear wraps weight in `inner: Linear`; redirect
+    // `<prefix>.weight` → `<prefix>.inner.weight` for keys with a `.scales` sibling.
+    let quantised_prefixes: HashSet<String> = raw
+        .keys()
+        .filter_map(|k| k.strip_suffix(".scales").map(|p| p.to_string()))
+        .collect();
+
+    let mut params = model.parameters_mut().flatten();
+    for (k, v) in raw {
+        let key = match k.strip_suffix(".weight") {
+            Some(prefix) if quantised_prefixes.contains(prefix) => {
+                format!("{prefix}.inner.weight")
+            }
+            _ => k,
+        };
+        if let Some(slot) = params.get_mut(&*key) {
+            **slot = v;
+        }
+    }
+    drop(params);
+    mlx_rs::transforms::eval_params(model.parameters()).map_err(Error::Exception)?;
 
     Ok(model)
 }
@@ -556,7 +596,7 @@ pub struct Generate<'a, C> {
 
 impl<'a, C> Generate<'a, C>
 where
-    C: KeyValueCache,
+    C: KeyValueCache + Default,
 {
     pub fn new(
         model: &'a mut Model,
@@ -589,7 +629,7 @@ macro_rules! tri {
 
 impl<'a, C> Iterator for Generate<'a, C>
 where
-    C: KeyValueCache,
+    C: KeyValueCache + Default,
 {
     type Item = Result<Array, Exception>;
 
@@ -615,7 +655,8 @@ where
                     cache: self.cache,
                 };
                 let logits = tri!(self.model.forward(input));
-                let y = tri!(sample(&logits, self.temp));
+                // Slice last-position logits; sample wants rank-2 input.
+                let y = tri!(sample(&logits.index((.., -1, ..)), self.temp));
 
                 self.state = GenerateState::Decode { y: y.clone() };
 
@@ -628,6 +669,7 @@ where
 #[cfg(test)]
 mod tests {
     use mlx_rs::{
+        module::Module,
         ops::indexing::{IndexOp, NewAxis},
         transforms::eval,
         Array,
@@ -644,6 +686,28 @@ mod tests {
     #[ignore = "requires local model files"]
     fn test_load_qwen3_model() {
         let _model = super::load_qwen3_model(CACHED_TEST_MODEL_DIR).unwrap();
+    }
+
+    const CACHED_QUANT_TEST_MODEL_DIR: &str = "../cache/Qwen3-1.7B-MLX-8bit";
+
+    /// Regression guard for the quantised-checkpoint loader path: without
+    /// `try_into_quantized` before `load_safetensors`, the packed-uint32
+    /// weights overwrite the unquantised `Linear.weight` slot and the first
+    /// forward fires `[rms_norm] weight has K elements but x's last dim is D`.
+    #[test]
+    #[ignore = "requires local quantised model files"]
+    fn quantized_qwen3_model_loads_and_forwards() {
+        let mut model = super::load_qwen3_model(CACHED_QUANT_TEST_MODEL_DIR).unwrap();
+        let prompt = Array::from_slice(&[1i32, 2, 3, 4], &[1, 4]);
+        let mut cache: Vec<Option<ConcatKeyValueCache>> = Vec::new();
+        let input = super::ModelInput {
+            inputs: &prompt,
+            mask: None,
+            cache: &mut cache,
+        };
+        let logits = Module::forward(&mut model, input).unwrap();
+        eval([&logits]).unwrap();
+        assert_eq!(logits.shape()[2], model.args.vocab_size);
     }
 
     #[test]

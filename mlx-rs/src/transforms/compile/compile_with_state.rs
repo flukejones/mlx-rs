@@ -32,6 +32,12 @@ where
     U: Updatable,
 {
     let shapeless = shapeless.into().unwrap_or(false);
+    // BUG: rebuilds CompiledState each call, defeating the cache.
+    // Fix needs `type Args<'a>` GAT on CallMutWithState so the
+    // hoisted `compiled` accepts varying borrow lifetimes (see how
+    // CallMut in compile.rs does it). Trait-shape refactor; out of
+    // scope here. No production caller uses compile_with_state on
+    // a hot path, so impact is currently zero.
     move |state, args| {
         let mut compiled = f.compile(shapeless);
         compiled.call_mut(state, args)
@@ -77,8 +83,10 @@ where
             f: self,
             shapeless,
             id,
+            cached_compiled: None,
         };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -101,8 +109,14 @@ where
             let result = (self)(state, &args[0]);
             vec![result]
         };
-        let state = CompiledState { f, shapeless, id };
+        let state = CompiledState {
+            f,
+            shapeless,
+            id,
+            cached_compiled: None,
+        };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -125,8 +139,14 @@ where
             let result = (self)(state, (&args[0], &args[1]));
             vec![result]
         };
-        let state = CompiledState { f, shapeless, id };
+        let state = CompiledState {
+            f,
+            shapeless,
+            id,
+            cached_compiled: None,
+        };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -149,8 +169,14 @@ where
             let result = (self)(state, (&args[0], &args[1], &args[2]));
             vec![result]
         };
-        let state = CompiledState { f, shapeless, id };
+        let state = CompiledState {
+            f,
+            shapeless,
+            id,
+            cached_compiled: None,
+        };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -173,8 +199,10 @@ where
             f: self,
             shapeless,
             id,
+            cached_compiled: None,
         };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -197,8 +225,14 @@ where
             let result = (self)(state, &args[0])?;
             Ok(vec![result])
         };
-        let state = CompiledState { f, shapeless, id };
+        let state = CompiledState {
+            f,
+            shapeless,
+            id,
+            cached_compiled: None,
+        };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -221,8 +255,14 @@ where
             let result = (self)(state, (&args[0], &args[1]))?;
             Ok(vec![result])
         };
-        let state = CompiledState { f, shapeless, id };
+        let state = CompiledState {
+            f,
+            shapeless,
+            id,
+            cached_compiled: None,
+        };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }
@@ -245,8 +285,14 @@ where
             let result = (self)(state, (&args[0], &args[1], &args[2]))?;
             Ok(vec![result])
         };
-        let state = CompiledState { f, shapeless, id };
+        let state = CompiledState {
+            f,
+            shapeless,
+            id,
+            cached_compiled: None,
+        };
         Compiled {
+            shape: PhantomData,
             f_marker: PhantomData::<F>,
             state,
         }

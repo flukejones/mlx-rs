@@ -9,10 +9,10 @@ use mlx_rs::{
     categorical,
     error::Exception,
     macros::{ModuleParameters, Quantizable},
-    module::{Module, ModuleParametersExt},
+    module::{Module, ModuleParameters},
     nn,
     ops::indexing::{IndexOp, NewAxis},
-    quantization::MaybeQuantized,
+    quantization::{MaybeQuantized, Quantizable as _},
     Array,
 };
 use serde::Deserialize;
@@ -22,6 +22,7 @@ use tokenizers::Tokenizer;
 use crate::{
     cache::KeyValueCache,
     error::Error,
+    quantization::{resolve_quantization, QuantizationConfig},
     utils::rope::{initialize_rope, FloatOrString, RopeVariant},
 };
 
@@ -45,6 +46,10 @@ pub struct ModelArgs {
     #[serde(default)]
     pub mlp_bias: bool,
     pub rope_scaling: Option<HashMap<String, FloatOrString>>,
+    #[serde(default)]
+    pub quantization: Option<QuantizationConfig>,
+    #[serde(default)]
+    pub quantization_config: Option<QuantizationConfig>,
 }
 
 fn default_true() -> bool {
@@ -508,24 +513,53 @@ pub struct WeightMap {
 pub fn load_llama_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
     let model_dir = model_dir.as_ref();
     let model_args = get_llama_model_args(model_dir)?;
+    let quant =
+        resolve_quantization(&model_args.quantization, &model_args.quantization_config).cloned();
     let mut model = Model::new(model_args)?;
+    if let Some(q) = quant {
+        model = model.try_into_quantized(q.group_size, q.bits)?;
+    }
 
+    let mut raw: HashMap<String, Array> = HashMap::new();
     let weights_index = model_dir.join("model.safetensors.index.json");
     if weights_index.exists() {
-        // Sharded weights: read the index to find all weight files
         let json = std::fs::read_to_string(weights_index)?;
         let weight_map: WeightMap = serde_json::from_str(&json)?;
-
         let weight_files: HashSet<&String> = weight_map.weight_map.values().collect();
         for weight_file in weight_files {
-            let weights_filename = model_dir.join(weight_file);
-            model.load_safetensors(weights_filename)?;
+            let path = model_dir.join(weight_file);
+            for (k, v) in Array::load_safetensors(&path).map_err(Error::LoadWeights)? {
+                raw.insert(k, v);
+            }
         }
     } else {
-        // Single weight file
-        let weights_filename = model_dir.join("model.safetensors");
-        model.load_safetensors(weights_filename)?;
+        let path = model_dir.join("model.safetensors");
+        for (k, v) in Array::load_safetensors(&path).map_err(Error::LoadWeights)? {
+            raw.insert(k, v);
+        }
     }
+
+    // QuantizedLinear wraps weight in `inner: Linear`; redirect
+    // `<prefix>.weight` → `<prefix>.inner.weight` for keys with a `.scales` sibling.
+    let quantised_prefixes: HashSet<String> = raw
+        .keys()
+        .filter_map(|k| k.strip_suffix(".scales").map(|p| p.to_string()))
+        .collect();
+
+    let mut params = model.parameters_mut().flatten();
+    for (k, v) in raw {
+        let key = match k.strip_suffix(".weight") {
+            Some(prefix) if quantised_prefixes.contains(prefix) => {
+                format!("{prefix}.inner.weight")
+            }
+            _ => k,
+        };
+        if let Some(slot) = params.get_mut(&*key) {
+            **slot = v;
+        }
+    }
+    drop(params);
+    mlx_rs::transforms::eval_params(model.parameters()).map_err(Error::Exception)?;
 
     Ok(model)
 }
@@ -671,6 +705,20 @@ mod tests {
 
             resolve_hf_cache_dir(&cache_dir)
         };
+        static ref CACHED_QUANT_TEST_MODEL_DIR: String = {
+            let cache_dir = home_dir()
+                .map(|p| {
+                    p.join(".cache")
+                        .join("huggingface")
+                        .join("hub")
+                        .join("models--mlx-community--Llama-3.2-1B-Instruct-4bit")
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .unwrap_or_default();
+
+            resolve_hf_cache_dir(&cache_dir)
+        };
     }
 
     #[test]
@@ -733,6 +781,28 @@ mod tests {
         let tokenizer = load_llama_tokenizer(CACHED_TEST_MODEL_DIR.as_str()).unwrap();
 
         let _encoding = tokenizer.encode("Hello, world!", true).unwrap();
+    }
+
+    /// Regression guard for the quantised-checkpoint loader path: without
+    /// `try_into_quantized` before `load_safetensors`, the packed-uint32
+    /// weights overwrite the unquantised `Linear.weight` slot and the first
+    /// forward fires `[rms_norm] weight has K elements but x's last dim is D`.
+    #[test]
+    #[ignore = "requires local quantised model files"]
+    fn quantized_llama_model_loads_and_forwards() {
+        use mlx_rs::module::Module;
+
+        let mut model = load_llama_model(CACHED_QUANT_TEST_MODEL_DIR.as_str()).unwrap();
+        let prompt = Array::from_slice(&[1i32, 2, 3, 4], &[1, 4]);
+        let mut cache: Vec<Option<ConcatKeyValueCache>> = Vec::new();
+        let input = super::ModelInput {
+            inputs: &prompt,
+            mask: None,
+            cache: &mut cache,
+        };
+        let logits = Module::forward(&mut model, input).unwrap();
+        eval([&logits]).unwrap();
+        assert_eq!(logits.shape()[2], model.args.vocab_size);
     }
 
     #[test]
