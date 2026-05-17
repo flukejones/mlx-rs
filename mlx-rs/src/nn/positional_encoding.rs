@@ -119,10 +119,10 @@ where
 
     fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
         let RopeInput { x, offset } = input.into();
-        let shape = x.shape();
-        let x = x.reshape(&[-1, x.dim(-2), x.dim(-1)])?;
+        // Pass 4-D `[B, N, T, D]` directly; old reshape to 3-D zeroed
+        // all but head-0 on decode (T=1).
         let x = crate::fast::rope(
-            x,
+            x.clone(),
             self.dimensions,
             self.traditional,
             self.base,
@@ -130,7 +130,7 @@ where
             offset,
             None,
         )?;
-        x.reshape(shape)
+        Ok(x)
     }
 
     fn training_mode(&mut self, _mode: bool) {}

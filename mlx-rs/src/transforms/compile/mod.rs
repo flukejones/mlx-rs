@@ -181,18 +181,40 @@ pub fn clear_cache() {
 }
 
 /// A compiled function that can be called.
-#[derive(Debug, Clone)]
-pub struct Compiled<F, G> {
+///
+/// `Shape` is a zero-sized marker (see [`compile::shape`]) selecting which
+/// [`compile::CallMut`] / [`compile_with_state::CallMutWithState`] impl
+/// applies for the wrapped function's argument arity. It defaults to `()`
+/// for backwards source-compatibility with code that previously named
+/// `Compiled<F, G>`; new code paths set it explicitly via the
+/// `Compile::compile` / `CompileWithState::compile` impls.
+#[derive(Debug)]
+pub struct Compiled<F, G, Shape = ()> {
+    shape: std::marker::PhantomData<Shape>,
     f_marker: std::marker::PhantomData<F>,
     state: CompiledState<G>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct CompiledState<F> {
     f: F,
     shapeless: bool,
     id: usize,
+    /// Compiled `mlx_closure` returned by `mlx_detail_compile` on the
+    /// first invocation, reused on subsequent calls. Skips per-call
+    /// `Box<dyn FnMut>` + `mlx_closure_new_func_payload` plus the
+    /// `mlx_detail_compile` round-trip — saves ~18 µs per call on
+    /// small clusters on Apple Silicon.
+    cached_compiled: Option<Closure<'static>>,
 }
+
+// Safety: `Closure<'static>` is not auto-Send because its inner C struct
+// holds a `*mut c_void` payload. The compile path's payload is always
+// a `BoxedSliceFn` / `BoxedSliceTryFn` — both `+ Send`. The mlx-c
+// closure handle itself contains only function pointers + the
+// already-Send payload, so transferring `CompiledState<F>` between
+// threads is sound when `F: Send`.
+unsafe impl<F: Send> Send for CompiledState<F> {}
 
 impl<F> Drop for CompiledState<F> {
     fn drop(&mut self) {

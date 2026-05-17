@@ -204,6 +204,13 @@ pub(crate) struct Closure<'a> {
     lt_marker: PhantomData<&'a ()>,
 }
 
+// Closure is NOT Send by default — the raw `*mut c_void` payload in
+// `mlx_closure_` could point to a Rust closure with non-Send captures.
+// The compile-specific path opts in via `unsafe impl<F: Send> Send for
+// CompiledState<F>` in `transforms/compile/mod.rs`, where the
+// payload-bound user closure is constrained to `Send` via
+// `BoxedSliceFn`/`BoxedSliceTryFn`.
+
 impl<'a> Closure<'a> {
     pub(crate) fn as_ptr(&self) -> mlx_sys::mlx_closure {
         self.c_closure

@@ -6,14 +6,19 @@ use crate::utils::IntoOption;
 use crate::{error::Result, Array, ArrayElement, Stream};
 use mach_sys::mach_time;
 use mlx_internal_macros::{default_device, generate_macro};
-use parking_lot::Mutex;
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::sync::OnceLock;
-
-static GLOBAL_STATE: OnceLock<Mutex<RandomState>> = OnceLock::new();
 
 thread_local! {
+    // Default random state — thread-local to mirror Python's
+    // `static thread_local PyKeySequence ks;`. mlx ≥ 0.31 made the GPU
+    // CommandEncoder map thread-local, so an `Array` (PRNG key) created
+    // on thread A cannot be evaluated on thread B. Each thread lazy-
+    // initialises its own state on first use.
+    static THREAD_DEFAULT_STATE: RefCell<Option<RandomState>> = const { RefCell::new(None) };
+
+    // Scoped override set by `with_random_state(...)`. Falls back to the
+    // thread default if absent.
     static TASK_LOCAL_STATE: RefCell<Option<RandomState>> = const { RefCell::new(None) };
 }
 
@@ -138,19 +143,19 @@ impl crate::utils::Updatable for RandomState {
     }
 }
 
-fn global_state() -> &'static Mutex<RandomState> {
-    GLOBAL_STATE.get_or_init(|| Mutex::new(RandomState::new().unwrap()))
-}
-
 /// Returns a key from the task-local state if it exists, otherwise
 /// returns `None`
 fn resolve_task_local_key() -> Option<Result<Array>> {
     TASK_LOCAL_STATE.with_borrow_mut(|state| state.as_mut().map(|s| s.next()))
 }
 
-fn resolve_global_key() -> Result<Array> {
-    let mut state = global_state().lock();
-    state.next()
+fn resolve_thread_default_key() -> Result<Array> {
+    THREAD_DEFAULT_STATE.with_borrow_mut(|slot| {
+        if slot.is_none() {
+            *slot = Some(RandomState::new()?);
+        }
+        slot.as_mut().unwrap().next()
+    })
 }
 
 /// Use given key or generate a new one if `None`.
@@ -158,7 +163,7 @@ fn resolve<'a>(key: impl Into<Option<&'a Array>>) -> Result<Cow<'a, Array>> {
     key.into().map_or_else(
         || {
             resolve_task_local_key()
-                .unwrap_or_else(resolve_global_key)
+                .unwrap_or_else(resolve_thread_default_key)
                 .map(Cow::Owned)
         },
         |k| Ok(Cow::Borrowed(k)),
@@ -181,10 +186,20 @@ where
     result
 }
 
-/// Seed the random number generator.
+/// Seed the random number generator on the current thread.
+///
+/// Each thread has its own default `RandomState` (the default key map is
+/// thread-local in mlx ≥ 0.31). `seed` therefore only reseeds the calling
+/// thread; spawn new threads after seeding if you need them to share it.
 pub fn seed(seed: u64) -> Result<()> {
-    let mut state = global_state().lock();
-    state.seed(seed)
+    THREAD_DEFAULT_STATE.with_borrow_mut(|slot| {
+        if let Some(state) = slot.as_mut() {
+            state.seed(seed)
+        } else {
+            *slot = Some(RandomState::with_seed(seed)?);
+            Ok(())
+        }
+    })
 }
 
 /// Get a PRNG key from a seed.
