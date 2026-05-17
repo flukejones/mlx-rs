@@ -22,13 +22,43 @@ use std::sync::OnceLock;
 
 use fused_quantized_sdpa::{fused_qsdpa_decode, make_fused_qsdpa_kernel, FusedQsdpaInputs};
 
+use crate::steel_attention::{
+    make_steel_attention_kernel, make_steel_quant_attention_kernel,
+    steel_attention_dispatch, steel_quant_attention_dispatch, SteelAttentionInputs,
+    SteelQuantAttentionInputs,
+};
+
 fn cached_fused_qsdpa_kernel() -> &'static MetalKernel {
     static KERNEL: OnceLock<MetalKernel> = OnceLock::new();
     KERNEL.get_or_init(|| make_fused_qsdpa_kernel().expect("make_fused_qsdpa_kernel"))
 }
 
+pub(crate) fn cached_steel_attention_kernel() -> &'static MetalKernel {
+    static KERNEL: OnceLock<MetalKernel> = OnceLock::new();
+    KERNEL.get_or_init(|| make_steel_attention_kernel().expect("make_steel_attention_kernel"))
+}
+
+pub(crate) fn cached_steel_quant_attention_kernel() -> &'static MetalKernel {
+    static KERNEL: OnceLock<MetalKernel> = OnceLock::new();
+    KERNEL.get_or_init(|| {
+        make_steel_quant_attention_kernel().expect("make_steel_quant_attention_kernel")
+    })
+}
+
+/// Head dims the steel prefill kernel supports.
+pub(crate) const STEEL_SUPPORTED_HEAD_DIMS: &[i32] = &[128, 256, 512];
+
 /// Default step in tokens for [`KVCache`]'s pre-allocated buffer growth.
 pub const DEFAULT_KV_CACHE_STEP: i32 = 256;
+
+/// Perf crossover for the fused qsdpa kernel. Past this, the per-
+/// simdgroup serial K-token processing loses to mlx's tiled
+/// `quantized_matmul` ops-composed path. Empirical on Qwen3-1.7B-q4 +
+/// KV q8 (Apple M4 Max): fused wins to T=4096; ops-composed wins from
+/// T=8192. The actual crossover is somewhere between — 4096 is the
+/// safe upper bound. Revisit if the kernel adds intra-simdgroup
+/// parallelism over K.
+const FUSED_KERNEL_N_K_THRESHOLD: i32 = 4096;
 
 // TODO: somehow move quantized methods to a separate trait?
 pub trait KeyValueCache {
@@ -186,6 +216,11 @@ pub struct KVCache {
     offset: i32,
     /// Buffer-growth step in tokens.
     step: i32,
+    /// When set, the prefill path (`n_q > 1`) routes through the
+    /// steel-attention tiled kernel instead of `fast::SDPA`. Opt-in
+    /// via [`Self::with_steel_prefill`]; only D ∈ {128, 256} and
+    /// non-mask paths use it (falls back to `fast::SDPA` otherwise).
+    use_steel_prefill: bool,
 }
 
 impl Default for KVCache {
@@ -208,7 +243,18 @@ impl KVCache {
             values: None,
             offset: 0,
             step,
+            use_steel_prefill: false,
         }
+    }
+
+    /// Opt in to the steel-attention tiled prefill kernel. Active only
+    /// when `n_q > 1`, `head_dim ∈ {128, 256}`, and the caller passes
+    /// no explicit mask. Falls back to `fast::SDPA` otherwise.
+    ///
+    /// Builder; consumes and returns `self`.
+    pub fn with_steel_prefill(mut self) -> Self {
+        self.use_steel_prefill = true;
+        self
     }
 
     /// Configured step (buffer-growth chunk size).
@@ -256,6 +302,7 @@ impl KVCache {
             values: Some(values),
             offset,
             step,
+            use_steel_prefill: false,
         })
     }
 
@@ -399,6 +446,73 @@ impl KeyValueCache for KVCache {
             buf_v.index((Ellipsis, 0..end, ..)),
         ))
     }
+
+    /// Prefill-aware attention: when the cache was built with
+    /// [`Self::with_steel_prefill`], route the `n_q > 1` path through
+    /// the steel-attention tiled kernel. Falls through to the default
+    /// `fast::SDPA` dispatch for decode, masked, or unsupported-shape
+    /// calls.
+    fn attention(
+        &mut self,
+        queries: &Array,
+        keys: Array,
+        values: Array,
+        scale: f32,
+        mask: Option<&Array>,
+    ) -> Result<Array, Exception> {
+        // Pre-update offset → steel kernel `ql_off` (causal diagonal shift).
+        let ql_off = self.offset;
+        let (k_full, v_full) = self.update_and_fetch(keys, values)?;
+
+        let q_shape = queries.shape();
+        let n_q = q_shape[q_shape.len() - 2];
+        let head_dim = q_shape[q_shape.len() - 1];
+        let h_q = q_shape[1];
+        let h_kv = k_full.shape()[1];
+
+        let steel_ok = self.use_steel_prefill
+            && n_q > 1
+            && STEEL_SUPPORTED_HEAD_DIMS.contains(&head_dim)
+            && h_q % h_kv == 0;
+
+        // Steel applies causal + ql_off internally. Caller mask must
+        // be either None or a bool causal mask (the standard decoder
+        // pattern); anything else (e.g. an additive float bias) would
+        // be silently dropped, so reject those explicitly.
+        if steel_ok {
+            if let Some(m) = mask {
+                if m.dtype() != Dtype::Bool {
+                    return Err(Exception::custom(
+                        "KVCache::attention: steel prefill requires mask to be None or a bool causal mask; got non-bool mask",
+                    ));
+                }
+            }
+            return steel_attention_dispatch(
+                cached_steel_attention_kernel(),
+                SteelAttentionInputs {
+                    q: queries,
+                    k: &k_full,
+                    v: &v_full,
+                    mask: None,
+                    causal: true,
+                    ql_off,
+                    scale,
+                    head_dim,
+                    h_q,
+                    h_kv,
+                },
+            );
+        }
+
+        scaled_dot_product_attention(
+            queries.clone(),
+            k_full,
+            v_full,
+            scale,
+            mask.map(ScaledDotProductAttentionMask::Array),
+            None,
+        )
+    }
 }
 
 /// Affine-quantised KV cache. Stores K/V as packed-uint32
@@ -435,6 +549,8 @@ pub struct QuantizedKVCache {
     use_quantized_matmul: bool,
     /// Use the in-tree fused qsdpa Metal kernel for n_q=1 decode.
     use_fused_kernel: bool,
+    /// Use the steel quantised tile kernel for n_q > 1 prefill.
+    use_steel_prefill: bool,
 }
 
 impl QuantizedKVCache {
@@ -467,6 +583,7 @@ impl QuantizedKVCache {
             rotation: None,
             use_quantized_matmul: false,
             use_fused_kernel: false,
+            use_steel_prefill: false,
         }
     }
 
@@ -492,6 +609,17 @@ impl QuantizedKVCache {
     /// beats the kernel's per-simdgroup serial processing.
     pub fn with_fused_kernel(mut self) -> Self {
         self.use_fused_kernel = true;
+        self
+    }
+
+    /// Opt into the steel-attention quantised tile kernel for `n_q > 1`
+    /// prefill. Active only when `head_dim ∈ {128, 256}`, `bits ∈ {4, 8}`,
+    /// `group_size` divides `head_dim`, and the caller passes no explicit
+    /// mask (causal-only). Falls back to the existing
+    /// `quantized_scaled_dot_product_attention` ops-composed path
+    /// otherwise.
+    pub fn with_steel_prefill(mut self) -> Self {
+        self.use_steel_prefill = true;
         self
     }
 
@@ -603,6 +731,7 @@ impl QuantizedKVCache {
         let dtype = parse_dtype_meta(meta, "dtype")?;
         let use_quantized_matmul = parse_meta_bool(meta, "use_quantized_matmul", false)?;
         let use_fused_kernel = parse_meta_bool(meta, "use_fused_kernel", false)?;
+        let use_steel_prefill = parse_meta_bool(meta, "use_steel_prefill", false)?;
         if parse_meta_bool(meta, "has_rotation", false)? {
             return Err(Error::Other(
                 "QuantizedKVCache::from_state: persisted cache used rotation; \
@@ -626,6 +755,7 @@ impl QuantizedKVCache {
             rotation: None,
             use_quantized_matmul,
             use_fused_kernel,
+            use_steel_prefill,
         })
     }
 
@@ -764,6 +894,10 @@ impl KeyValueCache for QuantizedKVCache {
             self.use_quantized_matmul.to_string(),
         );
         m.insert("use_fused_kernel".into(), self.use_fused_kernel.to_string());
+        m.insert(
+            "use_steel_prefill".into(),
+            self.use_steel_prefill.to_string(),
+        );
         if self.rotation.is_some() {
             m.insert("has_rotation".into(), "true".into());
         }
@@ -814,6 +948,7 @@ impl KeyValueCache for QuantizedKVCache {
             );
         }
 
+        let ql_off = self.offset;
         let ((k_wq, k_s, k_b), (v_wq, v_s, v_b)) = self.append_quantised(keys, values)?;
 
         let queries_for_sdpa = if let Some(pi) = self.rotation.as_ref() {
@@ -828,15 +963,57 @@ impl KeyValueCache for QuantizedKVCache {
         let n_q = q_shape[q_shape.len() - 2];
         let h_q = q_shape[1];
         let h_kv = k_wq.shape()[1];
+        let n_k_cache = k_wq.shape()[2];
+
+        // Kernel applies causal + ql_off internally. Caller mask must be
+        // None or a bool causal mask; reject anything else explicitly.
+        let steel_quant_supported = self.use_steel_prefill
+            && n_q > 1
+            && STEEL_SUPPORTED_HEAD_DIMS.contains(&head_dim)
+            && matches!(self.bits, 4 | 8)
+            && head_dim % self.group_size == 0
+            && h_q % h_kv == 0;
+        if steel_quant_supported {
+            if let Some(m) = mask {
+                if m.dtype() != Dtype::Bool {
+                    return Err(Exception::custom(
+                        "QuantizedKVCache::attention: steel prefill requires mask to be None or a bool causal mask; got non-bool mask",
+                    ));
+                }
+            }
+        }
 
         let fused_supported = self.use_fused_kernel
             && n_q == 1
             && matches!(self.bits, 4 | 8)
             && head_dim % (32 / self.bits) == 0
             && head_dim % self.group_size == 0
-            && h_q % h_kv == 0;
+            && h_q % h_kv == 0
+            && n_k_cache <= FUSED_KERNEL_N_K_THRESHOLD;
 
-        let out = if fused_supported {
+        let out = if steel_quant_supported {
+            steel_quant_attention_dispatch(
+                cached_steel_quant_attention_kernel(),
+                SteelQuantAttentionInputs {
+                    q: &queries_for_sdpa,
+                    k_wq: &k_wq,
+                    k_scales: &k_s,
+                    k_biases: &k_b,
+                    v_wq: &v_wq,
+                    v_scales: &v_s,
+                    v_biases: &v_b,
+                    mask: None,
+                    causal: true,
+                    ql_off,
+                    scale,
+                    head_dim,
+                    h_q,
+                    h_kv,
+                    bits: self.bits,
+                    group_size: self.group_size,
+                },
+            )?
+        } else if fused_supported {
             fused_qsdpa_decode(
                 cached_fused_qsdpa_kernel(),
                 FusedQsdpaInputs {
@@ -1309,7 +1486,12 @@ fn state_slot_names(class_name: &str) -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mlx_rs::{ops::concatenate_axis, transforms::eval, Dtype};
+    use mlx_rs::{
+        ops::concatenate_axis,
+        random::{key, normal},
+        transforms::eval,
+        Dtype,
+    };
 
     /// Make a fresh `[B=1, H=2, S, D=4]` float32 array filled with sequential
     /// values per token-row, distinct from any other call (so we can spot
@@ -1432,6 +1614,288 @@ mod tests {
         let (out_k, out_v) = cache.update_and_fetch(k, v).unwrap();
         assert_eq!(out_k.dtype(), Dtype::Bfloat16);
         assert_eq!(out_v.dtype(), Dtype::Bfloat16);
+    }
+
+    /// Build `[B, H, T, D]` fp16 random tensor for a prefill test.
+    fn random_4d_fp16(b: i32, h: i32, t: i32, d: i32, seed: u64) -> Array {
+        let kctx = key(seed).unwrap();
+        normal::<f32>(&[b, h, t, d], None, None, &kctx)
+            .unwrap()
+            .as_dtype(Dtype::Float16)
+            .unwrap()
+    }
+
+    /// Build a `[1, 1, T, T]` lower-triangular bool mask the way the
+    /// standard transformer decoder does for offset=0 prefill.
+    fn causal_bool_mask(t: i32) -> Array {
+        let mut buf = Vec::with_capacity((t * t) as usize);
+        for i in 0..t {
+            for j in 0..t {
+                buf.push(j <= i);
+            }
+        }
+        Array::from_slice(&buf, &[t, t])
+            .expand_dims_axes(&[0, 1])
+            .unwrap()
+    }
+
+    /// End-to-end: a `KVCache::with_steel_prefill()` cache returns the
+    /// same prefill output as a plain cache (which dispatches to
+    /// `fast::SDPA`). Both paths receive an explicit causal mask so the
+    /// steel-forced `causal=true` matches the baseline's masked SDPA.
+    #[test]
+    fn kvcache_steel_prefill_matches_default() {
+        let (b, h, t, d) = (1, 8, 64, 128);
+        let q = random_4d_fp16(b, h, t, d, 1);
+        let k = random_4d_fp16(b, h, t, d, 2);
+        let v = random_4d_fp16(b, h, t, d, 3);
+        let scale = 1.0 / (d as f32).sqrt();
+        let mask = causal_bool_mask(t);
+
+        let mut base = KVCache::new();
+        let baseline = base
+            .attention(&q, k.clone(), v.clone(), scale, Some(&mask))
+            .unwrap();
+
+        let mut steel = KVCache::new().with_steel_prefill();
+        let routed = steel.attention(&q, k, v, scale, Some(&mask)).unwrap();
+
+        eval([&baseline, &routed]).unwrap();
+        let diff = baseline
+            .subtract(&routed)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max(None)
+            .unwrap()
+            .item::<f32>();
+        assert!(
+            diff < 5e-3,
+            "steel-prefill vs fast::SDPA diverged: max_abs={diff}"
+        );
+    }
+
+    /// Steel prefill must fall back to `fast::SDPA` when the input
+    /// shape isn't in the supported set (here, head_dim = 64).
+    #[test]
+    fn kvcache_steel_prefill_falls_back_on_unsupported_head_dim() {
+        let (b, h, t, d) = (1, 2, 8, 64);
+        let q = random_4d_fp16(b, h, t, d, 4);
+        let k = random_4d_fp16(b, h, t, d, 5);
+        let v = random_4d_fp16(b, h, t, d, 6);
+        let scale = 1.0 / (d as f32).sqrt();
+
+        let mut steel = KVCache::new().with_steel_prefill();
+        // Should not panic / return error — just fall back.
+        let out = steel.attention(&q, k, v, scale, None).unwrap();
+        eval([&out]).unwrap();
+        assert_eq!(out.shape(), &[b, h, t, d]);
+    }
+
+    /// Multi-turn dense prefill: ql_off must shift the causal diagonal
+    /// so a second prefill's queries attend to first-prefill KV tokens.
+    /// Both paths receive a `[T_turn, T_turn+offset]` causal mask.
+    #[test]
+    fn kvcache_steel_prefill_multiturn_matches_default() {
+        let (b, h, d) = (1, 8, 128);
+        let scale = 1.0 / (d as f32).sqrt();
+        let sys_q = random_4d_fp16(b, h, 8, d, 51);
+        let sys_k = random_4d_fp16(b, h, 8, d, 52);
+        let sys_v = random_4d_fp16(b, h, 8, d, 53);
+        let usr_q = random_4d_fp16(b, h, 8, d, 54);
+        let usr_k = random_4d_fp16(b, h, 8, d, 55);
+        let usr_v = random_4d_fp16(b, h, 8, d, 56);
+
+        let sys_mask = causal_bool_mask(8);
+        let mut usr_mask_buf = Vec::with_capacity(8 * 16);
+        for i in 0..8 {
+            for j in 0..16 {
+                usr_mask_buf.push(j <= i + 8);
+            }
+        }
+        let usr_mask = Array::from_slice(&usr_mask_buf, &[8, 16])
+            .expand_dims_axes(&[0, 1])
+            .unwrap();
+
+        let mut base = KVCache::new();
+        base.attention(&sys_q, sys_k.clone(), sys_v.clone(), scale, Some(&sys_mask))
+            .unwrap();
+        let baseline = base
+            .attention(&usr_q, usr_k.clone(), usr_v.clone(), scale, Some(&usr_mask))
+            .unwrap();
+
+        let mut steel = KVCache::new().with_steel_prefill();
+        steel
+            .attention(&sys_q, sys_k, sys_v, scale, Some(&sys_mask))
+            .unwrap();
+        let routed = steel
+            .attention(&usr_q, usr_k, usr_v, scale, Some(&usr_mask))
+            .unwrap();
+
+        eval([&baseline, &routed]).unwrap();
+        let diff = baseline
+            .subtract(&routed)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max(None)
+            .unwrap()
+            .item::<f32>();
+        assert!(
+            diff < 5e-3,
+            "multi-turn dense steel-prefill vs fast::SDPA diverge: max_abs={diff}"
+        );
+    }
+
+    /// QuantizedKVCache::with_quantized_matmul().with_steel_prefill()
+    /// on a causal prefill must produce the same output as the
+    /// ops-composed `quantized_scaled_dot_product_attention` path with
+    /// the same causal bool mask.
+    #[test]
+    fn quantized_kvcache_steel_prefill_matches_qmm_path() {
+        let (b, h, t, d) = (1, 8, 16, 128);
+        let q = random_4d_fp16(b, h, t, d, 21);
+        let k = random_4d_fp16(b, h, t, d, 22);
+        let v = random_4d_fp16(b, h, t, d, 23);
+        let scale = 1.0 / (d as f32).sqrt();
+        let mask = causal_bool_mask(t);
+
+        // Baseline: packed-matmul with the explicit causal mask.
+        let mut base = QuantizedKVCache::with_config(256, 64, 8).with_quantized_matmul();
+        let baseline = base
+            .attention(&q, k.clone(), v.clone(), scale, Some(&mask))
+            .unwrap();
+
+        // Steel: same mask. Steel ignores the supplied mask and applies
+        // its own `causal=true`.
+        let mut steel = QuantizedKVCache::with_config(256, 64, 8)
+            .with_quantized_matmul()
+            .with_steel_prefill();
+        let routed = steel
+            .attention(&q, k, v, scale, Some(&mask))
+            .unwrap();
+
+        eval([&baseline, &routed]).unwrap();
+        let diff = baseline
+            .subtract(&routed)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max(None)
+            .unwrap()
+            .item::<f32>();
+        assert!(
+            diff < 5e-3,
+            "quant steel-prefill vs qmm-composed diverge: max_abs={diff}"
+        );
+    }
+
+    /// `with_rotation` + `with_steel_prefill` stacks correctly: the
+    /// orthogonal Π pre-rotation on K/V is undone by the post-attention
+    /// `out @ Π` step regardless of which kernel produced the output.
+    #[test]
+    fn quantized_kvcache_steel_prefill_with_rotation_matches_qmm_path() {
+        let (b, h, t, d) = (1, 8, 16, 128);
+        let q = random_4d_fp16(b, h, t, d, 31);
+        let k = random_4d_fp16(b, h, t, d, 32);
+        let v = random_4d_fp16(b, h, t, d, 33);
+        let scale = 1.0 / (d as f32).sqrt();
+        let mask = causal_bool_mask(t);
+
+        let mut base = QuantizedKVCache::with_config(256, 64, 4)
+            .with_quantized_matmul()
+            .with_rotation(d, 42)
+            .unwrap();
+        let baseline = base
+            .attention(&q, k.clone(), v.clone(), scale, Some(&mask))
+            .unwrap();
+
+        let mut steel = QuantizedKVCache::with_config(256, 64, 4)
+            .with_quantized_matmul()
+            .with_rotation(d, 42)
+            .unwrap()
+            .with_steel_prefill();
+        let routed = steel
+            .attention(&q, k, v, scale, Some(&mask))
+            .unwrap();
+
+        eval([&baseline, &routed]).unwrap();
+        let diff = baseline
+            .subtract(&routed)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max(None)
+            .unwrap()
+            .item::<f32>();
+        assert!(
+            diff < 1e-2,
+            "quant steel-prefill + rotation vs qmm-composed diverge: max_abs={diff}"
+        );
+    }
+
+    /// Multi-turn quant prefill: append a system prompt, then a user
+    /// prompt as a second prefill. `ql_off` must shift the causal
+    /// diagonal so the second prefill's queries can attend to the first
+    /// prefill's KV tokens. Each turn passes a `[T_turn, T_turn+offset]`
+    /// bool mask so the baseline qmm path computes the same causal slice.
+    #[test]
+    fn quantized_kvcache_steel_prefill_multiturn_matches_qmm() {
+        let (b, h, d) = (1, 8, 128);
+        let scale = 1.0 / (d as f32).sqrt();
+        let sys_q = random_4d_fp16(b, h, 8, d, 41);
+        let sys_k = random_4d_fp16(b, h, 8, d, 42);
+        let sys_v = random_4d_fp16(b, h, 8, d, 43);
+        let usr_q = random_4d_fp16(b, h, 8, d, 44);
+        let usr_k = random_4d_fp16(b, h, 8, d, 45);
+        let usr_v = random_4d_fp16(b, h, 8, d, 46);
+
+        // Turn 1: 8 queries against 8 keys, standard causal mask.
+        let sys_mask = causal_bool_mask(8);
+        // Turn 2: 8 new queries against 16 keys (8 prior + 8 new). The
+        // mask shape is [1, 1, 8, 16]: column j ≤ row i + 8 (offset).
+        let mut usr_mask_buf = Vec::with_capacity(8 * 16);
+        for i in 0..8 {
+            for j in 0..16 {
+                usr_mask_buf.push(j <= i + 8);
+            }
+        }
+        let usr_mask = Array::from_slice(&usr_mask_buf, &[8, 16])
+            .expand_dims_axes(&[0, 1])
+            .unwrap();
+
+        // Baseline.
+        let mut base = QuantizedKVCache::with_config(256, 64, 8).with_quantized_matmul();
+        base.attention(&sys_q, sys_k.clone(), sys_v.clone(), scale, Some(&sys_mask))
+            .unwrap();
+        let baseline = base
+            .attention(&usr_q, usr_k.clone(), usr_v.clone(), scale, Some(&usr_mask))
+            .unwrap();
+
+        // Steel.
+        let mut steel = QuantizedKVCache::with_config(256, 64, 8)
+            .with_quantized_matmul()
+            .with_steel_prefill();
+        steel
+            .attention(&sys_q, sys_k, sys_v, scale, Some(&sys_mask))
+            .unwrap();
+        let routed = steel
+            .attention(&usr_q, usr_k, usr_v, scale, Some(&usr_mask))
+            .unwrap();
+
+        eval([&baseline, &routed]).unwrap();
+        let diff = baseline
+            .subtract(&routed)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max(None)
+            .unwrap()
+            .item::<f32>();
+        assert!(
+            diff < 5e-3,
+            "multi-turn quant steel-prefill vs qmm-composed diverge: max_abs={diff}"
+        );
     }
 
     /// Like `token_block` but with head_dim that's a multiple of the

@@ -120,8 +120,12 @@ pub(crate) fn quantized_scaled_dot_product_attention(
         // TODO: handle str type mask
 
         if mask.dtype() == Dtype::Bool {
-            let finfo_min = scores.dtype().finfo_min()?;
-            scores = mlx_rs::ops::r#where(mask, scores, Array::from_f64(finfo_min))?;
+            // f64 array from `from_f64` lands on the Metal stream and is
+            // rejected under mlx v0.31. Build as f32 then cast to scores'
+            // dtype.
+            let finfo_min = scores.dtype().finfo_min()? as f32;
+            let sentinel = Array::from_f32(finfo_min).as_dtype(scores.dtype())?;
+            scores = mlx_rs::ops::r#where(mask, scores, sentinel)?;
         } else {
             scores += mask;
         }
