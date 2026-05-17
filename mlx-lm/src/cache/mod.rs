@@ -3,8 +3,9 @@ use std::path::Path;
 
 use mlx_rs::{
     error::Exception,
+    fast::{scaled_dot_product_attention, MetalKernel, ScaledDotProductAttentionMask},
     ops::{
-        dequantize,
+        concatenate_axis, dequantize,
         indexing::{Ellipsis, IndexOp, TryIndexMutOp},
         quantize, zeros_dtype,
     },
@@ -12,6 +13,19 @@ use mlx_rs::{
 };
 
 use crate::error::Error;
+use crate::utils::{quantized_scaled_dot_product_attention, QuantizedKeys, QuantizedValues};
+
+pub mod fused_quantized_sdpa;
+pub mod rotation;
+
+use std::sync::OnceLock;
+
+use fused_quantized_sdpa::{fused_qsdpa_decode, make_fused_qsdpa_kernel, FusedQsdpaInputs};
+
+fn cached_fused_qsdpa_kernel() -> &'static MetalKernel {
+    static KERNEL: OnceLock<MetalKernel> = OnceLock::new();
+    KERNEL.get_or_init(|| make_fused_qsdpa_kernel().expect("make_fused_qsdpa_kernel"))
+}
 
 /// Default step in tokens for [`KVCache`]'s pre-allocated buffer growth.
 pub const DEFAULT_KV_CACHE_STEP: i32 = 256;
@@ -70,6 +84,28 @@ pub trait KeyValueCache {
     fn meta_state(&self) -> HashMap<String, String> {
         HashMap::new()
     }
+
+    /// `softmax(scaled_q @ K.T) @ V` over the full cached history.
+    /// Default appends K/V then dispatches dense fused SDPA. Quantised
+    /// caches override to skip K/V dequant on the hot path.
+    fn attention(
+        &mut self,
+        queries: &Array,
+        keys: Array,
+        values: Array,
+        scale: f32,
+        mask: Option<&Array>,
+    ) -> Result<Array, Exception> {
+        let (k_full, v_full) = self.update_and_fetch(keys, values)?;
+        scaled_dot_product_attention(
+            queries.clone(),
+            k_full,
+            v_full,
+            scale,
+            mask.map(ScaledDotProductAttentionMask::Array),
+            None,
+        )
+    }
 }
 
 impl<T> KeyValueCache for &'_ mut T
@@ -122,6 +158,17 @@ where
 
     fn meta_state(&self) -> HashMap<String, String> {
         T::meta_state(self)
+    }
+
+    fn attention(
+        &mut self,
+        queries: &Array,
+        keys: Array,
+        values: Array,
+        scale: f32,
+        mask: Option<&Array>,
+    ) -> Result<Array, Exception> {
+        T::attention(self, queries, keys, values, scale, mask)
     }
 }
 
@@ -354,27 +401,17 @@ impl KeyValueCache for KVCache {
     }
 }
 
-/// Quantised KV cache.
+/// Affine-quantised KV cache. Stores K/V as packed-uint32
+/// `(wq, scales, biases)` triples in step-allocated buffers.
 ///
-/// Mirrors Python `mlx_lm.models.cache.QuantizedKVCache`. Stores K and V
-/// as packed-uint32 `(wq, scales, biases)` triples in pre-allocated
-/// step-sized buffers (same growth pattern as [`KVCache`]). On
-/// `update_and_fetch`, new tokens are quantised in one call, slice-written
-/// into the buffer, then the populated `[:offset, :]` portion is
-/// dequantised back to a plain `(K, V)` pair for the standard SDPA path.
+/// Default path is dequantise-on-read. Opt-in builders for the faster
+/// paths: [`Self::with_quantized_matmul`] (keep K/V packed across
+/// score + attend), [`Self::with_rotation`] (Π pre-quantize for
+/// better 4-bit quality), [`Self::with_fused_kernel`] (single-dispatch
+/// Metal kernel for n_q=1 decode).
 ///
-/// This is the Python default behaviour: dequantise-on-read keeps the
-/// SDPA call path unchanged. A future enhancement could route through
-/// `mlx_rs::ops::quantized_matmul` to skip the dequantise step entirely;
-/// Python doesn't do that either, so the perf-vs-complexity trade-off
-/// has not been validated.
-///
-/// Memory savings vs fp16 K/V buffer:
-/// - `bits=8 group=64` → ~2× reduction.
-/// - `bits=4 group=64` → ~4× reduction.
-///
-/// Last-axis (head_dim) must be a multiple of `group_size` (mlx-c
-/// requirement).
+/// Memory: `bits=8` → ~2×, `bits=4` → ~4× reduction vs fp16.
+/// `head_dim` must be a multiple of `group_size`.
 #[derive(Debug, Clone)]
 pub struct QuantizedKVCache {
     /// Quantised K buffer: `[B, H, capacity, head_dim / el_per_int]` uint32.
@@ -392,6 +429,12 @@ pub struct QuantizedKVCache {
     bits: i32,
     /// Dtype of the original K/V inputs (preserved for dequantise output).
     dtype: Option<Dtype>,
+    /// Random orthogonal rotation Π applied pre-quantize.
+    rotation: Option<Array>,
+    /// Route scores/attend through `quantized_matmul` (packed-matmul path).
+    use_quantized_matmul: bool,
+    /// Use the in-tree fused qsdpa Metal kernel for n_q=1 decode.
+    use_fused_kernel: bool,
 }
 
 impl QuantizedKVCache {
@@ -421,7 +464,35 @@ impl QuantizedKVCache {
             group_size,
             bits,
             dtype: None,
+            rotation: None,
+            use_quantized_matmul: false,
+            use_fused_kernel: false,
         }
+    }
+
+    /// Random orthogonal Π applied to K/V pre-quantize for better
+    /// 4-bit quality (KL 0.039 vs 0.20 unrotated on Qwen3-1.7B-bf16).
+    pub fn with_rotation(mut self, head_dim: i32, seed: u64) -> Result<Self, Error> {
+        self.rotation = Some(rotation::generate_rotation_matrix(head_dim, seed)?);
+        Ok(self)
+    }
+
+    /// Keep K/V packed across score and attend; dispatch through
+    /// `quantized_matmul` × 2 instead of dequantising on read.
+    pub fn with_quantized_matmul(mut self) -> Self {
+        self.use_quantized_matmul = true;
+        self
+    }
+
+    /// Opt into the in-tree fused quantized SDPA Metal kernel for n_q=1
+    /// decode. Requires `with_quantized_matmul()`; falls back to the
+    /// `quantized_matmul`-composed path for unsupported shapes
+    /// (`n_q > 1`, `bits ∉ {4, 8}`, `n_k > 4096`). The n_k threshold is
+    /// a perf crossover — at long context mlx's tiled `quantized_matmul`
+    /// beats the kernel's per-simdgroup serial processing.
+    pub fn with_fused_kernel(mut self) -> Self {
+        self.use_fused_kernel = true;
+        self
     }
 
     fn ceil_step(s: i32, step: i32) -> i32 {
@@ -434,6 +505,74 @@ impl QuantizedKVCache {
         let t_axis = buf_shape.len() - 2;
         buf_shape[t_axis] = capacity;
         zeros_dtype(&buf_shape, template.dtype())
+    }
+
+    /// Append (keys, values), quantise into the buffer, return packed views
+    /// sliced to populated `[..., :offset, ...]` rows. Shared back-end for
+    /// `update_and_fetch` and the packed-matmul `attention` override.
+    #[allow(clippy::type_complexity)]
+    fn append_quantised(
+        &mut self,
+        keys: Array,
+        values: Array,
+    ) -> Result<((Array, Array, Array), (Array, Array, Array)), Exception> {
+        let s = keys.shape()[keys.shape().len() - 2];
+
+        if self.dtype.is_none() {
+            self.dtype = Some(keys.dtype());
+        }
+
+        let (keys_to_q, values_to_q) = if let Some(pi) = self.rotation.as_ref() {
+            let pi_t = pi.as_dtype(keys.dtype())?.transpose_axes(&[1, 0])?;
+            (keys.matmul(&pi_t)?, values.matmul(&pi_t)?)
+        } else {
+            (keys, values)
+        };
+
+        let (new_k_wq, new_k_scales, new_k_biases) =
+            quantize(&keys_to_q, self.group_size, self.bits)?;
+        let (new_v_wq, new_v_scales, new_v_biases) =
+            quantize(&values_to_q, self.group_size, self.bits)?;
+
+        self.grow_to_fit(
+            &new_k_wq,
+            &new_k_scales,
+            &new_k_biases,
+            &new_v_wq,
+            &new_v_scales,
+            &new_v_biases,
+        )?;
+
+        let start = self.offset;
+        let end = self.offset + s;
+        let k_wq_buf = self.keys_wq.as_mut().expect("buffer just allocated");
+        let k_s_buf = self.keys_scales.as_mut().expect("buffer just allocated");
+        let k_b_buf = self.keys_biases.as_mut().expect("buffer just allocated");
+        let v_wq_buf = self.values_wq.as_mut().expect("buffer just allocated");
+        let v_s_buf = self.values_scales.as_mut().expect("buffer just allocated");
+        let v_b_buf = self.values_biases.as_mut().expect("buffer just allocated");
+
+        k_wq_buf.try_index_mut((Ellipsis, start..end, ..), new_k_wq)?;
+        k_s_buf.try_index_mut((Ellipsis, start..end, ..), new_k_scales)?;
+        k_b_buf.try_index_mut((Ellipsis, start..end, ..), new_k_biases)?;
+        v_wq_buf.try_index_mut((Ellipsis, start..end, ..), new_v_wq)?;
+        v_s_buf.try_index_mut((Ellipsis, start..end, ..), new_v_scales)?;
+        v_b_buf.try_index_mut((Ellipsis, start..end, ..), new_v_biases)?;
+
+        self.offset = end;
+
+        Ok((
+            (
+                k_wq_buf.index((Ellipsis, 0..end, ..)),
+                k_s_buf.index((Ellipsis, 0..end, ..)),
+                k_b_buf.index((Ellipsis, 0..end, ..)),
+            ),
+            (
+                v_wq_buf.index((Ellipsis, 0..end, ..)),
+                v_s_buf.index((Ellipsis, 0..end, ..)),
+                v_b_buf.index((Ellipsis, 0..end, ..)),
+            ),
+        ))
     }
 
     /// Reconstruct from previously-persisted `state` + `meta_state`.
@@ -462,6 +601,16 @@ impl QuantizedKVCache {
         let group_size = parse_meta_or(meta, "group_size", 64)?;
         let bits = parse_meta_or(meta, "bits", 8)?;
         let dtype = parse_dtype_meta(meta, "dtype")?;
+        let use_quantized_matmul = parse_meta_bool(meta, "use_quantized_matmul", false)?;
+        let use_fused_kernel = parse_meta_bool(meta, "use_fused_kernel", false)?;
+        if parse_meta_bool(meta, "has_rotation", false)? {
+            return Err(Error::Other(
+                "QuantizedKVCache::from_state: persisted cache used rotation; \
+                 rotation is not serialisable. Drop the cache or re-apply \
+                 rotation on the loaded cache before further updates."
+                    .into(),
+            ));
+        }
         Ok(Self {
             keys_wq: Some(k_wq),
             keys_scales: Some(k_s),
@@ -474,6 +623,9 @@ impl QuantizedKVCache {
             group_size,
             bits,
             dtype,
+            rotation: None,
+            use_quantized_matmul,
+            use_fused_kernel,
         })
     }
 
@@ -607,6 +759,14 @@ impl KeyValueCache for QuantizedKVCache {
         m.insert("step".into(), self.step.to_string());
         m.insert("group_size".into(), self.group_size.to_string());
         m.insert("bits".into(), self.bits.to_string());
+        m.insert(
+            "use_quantized_matmul".into(),
+            self.use_quantized_matmul.to_string(),
+        );
+        m.insert("use_fused_kernel".into(), self.use_fused_kernel.to_string());
+        if self.rotation.is_some() {
+            m.insert("has_rotation".into(), "true".into());
+        }
         if let Some(dt) = self.dtype {
             m.insert("dtype".into(), format!("{dt:?}"));
         }
@@ -618,58 +778,112 @@ impl KeyValueCache for QuantizedKVCache {
         keys: Array,
         values: Array,
     ) -> Result<(Array, Array), Exception> {
-        let s = keys.shape()[keys.shape().len() - 2];
+        let ((k_wq, k_s, k_b), (v_wq, v_s, v_b)) = self.append_quantised(keys, values)?;
+        let k_dense = dequantize(&k_wq, &k_s, &k_b, self.group_size, self.bits)?;
+        let v_dense = dequantize(&v_wq, &v_s, &v_b, self.group_size, self.bits)?;
 
-        // Remember the input dtype for the dequantise return.
-        if self.dtype.is_none() {
-            self.dtype = Some(keys.dtype());
+        if let Some(pi) = self.rotation.as_ref() {
+            let pi_cast = pi.as_dtype(k_dense.dtype())?;
+            Ok((k_dense.matmul(&pi_cast)?, v_dense.matmul(&pi_cast)?))
+        } else {
+            Ok((k_dense, v_dense))
+        }
+    }
+
+    /// Packed-matmul path: keep K/V packed and dispatch through
+    /// `quantized_scaled_dot_product_attention` (two `quantized_matmul`
+    /// kernels). Skips the per-step K/V dequant. Falls through to the
+    /// dense-SDPA default when `use_quantized_matmul` is off.
+    fn attention(
+        &mut self,
+        queries: &Array,
+        keys: Array,
+        values: Array,
+        scale: f32,
+        mask: Option<&Array>,
+    ) -> Result<Array, Exception> {
+        if !self.use_quantized_matmul {
+            let (k_full, v_full) = self.update_and_fetch(keys, values)?;
+            return scaled_dot_product_attention(
+                queries.clone(),
+                k_full,
+                v_full,
+                scale,
+                mask.map(ScaledDotProductAttentionMask::Array),
+                None,
+            );
         }
 
-        // Quantise the new tokens. mlx-c quantises along the last axis;
-        // K/V shapes `[B, H, S, D]` are accepted directly.
-        let (new_k_wq, new_k_scales, new_k_biases) = quantize(&keys, self.group_size, self.bits)?;
-        let (new_v_wq, new_v_scales, new_v_biases) = quantize(&values, self.group_size, self.bits)?;
+        let ((k_wq, k_s, k_b), (v_wq, v_s, v_b)) = self.append_quantised(keys, values)?;
 
-        self.grow_to_fit(
-            &new_k_wq,
-            &new_k_scales,
-            &new_k_biases,
-            &new_v_wq,
-            &new_v_scales,
-            &new_v_biases,
-        )?;
+        let queries_for_sdpa = if let Some(pi) = self.rotation.as_ref() {
+            let pi_t = pi.as_dtype(queries.dtype())?.transpose_axes(&[1, 0])?;
+            queries.matmul(&pi_t)?
+        } else {
+            queries.clone()
+        };
 
-        // Slice-write into the [offset:offset+s] rows.
-        let start = self.offset;
-        let end = self.offset + s;
-        let k_wq_buf = self.keys_wq.as_mut().expect("buffer just allocated");
-        let k_s_buf = self.keys_scales.as_mut().expect("buffer just allocated");
-        let k_b_buf = self.keys_biases.as_mut().expect("buffer just allocated");
-        let v_wq_buf = self.values_wq.as_mut().expect("buffer just allocated");
-        let v_s_buf = self.values_scales.as_mut().expect("buffer just allocated");
-        let v_b_buf = self.values_biases.as_mut().expect("buffer just allocated");
+        let q_shape = queries_for_sdpa.shape();
+        let head_dim = q_shape[q_shape.len() - 1];
+        let n_q = q_shape[q_shape.len() - 2];
+        let h_q = q_shape[1];
+        let h_kv = k_wq.shape()[1];
 
-        k_wq_buf.try_index_mut((Ellipsis, start..end, ..), new_k_wq)?;
-        k_s_buf.try_index_mut((Ellipsis, start..end, ..), new_k_scales)?;
-        k_b_buf.try_index_mut((Ellipsis, start..end, ..), new_k_biases)?;
-        v_wq_buf.try_index_mut((Ellipsis, start..end, ..), new_v_wq)?;
-        v_s_buf.try_index_mut((Ellipsis, start..end, ..), new_v_scales)?;
-        v_b_buf.try_index_mut((Ellipsis, start..end, ..), new_v_biases)?;
+        let fused_supported = self.use_fused_kernel
+            && n_q == 1
+            && matches!(self.bits, 4 | 8)
+            && head_dim % (32 / self.bits) == 0
+            && head_dim % self.group_size == 0
+            && h_q % h_kv == 0;
 
-        self.offset = end;
+        let out = if fused_supported {
+            fused_qsdpa_decode(
+                cached_fused_qsdpa_kernel(),
+                FusedQsdpaInputs {
+                    q: &queries_for_sdpa,
+                    k_wq: &k_wq,
+                    k_scales: &k_s,
+                    k_biases: &k_b,
+                    v_wq: &v_wq,
+                    v_scales: &v_s,
+                    v_biases: &v_b,
+                    mask,
+                    scale,
+                    head_dim,
+                    group_size: self.group_size,
+                    bits: self.bits,
+                    h_q,
+                    h_kv,
+                },
+            )?
+        } else {
+            let q_keys = QuantizedKeys {
+                keys: k_wq,
+                scales: k_s,
+                biases: k_b,
+            };
+            let q_values = QuantizedValues {
+                values: v_wq,
+                scales: v_s,
+                biases: v_b,
+            };
+            quantized_scaled_dot_product_attention(
+                queries_for_sdpa,
+                q_keys,
+                q_values,
+                scale,
+                mask,
+                self.group_size,
+                self.bits,
+            )?
+        };
 
-        // Dequantise the [:offset] populated slice and return as plain
-        // (K, V) for the standard SDPA path.
-        let k_wq_view = k_wq_buf.index((Ellipsis, 0..end, ..));
-        let k_s_view = k_s_buf.index((Ellipsis, 0..end, ..));
-        let k_b_view = k_b_buf.index((Ellipsis, 0..end, ..));
-        let v_wq_view = v_wq_buf.index((Ellipsis, 0..end, ..));
-        let v_s_view = v_s_buf.index((Ellipsis, 0..end, ..));
-        let v_b_view = v_b_buf.index((Ellipsis, 0..end, ..));
-
-        let k_out = dequantize(&k_wq_view, &k_s_view, &k_b_view, self.group_size, self.bits)?;
-        let v_out = dequantize(&v_wq_view, &v_s_view, &v_b_view, self.group_size, self.bits)?;
-        Ok((k_out, v_out))
+        if let Some(pi) = self.rotation.as_ref() {
+            let pi_cast = pi.as_dtype(out.dtype())?;
+            out.matmul(&pi_cast)
+        } else {
+            Ok(out)
+        }
     }
 }
 
@@ -856,8 +1070,8 @@ impl KeyValueCache for RotatingKVCache {
             let tail_v = buf_v.index((Ellipsis, split..self.max_size, ..));
             let new_k = buf_k.index((Ellipsis, self.keep..split, ..));
             let new_v = buf_v.index((Ellipsis, self.keep..split, ..));
-            let out_k = mlx_rs::ops::concatenate_axis(&[head_k, tail_k, new_k], -2)?;
-            let out_v = mlx_rs::ops::concatenate_axis(&[head_v, tail_v, new_v], -2)?;
+            let out_k = concatenate_axis(&[head_k, tail_k, new_k], -2)?;
+            let out_v = concatenate_axis(&[head_v, tail_v, new_v], -2)?;
             Ok((out_k, out_v))
         }
     }
@@ -908,10 +1122,21 @@ fn parse_dtype_meta(meta: &HashMap<String, String>, key: &str) -> Result<Option<
     Ok(Some(dt))
 }
 
-/// Build a uniform prompt cache for a decoder-only model.
-///
-/// One [`KVCache`] per layer. `max_kv_size` is reserved for sliding-
-/// window callers; the plain `KVCache` ignores it.
+fn parse_meta_bool(
+    meta: &HashMap<String, String>,
+    key: &str,
+    default: bool,
+) -> Result<bool, Error> {
+    match meta.get(key) {
+        None => Ok(default),
+        Some(s) => s
+            .parse::<bool>()
+            .map_err(|e| Error::Other(format!("meta {key:?} parse: {e}").into())),
+    }
+}
+
+/// Uniform prompt cache for a decoder-only model: one [`KVCache`]
+/// per layer. `max_kv_size` is reserved for sliding-window callers.
 pub fn make_prompt_cache(num_layers: usize, _max_kv_size: Option<i32>) -> Vec<KVCache> {
     (0..num_layers).map(|_| KVCache::new()).collect()
 }
@@ -980,7 +1205,7 @@ pub fn save_prompt_cache<C: KeyValueCache>(
 
 /// One layer's worth of loaded prompt-cache state. Caller dispatches on the
 /// variant to recover the original cache type.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum LoadedCache {
     /// `class_name == "KVCache"`.
     Plain(KVCache),
