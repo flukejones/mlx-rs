@@ -28,6 +28,7 @@ minijinja = "2"
 
 [dev-dependencies]
 lazy_static = "1"
+tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
