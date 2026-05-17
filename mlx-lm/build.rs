@@ -1,14 +1,16 @@
-extern crate cmake;
+//! Generate the steel-attention Metal preamble from the cached mlx
+//! source tree. Produces a bare Metal-source `.txt` under `$OUT_DIR`,
+//! exposed to Rust via `STEEL_ATTENTION_PREAMBLE_PATH`. mlx-lm's kernel
+//! source uses `include_str!(env!(...))` to embed the preamble in
+//! `KERNEL_HEADER` for `mlx_rs::fast::metal_kernel` to compile against.
 
-use cmake::Config;
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 // ===================== shared mlx fetch helper =====================
-// Identical block in `mlx-lm/build.rs`. Keep them in sync when edited.
+// Identical block in `mlx-sys/build.rs`. Keep them in sync when edited.
 
 /// Resolve the upstream mlx source tree, fetching it into a shared
 /// `target/mlx-rs-cache/<sha>/mlx/` if absent. Honours the
@@ -64,7 +66,10 @@ fn workspace_root() -> PathBuf {
             }
         }
         if !dir.pop() {
-            panic!("workspace root not found from {}", env::var("CARGO_MANIFEST_DIR").unwrap());
+            panic!(
+                "workspace root not found from {}",
+                env::var("CARGO_MANIFEST_DIR").unwrap()
+            );
         }
     }
 }
@@ -181,131 +186,73 @@ fn fetch_mlx_tarball(sha: &str, cache_root: &Path) -> Result<(), String> {
 
 // =================== end shared mlx fetch helper ===================
 
-/// Find the clang runtime library path dynamically using xcrun
-fn find_clang_rt_path() -> Option<String> {
-    // Use xcrun to find the active toolchain path
-    let output = Command::new("xcrun")
-        .args(["--show-sdk-platform-path"])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    // Get the developer directory which contains the toolchain
-    let output = Command::new("xcode-select")
-        .args(["--print-path"])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let developer_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let toolchain_base = format!(
-        "{}/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang",
-        developer_dir
-    );
-
-    // Find the clang version directory (it varies by Xcode version)
-    let clang_dir = std::fs::read_dir(&toolchain_base).ok()?;
-    for entry in clang_dir.flatten() {
-        let darwin_path = entry.path().join("lib/darwin");
-        let clang_rt_lib = darwin_path.join("libclang_rt.osx.a");
-        if clang_rt_lib.exists() {
-            return Some(darwin_path.to_string_lossy().to_string());
-        }
-    }
-
-    None
-}
-
-fn build_and_link_mlx_c() {
-    let mlx_src = ensure_mlx_src();
-
-    let mut config = Config::new("src/mlx-c");
-    config.very_verbose(true);
-    config.define("CMAKE_INSTALL_PREFIX", ".");
-    // Skip cmake's git-clone of mlx; reuse the shared cache.
-    config.define("FETCHCONTENT_SOURCE_DIR_MLX", mlx_src.to_string_lossy().as_ref());
-
-    // Use Xcode's clang to ensure compatibility with the macOS SDK
-    config.define("CMAKE_C_COMPILER", "/usr/bin/cc");
-    config.define("CMAKE_CXX_COMPILER", "/usr/bin/c++");
-
-    #[cfg(debug_assertions)]
-    {
-        config.define("CMAKE_BUILD_TYPE", "Debug");
-    }
-
-    #[cfg(not(debug_assertions))]
-    {
-        config.define("CMAKE_BUILD_TYPE", "Release");
-    }
-
-    config.define("MLX_BUILD_METAL", "OFF");
-    config.define("MLX_BUILD_ACCELERATE", "OFF");
-
-    #[cfg(feature = "metal")]
-    {
-        config.define("MLX_BUILD_METAL", "ON");
-    }
-
-    #[cfg(feature = "accelerate")]
-    {
-        config.define("MLX_BUILD_ACCELERATE", "ON");
-    }
-
-    // build the mlx-c project
-    let dst = config.build();
-
-    println!("cargo:rustc-link-search=native={}/build/lib", dst.display());
-    println!("cargo:rustc-link-lib=static=mlx");
-    println!("cargo:rustc-link-lib=static=mlxc");
-
-    println!("cargo:rustc-link-lib=c++");
-    println!("cargo:rustc-link-lib=dylib=objc");
-    println!("cargo:rustc-link-lib=framework=Foundation");
-
-    #[cfg(feature = "metal")]
-    {
-        println!("cargo:rustc-link-lib=framework=Metal");
-    }
-
-    #[cfg(feature = "accelerate")]
-    {
-        println!("cargo:rustc-link-lib=framework=Accelerate");
-    }
-
-    // Link against Xcode's clang runtime for ___isPlatformVersionAtLeast symbol
-    // This is needed on macOS 26+ where the bundled LLVM runtime may be outdated
-    // See: https://github.com/conda-forge/llvmdev-feedstock/issues/244
-    if let Some(clang_rt_path) = find_clang_rt_path() {
-        println!("cargo:rustc-link-search={}", clang_rt_path);
-        println!("cargo:rustc-link-lib=static=clang_rt.osx");
-    }
-}
+const STEEL_SRC_REL: &str = "steel/attn/kernels/steel_attention";
 
 fn main() {
-    build_and_link_mlx_c();
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=MLX_RS_SRC_DIR");
 
-    // generate bindings
-    let bindings = bindgen::Builder::default()
-        .rust_target("1.73.0".parse().expect("rust-version"))
-        .header("src/mlx-c/mlx/c/mlx.h")
-        .header("src/mlx-c/mlx/c/linalg.h")
-        .header("src/mlx-c/mlx/c/error.h")
-        .header("src/mlx-c/mlx/c/transforms_impl.h")
-        .clang_arg("-Isrc/mlx-c")
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .generate()
-        .expect("Unable to generate bindings");
+    let mlx_src = ensure_mlx_src();
 
-    // Write the bindings to the $OUT_DIR/bindings.rs file.
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    bindings
-        .write_to_file(out_path.join("bindings.rs"))
-        .expect("Couldn't write bindings!");
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+    let preamble_path = generate_steel_preamble(&mlx_src, &out_dir);
+    println!(
+        "cargo:rustc-env=STEEL_ATTENTION_PREAMBLE_PATH={}",
+        preamble_path.display()
+    );
+}
+
+/// Run `make_compiled_preamble.sh` against `steel/attn/kernels/steel_attention.h`,
+/// strip the `R"preamble(...)"` envelope, and write bare Metal source to
+/// `<out>/steel_attention_preamble.metal`. Returns that path.
+fn generate_steel_preamble(mlx_src: &Path, out_dir: &Path) -> PathBuf {
+    let script = mlx_src.join("mlx/backend/metal/make_compiled_preamble.sh");
+    if !script.is_file() {
+        panic!("make_compiled_preamble.sh missing at {}", script.display());
+    }
+
+    // The script writes <stage>/steel_attention.cpp from steel/attn/.../steel_attention.h.
+    let stage = out_dir.join("steel-preamble-stage");
+    let _ = fs::remove_dir_all(&stage);
+    fs::create_dir_all(&stage)
+        .unwrap_or_else(|e| panic!("mkdir {}: {e}", stage.display()));
+
+    let status = Command::new("bash")
+        .arg(&script)
+        .arg(&stage)
+        .arg("clang") // CC — script only uses basename to compose filenames; xcrun does the real work.
+        .arg(mlx_src) // PROJECT_SOURCE_DIR
+        .arg(STEEL_SRC_REL)
+        .status()
+        .unwrap_or_else(|e| panic!("spawn {}: {e}", script.display()));
+    if !status.success() {
+        panic!(
+            "{} exited with {} (need Xcode CLT + `xcrun metal` toolchain)",
+            script.display(),
+            status
+        );
+    }
+
+    let cpp = stage.join("steel_attention.cpp");
+    let cpp_body = fs::read_to_string(&cpp)
+        .unwrap_or_else(|e| panic!("read {}: {e}", cpp.display()));
+    let metal = strip_preamble_envelope(&cpp_body);
+
+    let out_path = out_dir.join("steel_attention_preamble.metal");
+    fs::write(&out_path, metal)
+        .unwrap_or_else(|e| panic!("write {}: {e}", out_path.display()));
+    out_path
+}
+
+/// Strip the `const char* steel_attention() { return R"preamble( ... )preamble"; }`
+/// envelope. Returns the inner Metal source.
+fn strip_preamble_envelope(cpp: &str) -> &str {
+    let open = cpp
+        .find("R\"preamble(")
+        .expect("steel_attention.cpp missing R\"preamble(...) opening");
+    let start = open + "R\"preamble(".len();
+    let close = cpp[start..]
+        .rfind(")preamble\"")
+        .expect("steel_attention.cpp missing )preamble\" closing");
+    cpp[start..start + close].trim_matches('\n').trim_start_matches('\n')
 }
