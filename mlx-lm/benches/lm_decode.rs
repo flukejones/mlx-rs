@@ -21,7 +21,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use mlx_lm::cache::KVCache;
+use mlx_lm::cache::{KVCache, QuantizedKVCache};
 use mlx_lm::models::{
     llama::{load_llama_model, Generate as LlamaGenerate, Model as LlamaModel},
     qwen3::{load_qwen3_model, Generate as Qwen3Generate, Model as Qwen3Model},
@@ -34,6 +34,8 @@ use mlx_rs::{
 
 const DECODE_TOKENS: i32 = 100;
 const LONG_PROMPT_LEN: usize = 1024;
+const VERY_LONG_PROMPT_LEN: usize = 8192;
+const DECODE_ONLY_STEPS: i32 = 50;
 const SHORT_PROMPT_LEN: usize = 13;
 const WARMUP_TOKENS: i32 = 4;
 const SAMPLE_SIZE: usize = 10;
@@ -348,6 +350,100 @@ fn maybe_bench_llama(c: &mut Criterion, label: &str, repo_id: &str) {
     group.finish();
 }
 
+/// Decode-only (prefill excluded) bench for qwen3 + `QuantizedKVCache`.
+/// `with_packed_matmul` toggles fused-kernel vs dequant-on-read.
+/// `with_rotation_seed` adds Π pre-quantize.
+fn maybe_bench_qwen3_kv_decode_only(
+    c: &mut Criterion,
+    label: &str,
+    repo_id: &str,
+    kv_bits: i32,
+    with_packed_matmul: bool,
+    with_rotation_seed: Option<u64>,
+    prompt_len: usize,
+) {
+    let Some(dir) = ensure_model(repo_id) else {
+        return;
+    };
+    let mut model = match load_qwen3_model(&dir) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skipping qwen3 kv {label}: load failed: {e:?}");
+            return;
+        }
+    };
+    let prompt = synthetic_prompt(prompt_len, 1000);
+    let num_layers = model.layer_count();
+    const HEAD_DIM: i32 = 128;
+
+    let make_cache = |n: usize| -> Vec<Option<QuantizedKVCache>> {
+        (0..n)
+            .map(|i| {
+                let mut c = QuantizedKVCache::with_config(256, 64, kv_bits);
+                c = if with_packed_matmul {
+                    c.with_fused_kernel()
+                } else {
+                    c.with_dequant_path()
+                };
+                if let Some(base_seed) = with_rotation_seed {
+                    c = c
+                        .with_rotation(HEAD_DIM, base_seed + i as u64)
+                        .expect("with_rotation");
+                }
+                Some(c)
+            })
+            .collect()
+    };
+
+    // Seed the cache once: prefill + WARMUP_TOKENS so the steady-state
+    // decode path is hot before any timed iteration.
+    let seeded_cache: Vec<Option<QuantizedKVCache>> = {
+        let mut cache = make_cache(num_layers);
+        let mut tokens = Vec::new();
+        let iter = Qwen3Generate::<QuantizedKVCache>::new(&mut model, &mut cache, 0.0, &prompt);
+        for (tok, n) in iter.zip(0..WARMUP_TOKENS) {
+            tokens.push(tok.unwrap());
+            if n == 0 {
+                eval(&tokens).unwrap();
+            }
+        }
+        eval(&tokens).unwrap();
+        cache
+    };
+
+    let mut group = c.benchmark_group(format!("qwen3_kv_decode_only_{label}"));
+    group.throughput(Throughput::Elements(DECODE_ONLY_STEPS as u64));
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+    group.bench_function(BenchmarkId::new("post_prefill", DECODE_ONLY_STEPS), |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let mut cache = seeded_cache.clone();
+                let seed = Array::from_slice(&[0i32], &[1, 1]);
+                let mut iter =
+                    Qwen3Generate::<QuantizedKVCache>::new(&mut model, &mut cache, 0.0, &seed);
+                // Drain Generate's Prefill state (two forwards on first
+                // next()) before starting the timer so we measure only
+                // post-prefill decode steps.
+                let warm = iter.next().expect("at least one token").unwrap();
+                eval([&warm]).unwrap();
+
+                let start = Instant::now();
+                let mut tokens = Vec::with_capacity(DECODE_ONLY_STEPS as usize);
+                for tok in iter.by_ref().take(DECODE_ONLY_STEPS as usize) {
+                    tokens.push(tok.unwrap());
+                }
+                eval(&tokens).unwrap();
+                total += start.elapsed();
+                drop(cache);
+            }
+            total
+        });
+    });
+    group.finish();
+}
+
 /// Which cells to register. Trimmed = end-to-end decode only; Full = all
 /// llama + qwen3 size × precision combinations. Default trimmed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -375,6 +471,26 @@ fn bench_decode(c: &mut Criterion) {
     maybe_bench_llama(c, "small_q8", "mlx-community/Llama-3.2-1B-Instruct-8bit");
     maybe_bench_llama(c, "small_q4", "mlx-community/Llama-3.2-1B-Instruct-4bit");
 
+    // KV-quant decode-only: dequant-on-read vs packed-matmul. T=1024.
+    maybe_bench_qwen3_kv_decode_only(
+        c,
+        "large_q4_kv8_dequant_t1024",
+        "mlx-community/Qwen3-1.7B-4bit",
+        8,
+        false,
+        None,
+        LONG_PROMPT_LEN,
+    );
+    maybe_bench_qwen3_kv_decode_only(
+        c,
+        "large_q4_kv8_packed_matmul_t1024",
+        "mlx-community/Qwen3-1.7B-4bit",
+        8,
+        true,
+        None,
+        LONG_PROMPT_LEN,
+    );
+
     if set == BenchSet::Full {
         maybe_bench_qwen3(c, "small_bf16", "mlx-community/Qwen3-0.6B-bf16");
         maybe_bench_qwen3(c, "small_q8", "mlx-community/Qwen3-0.6B-8bit");
@@ -382,6 +498,26 @@ fn bench_decode(c: &mut Criterion) {
         maybe_bench_llama(c, "large_bf16", "mlx-community/Llama-3.2-3B-Instruct-bf16");
         maybe_bench_llama(c, "large_q8", "mlx-community/Llama-3.2-3B-Instruct-8bit");
         maybe_bench_llama(c, "large_q4", "mlx-community/Llama-3.2-3B-Instruct-4bit");
+
+        // Long-context (T=8192) bandwidth-bound regime.
+        maybe_bench_qwen3_kv_decode_only(
+            c,
+            "large_q4_kv8_dequant_t8192",
+            "mlx-community/Qwen3-1.7B-4bit",
+            8,
+            false,
+            None,
+            VERY_LONG_PROMPT_LEN,
+        );
+        maybe_bench_qwen3_kv_decode_only(
+            c,
+            "large_q4_kv8_packed_matmul_t8192",
+            "mlx-community/Qwen3-1.7B-4bit",
+            8,
+            true,
+            None,
+            VERY_LONG_PROMPT_LEN,
+        );
     }
 }
 
