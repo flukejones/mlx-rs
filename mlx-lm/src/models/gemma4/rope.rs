@@ -6,7 +6,7 @@ use mlx_rs::error::Exception;
 use mlx_rs::module::{Module, ModuleParamMut, ModuleParamRef, ModuleParameters};
 use mlx_rs::nn::RopeInput;
 use mlx_rs::ops::{arange, concatenate_axis, full};
-use mlx_rs::{fast, Array, Dtype};
+use mlx_rs::{fast, Array};
 
 const F32_INF: f32 = f32::INFINITY;
 
@@ -55,8 +55,7 @@ impl ProportionalRope {
             concatenate_axis(&[rotated_freqs, infs], 0)?
         } else {
             rotated_freqs
-        }
-        .as_dtype(Dtype::Float32)?;
+        };
         Ok(Self { dims, rotated_dims, traditional, freqs })
     }
 }
