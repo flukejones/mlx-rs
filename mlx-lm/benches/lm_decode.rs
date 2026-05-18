@@ -52,6 +52,21 @@ const WARMUP_TOKENS: i32 = 4;
 const SAMPLE_SIZE: usize = 10;
 const MEASUREMENT_SECS: u64 = 20;
 
+/// Emit `[mlx_mem] tag active=<MB> cache=<MB> peak=<MB>` to stderr so
+/// downstream tools (e.g. `bench_with_temp`) can overlay MLX allocator
+/// state on the bench-wall-clock timeline.
+fn log_mlx_mem(tag: &str) {
+    let active = mlx_rs::memory::active_memory();
+    let cache = mlx_rs::memory::cache_memory();
+    let peak = mlx_rs::memory::peak_memory();
+    eprintln!(
+        "[mlx_mem] {tag} active_mb={:.1} cache_mb={:.1} peak_mb={:.1}",
+        active as f64 / 1e6,
+        cache as f64 / 1e6,
+        peak as f64 / 1e6,
+    );
+}
+
 /// Resolve `<cache>/<repo_id>`; download via `hf` CLI on first miss.
 /// Set `MLX_LM_BENCH_NO_DOWNLOAD=1` to skip download.
 fn ensure_model(repo_id: &str) -> Option<PathBuf> {
@@ -159,7 +174,22 @@ fn synthetic_prompt(len: usize, base_id: i32) -> Array {
     Array::from_slice(&ids, &[ids.len() as i32]).index(NewAxis)
 }
 
+/// Substring filter on the per-cell group prefix. If
+/// `MLX_LM_BENCH_ONLY` is set, any `maybe_bench_*` whose
+/// `<family>_<label>` group prefix does not contain the substring will
+/// skip even its model load — useful to keep cap-sweep iteration cost
+/// down (otherwise every cargo-bench invocation reloads every model).
+fn bench_only_skip(group_prefix: &str) -> bool {
+    match std::env::var("MLX_LM_BENCH_ONLY") {
+        Ok(v) if !v.is_empty() => !group_prefix.contains(&v),
+        _ => false,
+    }
+}
+
 fn maybe_bench_qwen3(c: &mut Criterion, label: &str, repo_id: &str) {
+    if bench_only_skip(&format!("qwen3_decode_{label}")) {
+        return;
+    }
     let Some(dir) = ensure_model(repo_id) else {
         return;
     };
@@ -294,6 +324,9 @@ fn time_llama_decode(model: &mut LlamaModel, prompt: &Array, steps: i32) -> Dura
 }
 
 fn maybe_bench_llama(c: &mut Criterion, label: &str, repo_id: &str) {
+    if bench_only_skip(&format!("llama_decode_{label}")) {
+        return;
+    }
     let Some(dir) = ensure_model(repo_id) else {
         return;
     };
@@ -373,6 +406,9 @@ fn maybe_bench_qwen3_kv_decode_only(
     with_rotation_seed: Option<u64>,
     prompt_len: usize,
 ) {
+    if bench_only_skip(&format!("qwen3_kv_decode_only_{label}")) {
+        return;
+    }
     let Some(dir) = ensure_model(repo_id) else {
         return;
     };
@@ -461,6 +497,9 @@ const QWEN3_5_SHORT_PROMPT: &[i32] = &[
 ];
 
 fn maybe_bench_qwen3_5(c: &mut Criterion, label: &str, repo_id: &str) {
+    if bench_only_skip(&format!("qwen3_5_decode_{label}")) {
+        return;
+    }
     let Some(dir) = ensure_model(repo_id) else {
         return;
     };
@@ -550,6 +589,9 @@ enum BenchSet {
 }
 
 fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
+    if bench_only_skip(&format!("gemma4_decode_{label}")) {
+        return;
+    }
     let Some(dir) = ensure_model(repo_id) else {
         return;
     };
@@ -567,6 +609,7 @@ fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
             return;
         }
     };
+    log_mlx_mem(&format!("gemma4_{label}/loaded"));
 
     let short = synthetic_prompt(SHORT_PROMPT_LEN, 1000);
     let long = synthetic_prompt(LONG_PROMPT_LEN, 1000);
@@ -585,12 +628,16 @@ fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
         let mut iter = Gemma4Generate::<Gemma4LayerCache>::new(model, &mut cache, 0.0, prompt);
         let first = iter.next().expect("token").unwrap();
         eval([&first]).unwrap();
-        let mut tokens = Vec::with_capacity(steps as usize);
+        // Eval per step so the lazy graph collapses immediately —
+        // queuing all `steps` tokens into a Vec then `eval`-ing once
+        // materialises every per-layer cache scatter intermediate at
+        // peak, blowing up to ~tens of GB on long contexts and forcing
+        // the OS into swap (poisoning the timing).
         let t = Instant::now();
         for tok in iter.by_ref().take(steps as usize) {
-            tokens.push(tok.unwrap());
+            let tok = tok.unwrap();
+            eval([&tok]).unwrap();
         }
-        eval(&tokens).unwrap();
         Instant::now() - t
     };
 
@@ -598,13 +645,15 @@ fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
 
-    for (id, prompt) in [
-        (BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32), &short),
-        (BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32), &long),
+    for (cell_name, id, prompt) in [
+        ("prefill_short", BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32), &short),
+        ("prefill_long", BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32), &long),
     ] {
         let prompt_len = prompt.shape().last().copied().unwrap_or(0) as u64;
         group.throughput(Throughput::Elements(prompt_len));
+        let tag = format!("gemma4_{label}/{cell_name}");
         group.bench_function(id, |b| {
+            log_mlx_mem(&format!("{tag}/start"));
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
                 for _ in 0..iters {
@@ -612,15 +661,18 @@ fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
                 }
                 total
             });
+            log_mlx_mem(&format!("{tag}/end"));
         });
     }
 
     group.throughput(Throughput::Elements(decode_steps as u64));
-    for (id, prompt) in [
-        (BenchmarkId::new("decode_short", decode_steps), &short),
-        (BenchmarkId::new("decode_long", decode_steps), &long),
+    for (cell_name, id, prompt) in [
+        ("decode_short", BenchmarkId::new("decode_short", decode_steps), &short),
+        ("decode_long", BenchmarkId::new("decode_long", decode_steps), &long),
     ] {
+        let tag = format!("gemma4_{label}/{cell_name}");
         group.bench_function(id, |b| {
+            log_mlx_mem(&format!("{tag}/start"));
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
                 for _ in 0..iters {
@@ -628,9 +680,90 @@ fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
                 }
                 total
             });
+            log_mlx_mem(&format!("{tag}/end"));
         });
     }
     group.finish();
+}
+
+/// Decode-only bench for gemma4 with `mlx::memory::set_cache_limit`
+/// pinned to a specific size for the duration of the measurement. Lets
+/// us trade off MLX reuse-pool footprint vs decode tok/s.
+fn maybe_bench_gemma4_cache_limit(
+    c: &mut Criterion,
+    label: &str,
+    repo_id: &str,
+    cache_limit_bytes: usize,
+) {
+    if bench_only_skip(&format!("gemma4_cache_limit_{label}")) {
+        return;
+    }
+    let Some(dir) = ensure_model(repo_id) else {
+        return;
+    };
+    let cfg = match Gemma4Config::from_file(dir.join("config.json")) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("skipping gemma4 cache-limit {label}: config parse failed: {e:?}");
+            return;
+        }
+    };
+    let mut model = match load_gemma4_model_sanitized(&dir) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skipping gemma4 cache-limit {label}: load failed: {e:?}");
+            return;
+        }
+    };
+
+    let prev_limit = mlx_rs::memory::set_cache_limit(cache_limit_bytes);
+    mlx_rs::memory::clear_cache();
+    log_mlx_mem(&format!("gemma4_{label}/loaded"));
+
+    let short = synthetic_prompt(SHORT_PROMPT_LEN, 1000);
+    let long = synthetic_prompt(LONG_PROMPT_LEN, 1000);
+    let decode_steps = DECODE_TOKENS - 1;
+
+    let time_decode = |model: &mut Gemma4Model, prompt: &Array, steps: i32| -> Duration {
+        let mut cache = make_gemma4_caches(&cfg);
+        let mut iter = Gemma4Generate::<Gemma4LayerCache>::new(model, &mut cache, 0.0, prompt);
+        let first = iter.next().expect("token").unwrap();
+        eval([&first]).unwrap();
+        let t = Instant::now();
+        for tok in iter.by_ref().take(steps as usize) {
+            let tok = tok.unwrap();
+            eval([&tok]).unwrap();
+        }
+        Instant::now() - t
+    };
+
+    let mut group = c.benchmark_group(format!("gemma4_cache_limit_{label}"));
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+    group.throughput(Throughput::Elements(decode_steps as u64));
+
+    for (cell_name, id, prompt) in [
+        ("decode_short", BenchmarkId::new("decode_short", decode_steps), &short),
+        ("decode_long", BenchmarkId::new("decode_long", decode_steps), &long),
+    ] {
+        let tag = format!("gemma4_{label}/{cell_name}");
+        group.bench_function(id, |b| {
+            log_mlx_mem(&format!("{tag}/start"));
+            b.iter_custom(|iters| {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    total += time_decode(&mut model, prompt, decode_steps);
+                }
+                total
+            });
+            log_mlx_mem(&format!("{tag}/end"));
+        });
+    }
+    group.finish();
+
+    // Restore the previous (typically unbounded / default) cache limit so
+    // subsequent bench cells aren't penalised.
+    mlx_rs::memory::set_cache_limit(prev_limit);
 }
 
 fn bench_set() -> BenchSet {
@@ -659,6 +792,25 @@ fn bench_decode(c: &mut Criterion) {
     // Gemma 4 (dense + MoE; per-layer-input gating).
     maybe_bench_gemma4(c, "26b_a4b_it_q8", "mlx-community/gemma-4-26b-a4b-it-8bit");
     maybe_bench_gemma4(c, "31b_it_q8", "mlx-community/gemma-4-31b-it-8bit");
+
+    // MLX cache-pool cap sweep on gemma4-26B-A4B-q8 (decode-only).
+    // Apple's mlx-swift docs recommend 20 MB for LLMs; we sweep up from
+    // there to find the curve. 4 GB = baseline "effectively unbounded".
+    for (tag, bytes) in [
+        ("cache0", 0_usize),
+        ("cache20mb", 20 << 20),
+        ("cache64mb", 64 << 20),
+        ("cache256mb", 256 << 20),
+        ("cache1gb", 1_usize << 30),
+        ("cache4gb", 4_usize << 30),
+    ] {
+        maybe_bench_gemma4_cache_limit(
+            c,
+            &format!("26b_a4b_it_q8_{tag}"),
+            "mlx-community/gemma-4-26b-a4b-it-8bit",
+            bytes,
+        );
+    }
     if set == BenchSet::Full {
         maybe_bench_gemma4(c, "e2b_it_q8", "mlx-community/gemma-4-e2b-it-8bit");
         maybe_bench_gemma4(c, "e4b_it_q8", "mlx-community/gemma-4-e4b-it-8bit");
