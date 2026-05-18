@@ -21,7 +21,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use mlx_rs::module::ModuleParameters;
-use mlx_rs::ops::{contiguous, split};
 use mlx_rs::transforms::eval_params;
 use mlx_rs::Array;
 
@@ -105,26 +104,36 @@ fn sanitize_entry(key: &str, value: Array) -> Result<Vec<(String, Array)>, Error
     }
     let key = rewrite_outer_key(key);
 
-    if let Some(base) = key.strip_suffix(".experts.gate_up_proj") {
-        // Split `[num_experts, 2*moe_hidden, hidden]` along axis -2 into
-        // `(gate, up)`, each `[num_experts, moe_hidden, hidden]`. Force
-        // contiguous so each tensor is row-major in the rebuilt map.
-        let parts = split(&value, 2, -2).map_err(Error::Exception)?;
-        if parts.len() != 2 {
-            return Err(Error::Other(
-                format!("gemma4: experts.gate_up_proj split into {} parts", parts.len()).into(),
-            ));
+    // Pre-quantised mlx-community checkpoints ship `gate_proj` and
+    // `up_proj` as separate keys. Keep them under their original names
+    // here; the post-load pass concatenates them into a single
+    // `gate_up_proj` for the fused gather_qmm path.
+    for suffix in [".weight", ".scales", ".biases"] {
+        if let Some(base) = key.strip_suffix(&format!(".experts.gate_proj{suffix}")) {
+            return Ok(vec![(
+                format!("{base}.switch_glu.gate_proj{suffix}"),
+                value,
+            )]);
         }
-        let mut it = parts.into_iter();
-        let gate = contiguous(it.next().unwrap(), None).map_err(Error::Exception)?;
-        let up = contiguous(it.next().unwrap(), None).map_err(Error::Exception)?;
-        return Ok(vec![
-            (format!("{base}.switch_glu.gate_proj.weight"), gate),
-            (format!("{base}.switch_glu.up_proj.weight"), up),
-        ]);
+        if let Some(base) = key.strip_suffix(&format!(".experts.up_proj{suffix}")) {
+            return Ok(vec![(
+                format!("{base}.switch_glu.up_proj{suffix}"),
+                value,
+            )]);
+        }
+        if let Some(base) = key.strip_suffix(&format!(".experts.down_proj{suffix}")) {
+            return Ok(vec![(
+                format!("{base}.switch_glu.down_proj{suffix}"),
+                value,
+            )]);
+        }
     }
-    if let Some(base) = key.strip_suffix(".experts.down_proj") {
-        return Ok(vec![(format!("{base}.switch_glu.down_proj.weight"), value)]);
+    // Dense checkpoint ships fused gate_up_proj. Keep it fused.
+    if let Some(base) = key.strip_suffix(".experts.gate_up_proj") {
+        return Ok(vec![(
+            format!("{base}.switch_glu.gate_up_proj.weight"),
+            value,
+        )]);
     }
 
     Ok(vec![(key, value)])
@@ -148,6 +157,13 @@ pub fn load_sanitized_gemma4_weights(
             }
         }
     }
+
+    // Merge pre-split `gate_proj` + `up_proj` into a fused `gate_up_proj`
+    // (concat along output-rows axis -2) so SwitchGLU runs one
+    // `gather_qmm` per layer instead of two. The dense `Mlp` keeps
+    // gate / up split — a single `[D, 2*intermediate]` matmul fell off
+    // the q-matmul kernel sweet spot on M4 Max and regressed decode.
+    merge_gate_up(&mut raw, ".switch_glu", -2)?;
 
     // Quantised tensors carry `<prefix>.scales` (and `.biases`)
     // siblings; the `<prefix>.weight` slot must be redirected to
@@ -198,6 +214,38 @@ fn is_shared_kv_layer_key(key: &str, num_layers: i32, num_shared: i32) -> bool {
     tail.starts_with("self_attn.k_") || tail.starts_with("self_attn.v_")
 }
 
+/// Concat `<base><module>.gate_proj.{weight,scales,biases}` with its
+/// `up_proj` sibling along `axis` into `<base><module>.gate_up_proj.*`.
+/// Removes the split entries. `module` is `.mlp` (dense) or
+/// `.switch_glu` (MoE).
+fn merge_gate_up(
+    raw: &mut HashMap<String, Array>,
+    module: &str,
+    axis: i32,
+) -> Result<(), Error> {
+    let suffix_pat = format!("{module}.gate_proj.weight");
+    let bases: Vec<String> = raw
+        .keys()
+        .filter_map(|k| k.strip_suffix(&suffix_pat).map(String::from))
+        .collect();
+    for base in bases {
+        for suffix in [".weight", ".scales", ".biases"] {
+            let gate_key = format!("{base}{module}.gate_proj{suffix}");
+            let up_key = format!("{base}{module}.up_proj{suffix}");
+            let gate = match raw.remove(&gate_key) {
+                Some(v) => v,
+                None => continue,
+            };
+            let up = raw.remove(&up_key).ok_or_else(|| {
+                Error::Other(format!("gemma4: missing {up_key} to pair with {gate_key}").into())
+            })?;
+            let fused = mlx_rs::ops::concatenate_axis(&[gate, up], axis)
+                .map_err(Error::Exception)?;
+            raw.insert(format!("{base}{module}.gate_up_proj{suffix}"), fused);
+        }
+    }
+    Ok(())
+}
 
 /// End-to-end load: build `Model::new`, apply quantisation config, load
 /// sanitised weights into the parameter walk, then `eval_params`.

@@ -7,12 +7,15 @@
 //! `(scales, biases)` siblings. Forward dispatches per-token through
 //! `gather_mm` / `gather_qmm` with expert indices.
 
+use std::sync::OnceLock;
+
 use mlx_rs::error::Exception;
 use mlx_rs::macros::ModuleParameters;
 use mlx_rs::module::Param;
 use mlx_rs::ops::indexing::take_axis;
 use mlx_rs::ops::{
-    argsort, expand_dims_axes, gather_mm, gather_qmm, quantize, swap_axes, unflatten,
+    argsort, expand_dims_axes, gather_mm, gather_qmm, quantize, split_sections, swap_axes,
+    unflatten,
 };
 use mlx_rs::quantization::{MaybeQuantized, Quantizable};
 use mlx_rs::Array;
@@ -170,15 +173,22 @@ fn apply_proj(
 
 #[derive(Debug, ModuleParameters)]
 pub struct SwitchGLU {
+    /// Fused gate+up: weight `[E, 2*H, D]`. One `gather_qmm` per layer
+    /// instead of two; split the `2*H` output into (gate, up).
     #[param]
-    pub gate_proj: MaybeQuantized<SwitchLinear>,
-    #[param]
-    pub up_proj: MaybeQuantized<SwitchLinear>,
+    pub gate_up_proj: MaybeQuantized<SwitchLinear>,
     #[param]
     pub down_proj: MaybeQuantized<SwitchLinear>,
+    /// Inner hidden width per expert (`H`). Used to split `gate_up_proj`
+    /// output along the last axis.
+    hidden_dims: i32,
     /// Per-layer compiled-graph cache for `gelu_approx(gate) * up`.
     /// Filled on first forward; reused across every decode step.
     geglu_cache: GegluCache,
+    /// Cached 0-D `top_k` constant for `gather_sort`'s `floor_divide`.
+    /// `Array::from_int` allocates a fresh GPU array each call; this
+    /// drops that per-layer alloc on the long-prompt sort path.
+    top_k_arr: OnceLock<Array>,
 }
 
 impl SwitchGLU {
@@ -189,39 +199,46 @@ impl SwitchGLU {
         bias: bool,
     ) -> Result<Self, Exception> {
         Ok(Self {
-            gate_proj: MaybeQuantized::Original(
-                SwitchLinear::new(input_dims, hidden_dims, num_experts, bias)?,
-            ),
-            up_proj: MaybeQuantized::Original(
-                SwitchLinear::new(input_dims, hidden_dims, num_experts, bias)?,
+            gate_up_proj: MaybeQuantized::Original(
+                SwitchLinear::new(input_dims, 2 * hidden_dims, num_experts, bias)?,
             ),
             down_proj: MaybeQuantized::Original(
                 SwitchLinear::new(hidden_dims, input_dims, num_experts, bias)?,
             ),
+            hidden_dims,
             geglu_cache: GegluCache::default(),
+            top_k_arr: OnceLock::new(),
         })
     }
 
     pub fn forward(&mut self, x: &Array, indices: &Array) -> Result<Array, Exception> {
         // Add two singleton axes: one for top_k, one for the inner
         // gather_mm "1 token per expert" slot.
-        let x = expand_dims_axes(x, &[-2, -3])?;
+        let x_exp = expand_dims_axes(x, &[-2, -3])?;
 
         let do_sort = indices.size() >= SORT_THRESHOLD;
-        let (x_in, idx_in, inv_order) = if do_sort {
-            let (x_s, idx_s, inv) = gather_sort(&x, indices)?;
-            (x_s, idx_s, Some(inv))
-        } else {
-            (x.clone(), indices.clone(), None)
+        let top_k_arr = self.top_k_arr.get_or_init(|| {
+            let k = *indices.shape().last().expect("indices has trailing dim");
+            Array::from_int(k)
+        });
+        let sorted = do_sort
+            .then(|| gather_sort(&x_exp, indices, top_k_arr))
+            .transpose()?;
+        let (x_in, idx_in): (&Array, &Array) = match sorted.as_ref() {
+            Some((xs, idxs, _)) => (xs, idxs),
+            None => (&x_exp, indices),
         };
 
-        let x_up = apply_proj(&self.up_proj, &x_in, &idx_in, do_sort)?;
-        let x_gate = apply_proj(&self.gate_proj, &x_in, &idx_in, do_sort)?;
-        let activated = geglu(&mut self.geglu_cache, &x_gate, &x_up)?;
-        let mut y = apply_proj(&self.down_proj, &activated, &idx_in, do_sort)?;
+        // Fused gate+up: one gather_qmm returns [..., 2*H]; split along
+        // the last axis. MLX `split_sections` returns views (no copy);
+        // pass the slots by reference into geglu's compiled graph.
+        let gate_up = apply_proj(&self.gate_up_proj, x_in, idx_in, do_sort)?;
+        let parts = split_sections(&gate_up, &[self.hidden_dims], -1)?;
+        let activated = geglu(&mut self.geglu_cache, &parts[0], &parts[1])?;
+        let mut y = apply_proj(&self.down_proj, &activated, idx_in, do_sort)?;
 
-        if let Some(inv) = inv_order {
-            y = scatter_unsort(&y, &inv, indices.shape())?;
+        if let Some((_, _, inv)) = sorted.as_ref() {
+            y = scatter_unsort(&y, inv, indices.shape())?;
         }
 
         y.squeeze_axes(&[-2])
@@ -238,23 +255,29 @@ impl Quantizable for SwitchGLU {
         bits: i32,
     ) -> Result<Self::Quantized, Self::QuantizationError> {
         Ok(SwitchGLU {
-            gate_proj: self.gate_proj.try_into_quantized(group_size, bits)?,
-            up_proj: self.up_proj.try_into_quantized(group_size, bits)?,
+            gate_up_proj: self.gate_up_proj.try_into_quantized(group_size, bits)?,
             down_proj: self.down_proj.try_into_quantized(group_size, bits)?,
+            hidden_dims: self.hidden_dims,
             geglu_cache: self.geglu_cache,
+            top_k_arr: self.top_k_arr,
         })
     }
 }
 
 /// Sort tokens by expert id so `gather_mm` accesses contiguous expert
 /// rows. Returns `(sorted_x, sorted_indices, inv_order_to_unsort)`.
-fn gather_sort(x: &Array, indices: &Array) -> Result<(Array, Array, Array), Exception> {
-    let m = *indices.shape().last().expect("indices has trailing dim") as usize;
+/// `top_k_arr` is the cached 0-D `top_k` constant; passing it in lets
+/// the caller avoid a per-call `from_int` alloc.
+fn gather_sort(
+    x: &Array,
+    indices: &Array,
+    top_k_arr: &Array,
+) -> Result<(Array, Array, Array), Exception> {
     let flat_idx = indices.flatten(0, -1)?;
     let order = argsort(&flat_idx)?;
     let inv_order = argsort(&order)?;
     let x_flat = x.flatten(0, -3)?;
-    let row_idx = order.floor_divide(Array::from_int(m as i32))?;
+    let row_idx = order.floor_divide(top_k_arr)?;
     let x_sorted = take_axis(&x_flat, &row_idx, 0)?;
     let idx_sorted = take_axis(&flat_idx, &order, 0)?;
     Ok((x_sorted, idx_sorted, inv_order))
