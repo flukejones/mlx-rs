@@ -333,11 +333,11 @@ pub fn fused_qsdpa_decode(
 
     // Dummy mask if not provided (kernel reads but `mask_present` gates the load).
     let dummy_mask;
-    let mask_arr = match inputs.mask {
-        Some(m) => m.clone(),
+    let mask_arr: &Array = match inputs.mask {
+        Some(m) => m,
         None => {
             dummy_mask = Array::zeros::<u8>(&[1])?.as_dtype(Dtype::Bool)?;
-            dummy_mask
+            &dummy_mask
         }
     };
 
@@ -362,17 +362,17 @@ pub fn fused_qsdpa_decode(
 
     let outs = kernel.apply(
         &[
-            inputs.q.clone(),
-            inputs.k_wq.clone(),
-            inputs.k_scales.clone(),
-            inputs.k_biases.clone(),
-            inputs.v_wq.clone(),
-            inputs.v_scales.clone(),
-            inputs.v_biases.clone(),
+            inputs.q,
+            inputs.k_wq,
+            inputs.k_scales,
+            inputs.k_biases,
+            inputs.v_wq,
+            inputs.v_scales,
+            inputs.v_biases,
             mask_arr,
-            scale_buf,
-            n_k_buf,
-            mask_present_buf,
+            &scale_buf,
+            &n_k_buf,
+            &mask_present_buf,
         ],
         config,
         Stream::default(),
