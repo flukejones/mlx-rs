@@ -67,6 +67,13 @@ pub struct QuantizedKVCache {
     dtype: Option<Dtype>,
     /// Random orthogonal rotation Π applied pre-quantize.
     rotation: Option<Array>,
+    /// `rotation` cast to the input dtype (set lazily on first call).
+    /// `append_quantised` + the SDPA fallback both need this view;
+    /// caching avoids a per-call `as_dtype` launch.
+    rotation_input_dtype: Option<Array>,
+    /// `rotation` cast to the dequantised dtype (used by the un-rotate
+    /// step after fused/steel attention).
+    rotation_out_dtype: Option<Array>,
     /// Route scores/attend through `quantized_matmul` (packed-matmul path).
     use_quantized_matmul: bool,
     /// Use the in-tree fused qsdpa Metal kernel for n_q=1 decode.
@@ -108,6 +115,8 @@ impl QuantizedKVCache {
             bits,
             dtype: None,
             rotation: None,
+            rotation_input_dtype: None,
+            rotation_out_dtype: None,
             use_quantized_matmul: true,
             use_fused_kernel: false,
             use_steel_prefill: false,
@@ -118,7 +127,29 @@ impl QuantizedKVCache {
     /// 4-bit quality (KL 0.039 vs 0.20 unrotated on Qwen3-1.7B-bf16).
     pub fn with_rotation(mut self, head_dim: i32, seed: u64) -> Result<Self, Error> {
         self.rotation = Some(rotation::generate_rotation_matrix(head_dim, seed)?);
+        self.rotation_input_dtype = None;
+        self.rotation_out_dtype = None;
         Ok(self)
+    }
+
+    /// Get the cached rotation matrix cast to `dtype`, building it on
+    /// first access. Used by the rotate / un-rotate paths so the cast
+    /// launch happens once per dtype instead of every call.
+    fn rotation_for(&mut self, dtype: Dtype) -> Result<Option<&Array>, Exception> {
+        let Some(pi) = self.rotation.as_ref() else {
+            return Ok(None);
+        };
+        if pi.dtype() == dtype {
+            return Ok(Some(pi));
+        }
+        let slot = match (self.dtype, dtype) {
+            (Some(d), x) if d == x => &mut self.rotation_input_dtype,
+            _ => &mut self.rotation_out_dtype,
+        };
+        if slot.is_none() {
+            *slot = Some(pi.as_dtype(dtype)?);
+        }
+        Ok(slot.as_ref())
     }
 
     /// Keep K/V packed across score and attend; dispatch through
@@ -210,11 +241,13 @@ impl QuantizedKVCache {
             self.dtype = Some(keys.dtype());
         }
 
-        let (keys_to_q, values_to_q) = if let Some(pi) = self.rotation.as_ref() {
-            let pi_t = pi.as_dtype(keys.dtype())?.transpose_axes(&[1, 0])?;
-            (keys.matmul(&pi_t)?, values.matmul(&pi_t)?)
-        } else {
-            (keys, values)
+        let keys_dtype = keys.dtype();
+        let (keys_to_q, values_to_q) = match self.rotation_for(keys_dtype)? {
+            Some(pi) => {
+                let pi_t = pi.transpose_axes(&[1, 0])?;
+                (keys.matmul(&pi_t)?, values.matmul(&pi_t)?)
+            }
+            None => (keys, values),
         };
 
         let (new_k_wq, new_k_scales, new_k_biases) =
@@ -301,6 +334,8 @@ impl QuantizedKVCache {
             bits,
             dtype: None,
             rotation: None,
+            rotation_input_dtype: None,
+            rotation_out_dtype: None,
             use_quantized_matmul: false,
             use_fused_kernel: false,
             use_steel_prefill: false,
@@ -464,11 +499,10 @@ impl KeyValueCache for QuantizedKVCache {
         let k_dense = dequantize(&k_wq, &k_s, &k_b, self.group_size, self.bits)?;
         let v_dense = dequantize(&v_wq, &v_s, &v_b, self.group_size, self.bits)?;
 
-        if let Some(pi) = self.rotation.as_ref() {
-            let pi_cast = pi.as_dtype(k_dense.dtype())?;
-            Ok((k_dense.matmul(&pi_cast)?, v_dense.matmul(&pi_cast)?))
-        } else {
-            Ok((k_dense, v_dense))
+        let k_dtype = k_dense.dtype();
+        match self.rotation_for(k_dtype)? {
+            Some(pi) => Ok((k_dense.matmul(pi)?, v_dense.matmul(pi)?)),
+            None => Ok((k_dense, v_dense)),
         }
     }
 
@@ -499,11 +533,13 @@ impl KeyValueCache for QuantizedKVCache {
         let ql_off = self.offset;
         let ((k_wq, k_s, k_b), (v_wq, v_s, v_b)) = self.append_quantised(keys, values)?;
 
-        let queries_for_sdpa = if let Some(pi) = self.rotation.as_ref() {
-            let pi_t = pi.as_dtype(queries.dtype())?.transpose_axes(&[1, 0])?;
-            queries.matmul(&pi_t)?
-        } else {
-            queries.clone()
+        let q_dtype = queries.dtype();
+        let queries_for_sdpa = match self.rotation_for(q_dtype)? {
+            Some(pi) => {
+                let pi_t = pi.transpose_axes(&[1, 0])?;
+                queries.matmul(&pi_t)?
+            }
+            None => queries.clone(),
         };
 
         let q_shape = queries_for_sdpa.shape();
@@ -580,11 +616,10 @@ impl KeyValueCache for QuantizedKVCache {
             )?
         };
 
-        if let Some(pi) = self.rotation.as_ref() {
-            let pi_cast = pi.as_dtype(out.dtype())?;
-            out.matmul(&pi_cast)
-        } else {
-            Ok(out)
+        let out_dtype = out.dtype();
+        match self.rotation_for(out_dtype)? {
+            Some(pi) => out.matmul(pi),
+            None => Ok(out),
         }
     }
 }
