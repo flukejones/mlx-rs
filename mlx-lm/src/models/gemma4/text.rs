@@ -26,8 +26,8 @@ use mlx_rs::quantization::MaybeQuantized;
 use mlx_rs::{Array, Dtype};
 
 use crate::activations::{
-    expert_combine, geglu, logit_softcap, residual_add_scale, router_post, ExpertCombineCache,
-    GegluCache, LogitSoftcapCache, ResidualAddScaleCache, RouterPostCache,
+    geglu, logit_softcap, residual_add_scale, router_post, GegluCache, LogitSoftcapCache,
+    ResidualAddScaleCache, RouterPostCache,
 };
 use crate::cache::KeyValueCache;
 use crate::nn::ensure_cache_populated;
@@ -619,16 +619,12 @@ impl Router {
 pub struct Experts {
     #[param]
     pub switch_glu: SwitchGLU,
-    /// Compiled `(weights * y).sum(-2)` cache — collapses the two
-    /// per-token launches at the end of expert combine into one.
-    combine_cache: ExpertCombineCache,
 }
 
 impl Experts {
     pub fn new(hidden_size: i32, moe_intermediate: i32, num_experts: i32) -> Result<Self, Exception> {
         Ok(Self {
             switch_glu: SwitchGLU::new(hidden_size, moe_intermediate, num_experts, false)?,
-            combine_cache: ExpertCombineCache::default(),
         })
     }
 
@@ -638,9 +634,10 @@ impl Experts {
         top_k_indices: &Array,
         top_k_weights: &Array,
     ) -> Result<Array, Exception> {
-        let w = expand_dims_axes(top_k_weights, &[-1])?;
-        let y = self.switch_glu.forward(x, top_k_indices)?;
-        expert_combine(&mut self.combine_cache, &w, &y)
+        // Try the fused down+combine path first (quantised + no-sort
+        // only). Falls back internally to the legacy 2-launch path
+        // for sort/dense.
+        self.switch_glu.forward_with_combine(x, top_k_indices, top_k_weights)
     }
 }
 
@@ -655,7 +652,6 @@ impl mlx_rs::quantization::Quantizable for Experts {
     ) -> Result<Self::Quantized, Self::QuantizationError> {
         Ok(Experts {
             switch_glu: self.switch_glu.try_into_quantized(group_size, bits)?,
-            combine_cache: self.combine_cache,
         })
     }
 }
