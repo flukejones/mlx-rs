@@ -237,6 +237,10 @@ where
     pub chat_template_id: Option<&'a str>,
     pub add_generation_prompt: Option<bool>,
     pub continue_final_message: Option<bool>,
+    /// Extra jinja variables (`bos_token`, `eos_token`, etc.) merged
+    /// into the template context. Required for HF templates that
+    /// reference bare `{{ bos_token }}` (gemma 4, llama 3, qwen 3).
+    pub special_tokens: std::collections::HashMap<String, String>,
 }
 
 pub fn load_model_chat_template_from_str(content: &str) -> std::io::Result<Option<String>> {
@@ -255,6 +259,45 @@ pub fn load_model_chat_template_from_file(
 ) -> std::io::Result<Option<String>> {
     let content = read_to_string(file)?;
     load_model_chat_template_from_str(&content)
+}
+
+/// Extract every `*_token` string field from a `tokenizer_config.json`
+/// payload. These map to jinja variables like `bos_token`, `eos_token`,
+/// `pad_token` referenced by HF chat templates. Nested `AddedToken`
+/// objects are unwrapped via the `"content"` field.
+pub fn load_special_tokens_from_str(
+    content: &str,
+) -> std::io::Result<std::collections::HashMap<String, String>> {
+    let v: serde_json::Value = serde_json::from_str(content)?;
+    let obj = match v.as_object() {
+        Some(o) => o,
+        None => return Ok(Default::default()),
+    };
+    let mut out = std::collections::HashMap::new();
+    for (k, val) in obj {
+        if !k.ends_with("_token") {
+            continue;
+        }
+        match val {
+            serde_json::Value::String(s) => {
+                out.insert(k.clone(), s.clone());
+            }
+            serde_json::Value::Object(inner) => {
+                if let Some(s) = inner.get("content").and_then(|c| c.as_str()) {
+                    out.insert(k.clone(), s.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+pub fn load_special_tokens_from_file(
+    file: impl AsRef<Path>,
+) -> std::io::Result<std::collections::HashMap<String, String>> {
+    let content = read_to_string(file)?;
+    load_special_tokens_from_str(&content)
 }
 
 // chat_template = self.get_chat_template(chat_template, tools)
@@ -445,6 +488,7 @@ where
         chat_template_id,
         add_generation_prompt,
         continue_final_message,
+        special_tokens,
     } = args;
 
     let add_generation_prompt = add_generation_prompt.unwrap_or(false);
@@ -472,6 +516,7 @@ where
         documents,
         Some(add_generation_prompt),
         Some(continue_final_message),
+        &special_tokens,
     )
 }
 
@@ -482,6 +527,7 @@ fn render_jinja_tempalte<'a, R, T>(
     documents: Option<&'a [Document]>,
     add_generation_prompt: Option<bool>,
     continue_final_message: Option<bool>,
+    special_tokens: &std::collections::HashMap<String, String>,
 ) -> Result<Vec<String>, Error>
 where
     R: Serialize + 'a,
@@ -493,11 +539,17 @@ where
     // TODO: what does checking for "messages" key do in the python code?
     let mut rendered = Vec::new();
     for chat in conversations {
-        let mut rendered_chat = template.render(context! {
+        // Merge special tokens (bos_token, eos_token, etc.) into the
+        // jinja context. Chat templates from HF (e.g. gemma 4) reference
+        // these as bare variables; missing → empty render → wrong tokens.
+        let base_ctx = context! {
             messages => chat,
             documents => documents,
             add_generation_prompt => add_generation_prompt,
-        })?;
+        };
+        let tokens_ctx = minijinja::Value::from_serialize(special_tokens);
+        let ctx = minijinja::context!(..base_ctx, ..tokens_ctx);
+        let mut rendered_chat = template.render(ctx)?;
 
         if continue_final_message {
             let Some(final_message) = chat.last().map(|chat| &chat.content) else {
@@ -573,6 +625,7 @@ mod tests {
             chat_template_id: None,
             add_generation_prompt: None,
             continue_final_message: None,
+            special_tokens: Default::default(),
         };
 
         let mut env = Environment::new();
@@ -609,6 +662,7 @@ mod tests {
             chat_template_id: None,
             add_generation_prompt: None,
             continue_final_message: None,
+            special_tokens: Default::default(),
         };
 
         let rendered_chat = tokenizer
@@ -643,11 +697,12 @@ mod tests {
             chat_template_id: None,
             add_generation_prompt: None,
             continue_final_message: None,
+            special_tokens: Default::default(),
         };
 
         let encodings = tokenizer
             .apply_chat_template_and_encode(model_chat_template, args)
             .unwrap();
-        println!("{:?}", encodings.iter().map(|e| e.get_ids()).flatten());
+        println!("{:?}", encodings.iter().flat_map(|e| e.get_ids()));
     }
 }

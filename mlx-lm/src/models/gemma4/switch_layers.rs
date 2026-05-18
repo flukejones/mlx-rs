@@ -1,0 +1,266 @@
+//! Switched (expert-routed) linears for Gemma 4 MoE (26B-A4B).
+//!
+//! Ports `mlx_lm.models.switch_layers.SwitchLinear` + `SwitchGLU` and
+//! the quantised counterpart `QuantizedSwitchLinear`. Each
+//! `SwitchLinear` holds `[num_experts, output_dims, input_dims]`
+//! weights; quantised form packs the weight matrix and adds
+//! `(scales, biases)` siblings. Forward dispatches per-token through
+//! `gather_mm` / `gather_qmm` with expert indices.
+
+use mlx_rs::error::Exception;
+use mlx_rs::macros::ModuleParameters;
+use mlx_rs::module::Param;
+use mlx_rs::ops::indexing::take_axis;
+use mlx_rs::ops::{
+    argsort, expand_dims_axes, gather_mm, gather_qmm, quantize, swap_axes, unflatten,
+};
+use mlx_rs::quantization::{MaybeQuantized, Quantizable};
+use mlx_rs::Array;
+
+use crate::activations::{geglu, GegluCache};
+
+const SORT_THRESHOLD: usize = 64;
+
+/// Dense per-expert linear. Weight shape `[num_experts, output_dims,
+/// input_dims]`. Quantises into [`QuantizedSwitchLinear`] via
+/// [`Quantizable::try_into_quantized`].
+#[derive(Debug, Clone, ModuleParameters)]
+pub struct SwitchLinear {
+    #[param]
+    pub weight: Param<Array>,
+    #[param]
+    pub bias: Param<Option<Array>>,
+}
+
+impl SwitchLinear {
+    pub fn new(
+        input_dims: i32,
+        output_dims: i32,
+        num_experts: i32,
+        bias: bool,
+    ) -> Result<Self, Exception> {
+        let scale = (1.0 / input_dims as f32).sqrt();
+        let weight = mlx_rs::random::uniform::<_, f32>(
+            -scale,
+            scale,
+            &[num_experts, output_dims, input_dims],
+            None,
+        )?;
+        let bias_arr = if bias {
+            Some(Array::zeros::<f32>(&[num_experts, output_dims])?)
+        } else {
+            None
+        };
+        Ok(Self {
+            weight: Param::new(weight),
+            bias: Param::new(bias_arr),
+        })
+    }
+
+    /// Dense `gather_mm`-based apply. `x` carries the per-token leading
+    /// dims plus `[..., 1, 1, input_dims]`; `indices.shape = [..., top_k]`.
+    pub fn apply(
+        &self,
+        x: &Array,
+        indices: &Array,
+        sorted: bool,
+    ) -> Result<Array, Exception> {
+        let w = swap_axes(self.weight.as_ref(), -1, -2)?;
+        let mut y = gather_mm(x, &w, None, Some(indices), Some(sorted))?;
+        if let Some(b) = self.bias.as_ref() {
+            let b_gather = take_axis(b, indices, 0)?;
+            let b_exp = expand_dims_axes(&b_gather, &[-2])?;
+            y = y.add(&b_exp)?;
+        }
+        Ok(y)
+    }
+}
+
+impl Quantizable for SwitchLinear {
+    type Quantized = QuantizedSwitchLinear;
+    type QuantizationError = Exception;
+
+    fn try_into_quantized(
+        self,
+        group_size: i32,
+        bits: i32,
+    ) -> Result<Self::Quantized, Self::QuantizationError> {
+        QuantizedSwitchLinear::try_from_switch_linear(self, group_size, bits)
+    }
+}
+
+/// Quantised per-expert linear. Packed weight + per-group scales/biases.
+/// The dense `inner` carries the packed-uint32 weight and the optional
+/// bias slot, matching the `QuantizedLinear { inner: Linear, scales,
+/// biases }` shape so the sanitiser's `<prefix>.weight →
+/// <prefix>.inner.weight` rewrite lines up.
+#[derive(Debug, Clone, ModuleParameters)]
+pub struct QuantizedSwitchLinear {
+    pub group_size: i32,
+    pub bits: i32,
+
+    #[param]
+    pub scales: Param<Array>,
+    #[param]
+    pub biases: Param<Array>,
+    #[param]
+    pub inner: SwitchLinear,
+}
+
+impl QuantizedSwitchLinear {
+    pub fn try_from_switch_linear(
+        linear: SwitchLinear,
+        group_size: i32,
+        bits: i32,
+    ) -> Result<Self, Exception> {
+        let (packed_w, scales, biases) = quantize(linear.weight.as_ref(), group_size, bits)?;
+        Ok(Self {
+            group_size,
+            bits,
+            scales: Param::new(scales),
+            biases: Param::new(biases),
+            inner: SwitchLinear {
+                weight: Param::new(packed_w),
+                bias: linear.bias,
+            },
+        })
+    }
+
+    pub fn apply(
+        &self,
+        x: &Array,
+        indices: &Array,
+        sorted: bool,
+    ) -> Result<Array, Exception> {
+        // gather_qmm(x, w, scales, biases, lhs=None, rhs=indices, transpose=true, ...)
+        let mut y = gather_qmm(
+            x,
+            self.inner.weight.as_ref(),
+            self.scales.as_ref(),
+            Some(self.biases.as_ref()),
+            None,
+            Some(indices),
+            Some(true),
+            Some(self.group_size),
+            Some(self.bits),
+            Some(sorted),
+        )?;
+        if let Some(b) = self.inner.bias.as_ref() {
+            let b_gather = take_axis(b, indices, 0)?;
+            let b_exp = expand_dims_axes(&b_gather, &[-2])?;
+            y = y.add(&b_exp)?;
+        }
+        Ok(y)
+    }
+}
+
+/// Dispatch wrapper. Wraps the `MaybeQuantized<SwitchLinear>` pattern so
+/// `try_into_quantized` flips dense → quantised cleanly.
+fn apply_proj(
+    proj: &MaybeQuantized<SwitchLinear>,
+    x: &Array,
+    indices: &Array,
+    sorted: bool,
+) -> Result<Array, Exception> {
+    match proj {
+        MaybeQuantized::Original(d) => d.apply(x, indices, sorted),
+        MaybeQuantized::Quantized(q) => q.apply(x, indices, sorted),
+    }
+}
+
+#[derive(Debug, ModuleParameters)]
+pub struct SwitchGLU {
+    #[param]
+    pub gate_proj: MaybeQuantized<SwitchLinear>,
+    #[param]
+    pub up_proj: MaybeQuantized<SwitchLinear>,
+    #[param]
+    pub down_proj: MaybeQuantized<SwitchLinear>,
+    /// Per-layer compiled-graph cache for `gelu_approx(gate) * up`.
+    /// Filled on first forward; reused across every decode step.
+    geglu_cache: GegluCache,
+}
+
+impl SwitchGLU {
+    pub fn new(
+        input_dims: i32,
+        hidden_dims: i32,
+        num_experts: i32,
+        bias: bool,
+    ) -> Result<Self, Exception> {
+        Ok(Self {
+            gate_proj: MaybeQuantized::Original(
+                SwitchLinear::new(input_dims, hidden_dims, num_experts, bias)?,
+            ),
+            up_proj: MaybeQuantized::Original(
+                SwitchLinear::new(input_dims, hidden_dims, num_experts, bias)?,
+            ),
+            down_proj: MaybeQuantized::Original(
+                SwitchLinear::new(hidden_dims, input_dims, num_experts, bias)?,
+            ),
+            geglu_cache: GegluCache::default(),
+        })
+    }
+
+    pub fn forward(&mut self, x: &Array, indices: &Array) -> Result<Array, Exception> {
+        // Add two singleton axes: one for top_k, one for the inner
+        // gather_mm "1 token per expert" slot.
+        let x = expand_dims_axes(x, &[-2, -3])?;
+
+        let do_sort = indices.size() >= SORT_THRESHOLD;
+        let (x_in, idx_in, inv_order) = if do_sort {
+            let (x_s, idx_s, inv) = gather_sort(&x, indices)?;
+            (x_s, idx_s, Some(inv))
+        } else {
+            (x.clone(), indices.clone(), None)
+        };
+
+        let x_up = apply_proj(&self.up_proj, &x_in, &idx_in, do_sort)?;
+        let x_gate = apply_proj(&self.gate_proj, &x_in, &idx_in, do_sort)?;
+        let activated = geglu(&mut self.geglu_cache, &x_gate, &x_up)?;
+        let mut y = apply_proj(&self.down_proj, &activated, &idx_in, do_sort)?;
+
+        if let Some(inv) = inv_order {
+            y = scatter_unsort(&y, &inv, indices.shape())?;
+        }
+
+        y.squeeze_axes(&[-2])
+    }
+}
+
+impl Quantizable for SwitchGLU {
+    type Quantized = SwitchGLU;
+    type QuantizationError = Exception;
+
+    fn try_into_quantized(
+        self,
+        group_size: i32,
+        bits: i32,
+    ) -> Result<Self::Quantized, Self::QuantizationError> {
+        Ok(SwitchGLU {
+            gate_proj: self.gate_proj.try_into_quantized(group_size, bits)?,
+            up_proj: self.up_proj.try_into_quantized(group_size, bits)?,
+            down_proj: self.down_proj.try_into_quantized(group_size, bits)?,
+            geglu_cache: self.geglu_cache,
+        })
+    }
+}
+
+/// Sort tokens by expert id so `gather_mm` accesses contiguous expert
+/// rows. Returns `(sorted_x, sorted_indices, inv_order_to_unsort)`.
+fn gather_sort(x: &Array, indices: &Array) -> Result<(Array, Array, Array), Exception> {
+    let m = *indices.shape().last().expect("indices has trailing dim") as usize;
+    let flat_idx = indices.flatten(0, -1)?;
+    let order = argsort(&flat_idx)?;
+    let inv_order = argsort(&order)?;
+    let x_flat = x.flatten(0, -3)?;
+    let row_idx = order.floor_divide(Array::from_int(m as i32))?;
+    let x_sorted = take_axis(&x_flat, &row_idx, 0)?;
+    let idx_sorted = take_axis(&flat_idx, &order, 0)?;
+    Ok((x_sorted, idx_sorted, inv_order))
+}
+
+fn scatter_unsort(x: &Array, inv_order: &Array, shape: &[i32]) -> Result<Array, Exception> {
+    let unsorted = take_axis(x, inv_order, 0)?;
+    unflatten(&unsorted, 0, shape)
+}

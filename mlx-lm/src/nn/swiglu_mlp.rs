@@ -51,7 +51,7 @@ impl SwigluMlp {
             gate_proj: MaybeQuantized::Original(gate_proj),
             down_proj: MaybeQuantized::Original(down_proj),
             up_proj: MaybeQuantized::Original(up_proj),
-            swiglu_cache: SwigluCache,
+            swiglu_cache: SwigluCache::default(),
         })
     }
 }

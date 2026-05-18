@@ -34,6 +34,7 @@ fn qwen3() -> anyhow::Result<()> {
         chat_template_id: None,
         add_generation_prompt: None,
         continue_final_message: None,
+        special_tokens: Default::default(),
     };
     let encodings = tokenizer.apply_chat_template_and_encode(model_chat_template, args)?;
     let prompt: Vec<u32> = encodings

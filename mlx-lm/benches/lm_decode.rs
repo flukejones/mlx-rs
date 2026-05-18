@@ -24,6 +24,10 @@ use std::time::{Duration, Instant};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use mlx_lm::cache::{KVCache, QuantizedKVCache};
 use mlx_lm::models::{
+    gemma4::{
+        load_gemma4_model_sanitized, make_gemma4_caches, Gemma4Config, Gemma4LayerCache,
+        Generate as Gemma4Generate, Model as Gemma4Model,
+    },
     llama::{load_llama_model, Generate as LlamaGenerate, Model as LlamaModel},
     qwen3::{load_qwen3_model, Generate as Qwen3Generate, Model as Qwen3Model},
     qwen3_5::{
@@ -581,6 +585,97 @@ enum BenchSet {
     Full,
 }
 
+fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
+    if bench_only_skip(&format!("gemma4_decode_{label}")) {
+        return;
+    }
+    let Some(dir) = ensure_model(repo_id) else {
+        return;
+    };
+    let cfg = match Gemma4Config::from_file(dir.join("config.json")) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("skipping gemma4 {label}: config parse failed: {e:?}");
+            return;
+        }
+    };
+    let mut model = match load_gemma4_model_sanitized(&dir) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skipping gemma4 {label}: load failed: {e:?}");
+            return;
+        }
+    };
+
+    let short = synthetic_prompt(SHORT_PROMPT_LEN, 1000);
+    let long = synthetic_prompt(LONG_PROMPT_LEN, 1000);
+    let decode_steps = DECODE_TOKENS - 1;
+
+    let time_prefill = |model: &mut Gemma4Model, prompt: &Array| -> Duration {
+        let mut cache = make_gemma4_caches(&cfg);
+        let mut iter = Gemma4Generate::<Gemma4LayerCache>::new(model, &mut cache, 0.0, prompt);
+        let t = Instant::now();
+        let first = iter.next().expect("token").unwrap();
+        eval([&first]).unwrap();
+        Instant::now() - t
+    };
+    let time_decode = |model: &mut Gemma4Model, prompt: &Array, steps: i32| -> Duration {
+        let mut cache = make_gemma4_caches(&cfg);
+        let mut iter = Gemma4Generate::<Gemma4LayerCache>::new(model, &mut cache, 0.0, prompt);
+        let first = iter.next().expect("token").unwrap();
+        eval([&first]).unwrap();
+        // Eval per step so the lazy graph collapses immediately —
+        // queuing all `steps` tokens into a Vec then `eval`-ing once
+        // materialises every per-layer cache scatter intermediate at
+        // peak, blowing up to ~tens of GB on long contexts and forcing
+        // the OS into swap (poisoning the timing).
+        let t = Instant::now();
+        for tok in iter.by_ref().take(steps as usize) {
+            let tok = tok.unwrap();
+            eval([&tok]).unwrap();
+        }
+        Instant::now() - t
+    };
+
+    let mut group = c.benchmark_group(format!("gemma4_decode_{label}"));
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+
+    for (id, prompt) in [
+        (BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32), &short),
+        (BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32), &long),
+    ] {
+        let prompt_len = prompt.shape().last().copied().unwrap_or(0) as u64;
+        group.throughput(Throughput::Elements(prompt_len));
+        group.bench_function(id, |b| {
+            b.iter_custom(|iters| {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    total += time_prefill(&mut model, prompt);
+                }
+                total
+            });
+        });
+    }
+
+    group.throughput(Throughput::Elements(decode_steps as u64));
+    for (id, prompt) in [
+        (BenchmarkId::new("decode_short", decode_steps), &short),
+        (BenchmarkId::new("decode_long", decode_steps), &long),
+    ] {
+        group.bench_function(id, |b| {
+            b.iter_custom(|iters| {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    total += time_decode(&mut model, prompt, decode_steps);
+                }
+                total
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_set() -> BenchSet {
     match std::env::var("MLX_LM_BENCH_SET").as_deref() {
         Ok("full") | Ok("all") => BenchSet::Full,
@@ -603,6 +698,15 @@ fn bench_decode(c: &mut Criterion) {
     // Qwen3.5 hybrid SSM + attention.
     maybe_bench_qwen3_5(c, "4b_q8", "mlx-community/Qwen3.5-4B-MLX-8bit");
     maybe_bench_qwen3_5(c, "9b_q8", "mlx-community/Qwen3.5-9B-8bit");
+
+    // Gemma 4 (dense + MoE; per-layer-input gating).
+    maybe_bench_gemma4(c, "e2b_it_q8", "mlx-community/gemma-4-e2b-it-8bit");
+    maybe_bench_gemma4(c, "e4b_it_q8", "mlx-community/gemma-4-e4b-it-8bit");
+    maybe_bench_gemma4(c, "26b_a4b_it_q8", "mlx-community/gemma-4-26b-a4b-it-8bit");
+    maybe_bench_gemma4(c, "31b_it_q8", "mlx-community/gemma-4-31b-it-8bit");
+    if set == BenchSet::Full {
+        maybe_bench_gemma4(c, "26b_a4b_it_q4", "mlx-community/gemma-4-26b-a4b-it-4bit");
+    }
 
     // KV-quant decode-only: dequant-on-read vs packed-matmul. T=1024.
     maybe_bench_qwen3_kv_decode_only(
