@@ -4,9 +4,11 @@
 
 pub mod attention_input;
 pub mod model_input;
+pub mod swiglu_mlp;
 
 pub use attention_input::AttentionInput;
 pub use model_input::ModelInput;
+pub use swiglu_mlp::SwigluMlp;
 
 use crate::cache::KeyValueCache;
 

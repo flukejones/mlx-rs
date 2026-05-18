@@ -1,5 +1,7 @@
+pub mod activations;
 pub mod cache;
 pub mod error;
+pub mod loader;
 pub mod models;
 pub mod nn;
 pub mod quantization;

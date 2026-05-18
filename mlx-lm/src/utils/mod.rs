@@ -1,7 +1,6 @@
 use mlx_rs::{
     arange,
     error::Exception,
-    fast::ScaledDotProductAttentionMask,
     ops::{
         expand_dims,
         indexing::{IndexOp, NewAxis},
@@ -15,12 +14,14 @@ use crate::cache::KeyValueCache;
 pub mod rope;
 pub mod tokenizer;
 
-#[allow(unused_macros)]
-macro_rules! try_unwrap {
+/// Try-and-propagate macro for `Iterator::next` style returns.
+/// On `Err`, returns `Some(Err(e.into()))` from the enclosing function.
+#[macro_export]
+macro_rules! tri {
     ($expr:expr) => {
         match $expr {
-            core::result::Result::Ok(val) => val,
-            core::result::Result::Err(e) => return Some(Err(e.into())),
+            Ok(val) => val,
+            Err(e) => return Some(Err(e.into())),
         }
     };
 }
@@ -200,81 +201,6 @@ impl From<QuantizedValues> for MaybeQuantizedValues {
     }
 }
 
-pub(crate) fn scaled_dot_product_attention<C>(
-    queries: Array,
-    keys: impl Into<MaybeQuantizedKeys>,
-    values: impl Into<MaybeQuantizedValues>,
-    cache: Option<C>,
-    scale: f32,
-    mask: Option<&Array>,
-) -> Result<Array, Exception>
-where
-    C: KeyValueCache,
-{
-    let keys = keys.into();
-    let values = values.into();
-
-    if let Some(cache) = cache {
-        if cache.is_quantized() {
-            let group_size = cache
-                .group_size()
-                .ok_or_else(|| Exception::custom("Cache is quantized but group size is not set"))?;
-            let bits = cache
-                .bits()
-                .ok_or_else(|| Exception::custom("Cache is quantized but bits are not set"))?;
-
-            let (keys, values) = match (keys, values) {
-                (MaybeQuantizedKeys::Quantized(keys), MaybeQuantizedValues::Quantized(values)) => {
-                    (keys, values)
-                }
-                _ => {
-                    return Err(Exception::custom(
-                        "Both keys and values must be quantized when KV cache is quantized",
-                    ));
-                }
-            };
-
-            return quantized_scaled_dot_product_attention(
-                queries, keys, values, scale, mask, group_size, bits,
-            );
-        }
-    }
-
-    let (keys, values) = match (keys, values) {
-        (MaybeQuantizedKeys::Original(keys), MaybeQuantizedValues::Original(values)) => {
-            (keys, values)
-        }
-        _ => {
-            return Err(Exception::custom(
-                "Both keys and values must NOT be quantized when KV cache is NOT quantized",
-            ));
-        }
-    };
-
-    mlx_rs::fast::scaled_dot_product_attention(
-        queries,
-        keys,
-        values,
-        scale,
-        mask.map(ScaledDotProductAttentionMask::Array),
-        None,
-    )
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum AttentionMask {
-    Array(Array),
-    Causal,
-}
-
-impl<'a> From<&'a AttentionMask> for ScaledDotProductAttentionMask<'a> {
-    fn from(mask: &'a AttentionMask) -> Self {
-        match mask {
-            AttentionMask::Array(array) => ScaledDotProductAttentionMask::Array(array),
-            AttentionMask::Causal => ScaledDotProductAttentionMask::Causal,
-        }
-    }
-}
 
 #[allow(non_snake_case)]
 pub(crate) fn create_causal_mask(
@@ -307,12 +233,10 @@ pub(crate) fn create_causal_mask(
 pub(crate) fn create_attention_mask<C>(
     h: &Array,
     cache: &[Option<C>],
-    return_array: Option<bool>,
-) -> Result<Option<AttentionMask>, Exception>
+) -> Result<Option<Array>, Exception>
 where
     C: KeyValueCache,
 {
-    let mut return_array = return_array.unwrap_or(false);
     let T = h.shape()[1];
     if T > 1 {
         let mut offset = 0;
@@ -322,18 +246,10 @@ where
             if let Some(window_size_) = c.max_size() {
                 window_size = Some(window_size_);
                 offset = offset.min(window_size_);
-
-                return_array = return_array || (offset + T) > window_size_;
             }
         }
 
-        if return_array {
-            create_causal_mask(T, Some(offset), window_size, None)
-                .map(AttentionMask::Array)
-                .map(Some)
-        } else {
-            Ok(Some(AttentionMask::Causal))
-        }
+        create_causal_mask(T, Some(offset), window_size, None).map(Some)
     } else {
         Ok(None)
     }
