@@ -14,13 +14,14 @@ use mlx_rs::macros::ModuleParameters;
 use mlx_rs::module::Param;
 use mlx_rs::ops::indexing::take_axis;
 use mlx_rs::ops::{
-    argsort, expand_dims_axes, gather_mm, gather_qmm, quantize, split_sections, swap_axes,
-    unflatten,
+    argsort, expand_dims_axes, gather_mm, gather_qmm, quantize, split_sections, sum_axes,
+    swap_axes, unflatten,
 };
 use mlx_rs::quantization::{MaybeQuantized, Quantizable};
 use mlx_rs::Array;
 
 use crate::activations::{geglu, GegluCache};
+use crate::fused_kernels::{gather_qmm_combine, GatherQmmCombineInputs};
 
 /// Index-count threshold below which `gather_qmm` runs without
 /// pre-sorting by expert id. The argsort + take_axis pair costs more
@@ -248,6 +249,67 @@ impl SwitchGLU {
         }
 
         y.squeeze_axes(&[-2])
+    }
+
+    /// Decode-only fused path: runs gate_up + geglu, then collapses the
+    /// down_proj `gather_qmm` and the expert_combine `sum(w*y, -2)` into
+    /// a single custom Metal kernel. Returns `[..., D]` directly (no
+    /// `[K, D]` intermediate). Falls back to the legacy 2-launch path
+    /// when the down projection is not quantised or when sort fired.
+    ///
+    /// `top_k_weights` shape `[..., K]` (post-softmax router weights).
+    pub fn forward_with_combine(
+        &mut self,
+        x: &Array,
+        indices: &Array,
+        top_k_weights: &Array,
+    ) -> Result<Array, Exception> {
+        let x_exp = expand_dims_axes(x, &[-2, -3])?;
+        let do_sort = indices.size() >= SORT_THRESHOLD;
+        if do_sort {
+            return self.forward_with_combine_fallback(x, indices, top_k_weights);
+        }
+
+        // Gate+up + geglu identical to the un-fused path.
+        let gate_up = apply_proj(&self.gate_up_proj, &x_exp, indices, false)?;
+        let parts = split_sections(&gate_up, &[self.hidden_dims], -1)?;
+        let activated = geglu(&mut self.geglu_cache, &parts[0], &parts[1])?;
+        // activated shape: [..., K, 1, H]. The middle 1 is the inner
+        // gather_mm "one token per expert" slot. Squeeze it so the
+        // fused kernel sees `[..., K, H]`.
+        let activated_3d = activated.squeeze_axes(&[-2])?;
+
+        // Only quantised down_proj has the (wq, scales, biases) triple
+        // the fused kernel needs. Dense down stays on the legacy path.
+        match &self.down_proj {
+            MaybeQuantized::Quantized(q) => {
+                let inputs = GatherQmmCombineInputs {
+                    activated: &activated_3d,
+                    weights: top_k_weights,
+                    wq: q.inner.weight.as_ref(),
+                    scales: q.scales.as_ref(),
+                    biases: q.biases.as_ref(),
+                    indices,
+                    group_size: q.group_size,
+                    bits: q.bits,
+                };
+                gather_qmm_combine(inputs)
+            }
+            MaybeQuantized::Original(_) => {
+                self.forward_with_combine_fallback(x, indices, top_k_weights)
+            }
+        }
+    }
+
+    fn forward_with_combine_fallback(
+        &mut self,
+        x: &Array,
+        indices: &Array,
+        top_k_weights: &Array,
+    ) -> Result<Array, Exception> {
+        let y = self.forward(x, indices)?;
+        let w = expand_dims_axes(top_k_weights, &[-1])?;
+        sum_axes(&w.multiply(&y)?, &[-2], false)
     }
 }
 
