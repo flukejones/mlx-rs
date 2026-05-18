@@ -291,6 +291,7 @@ pub fn load_gemma4_model_sanitized(model_dir: impl AsRef<Path>) -> Result<Model,
         ));
     }
     eval_params(model.parameters()).map_err(Error::Exception)?;
+    crate::loader::apply_post_load_memory_policy();
     Ok(model)
 }
 

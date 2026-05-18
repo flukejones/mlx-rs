@@ -284,6 +284,7 @@ pub fn load_language_model(
     }
 
     eval_params(model.parameters()).map_err(Error::Exception)?;
+    crate::loader::apply_post_load_memory_policy();
     leftover.sort();
     Ok((model, leftover))
 }
@@ -329,6 +330,7 @@ pub fn load_full_model(
 
     eval_params(lm.parameters()).map_err(Error::Exception)?;
     eval_params(vision.parameters()).map_err(Error::Exception)?;
+    crate::loader::apply_post_load_memory_policy();
     leftover.sort();
     Ok((lm, vision, leftover))
 }
