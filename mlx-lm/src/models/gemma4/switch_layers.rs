@@ -20,7 +20,13 @@ use mlx_rs::Array;
 
 use crate::activations::{geglu, GegluCache};
 
-const SORT_THRESHOLD: usize = 64;
+/// Index-count threshold below which `gather_qmm` runs without
+/// pre-sorting by expert id. The argsort + take_axis pair costs more
+/// than the gather-locality win on short/medium prompts on M4 Max; at
+/// very large contexts the sort starts paying off but the
+/// `cache.attention()` sliding-window mask caps how far we can push
+/// prefill in one pass. Re-measure on new MLX kernels.
+const SORT_THRESHOLD: usize = 2048;
 
 /// Dense per-expert linear. Weight shape `[num_experts, output_dims,
 /// input_dims]`. Quantises into [`QuantizedSwitchLinear`] via
