@@ -664,7 +664,7 @@ mod tests {
     };
 
     use crate::{
-        cache::ConcatKeyValueCache,
+        cache::KVCache,
         models::llama::{load_llama_model, load_llama_tokenizer},
     };
 
@@ -794,7 +794,7 @@ mod tests {
 
         let mut model = load_llama_model(CACHED_QUANT_TEST_MODEL_DIR.as_str()).unwrap();
         let prompt = Array::from_slice(&[1i32, 2, 3, 4], &[1, 4]);
-        let mut cache: Vec<Option<ConcatKeyValueCache>> = Vec::new();
+        let mut cache: Vec<Option<KVCache>> = Vec::new();
         let input = super::ModelInput {
             inputs: &prompt,
             mask: None,
@@ -820,7 +820,7 @@ mod tests {
         let eot_token_id = 128009u32;
 
         let mut token_ids = Vec::new();
-        let generate = super::Generate::<ConcatKeyValueCache>::new(
+        let generate = super::Generate::<KVCache>::new(
             &mut model,
             &mut cache,
             0.0,

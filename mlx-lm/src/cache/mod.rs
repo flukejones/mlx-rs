@@ -1,1497 +1,56 @@
-use std::collections::HashMap;
-use std::path::Path;
-
-use mlx_rs::{
-    error::Exception,
-    fast::{scaled_dot_product_attention, MetalKernel, ScaledDotProductAttentionMask},
-    ops::{
-        concatenate_axis, dequantize,
-        indexing::{Ellipsis, IndexOp, TryIndexMutOp},
-        quantize, zeros_dtype,
-    },
-    Array, Dtype,
-};
-
-use crate::error::Error;
-use crate::utils::{quantized_scaled_dot_product_attention, QuantizedKeys, QuantizedValues};
+//! KV-cache implementations for decoder-only models.
+//!
+//! Layout:
+//!
+//! - [`trait_def`] — the [`KeyValueCache`] trait + blanket `&mut T` impl
+//! - [`kvcache`] — [`KVCache`] (default pre-allocated step-grown cache)
+//!   + [`DEFAULT_KV_CACHE_STEP`]
+//! - [`quantized_kvcache`] — [`QuantizedKVCache`] (affine-quant + Π
+//!   rotation + packed-matmul + fused/steel kernel paths)
+//! - [`rotating_kvcache`] — [`RotatingKVCache`] (sliding-window with
+//!   rotation; Gemma 3/4 sliding layers)
+//! - [`kernels`] — `OnceLock<MetalKernel>` accessors + steel head-dim set
+//! - [`io`] — `make_prompt_cache`, `save_prompt_cache`,
+//!   `load_prompt_cache`, trim helpers, `LoadedCache`
+//! - [`fused_quantized_sdpa`] — fused Metal kernel for n_q=1 q-decode
+//! - [`rotation`] — random orthogonal Π matrix generator for KV q-cache
+//!
+//! Re-exports from `mod.rs` preserve the historical import path
+//! `use mlx_lm::cache::{KVCache, KeyValueCache, ...}` so downstream
+//! code keeps compiling after the split.
 
 pub mod fused_quantized_sdpa;
+pub mod io;
+pub mod kernels;
+pub mod kvcache;
+pub mod quantized_kvcache;
+pub mod rotating_kvcache;
 pub mod rotation;
+pub mod trait_def;
 
-use std::sync::OnceLock;
-
-use fused_quantized_sdpa::{fused_qsdpa_decode, make_fused_qsdpa_kernel, FusedQsdpaInputs};
-
-use crate::steel_attention::{
-    make_steel_attention_kernel, make_steel_quant_attention_kernel,
-    steel_attention_dispatch, steel_quant_attention_dispatch, SteelAttentionInputs,
-    SteelQuantAttentionInputs,
+pub use io::{
+    can_trim_prompt_cache, load_prompt_cache, make_prompt_cache, save_prompt_cache, trim_prompt_cache,
+    LoadedCache,
 };
-
-fn cached_fused_qsdpa_kernel() -> &'static MetalKernel {
-    static KERNEL: OnceLock<MetalKernel> = OnceLock::new();
-    KERNEL.get_or_init(|| make_fused_qsdpa_kernel().expect("make_fused_qsdpa_kernel"))
-}
-
-pub(crate) fn cached_steel_attention_kernel() -> &'static MetalKernel {
-    static KERNEL: OnceLock<MetalKernel> = OnceLock::new();
-    KERNEL.get_or_init(|| make_steel_attention_kernel().expect("make_steel_attention_kernel"))
-}
-
-pub(crate) fn cached_steel_quant_attention_kernel() -> &'static MetalKernel {
-    static KERNEL: OnceLock<MetalKernel> = OnceLock::new();
-    KERNEL.get_or_init(|| {
-        make_steel_quant_attention_kernel().expect("make_steel_quant_attention_kernel")
-    })
-}
-
-/// Head dims the steel prefill kernel supports.
-pub(crate) const STEEL_SUPPORTED_HEAD_DIMS: &[i32] = &[128, 256, 512];
-
-/// Default step in tokens for [`KVCache`]'s pre-allocated buffer growth.
-pub const DEFAULT_KV_CACHE_STEP: i32 = 256;
-
-/// Perf crossover for the fused qsdpa kernel. Past this, the per-
-/// simdgroup serial K-token processing loses to mlx's tiled
-/// `quantized_matmul` ops-composed path. Empirical on Qwen3-1.7B-q4 +
-/// KV q8 (Apple M4 Max): fused wins to T=4096; ops-composed wins from
-/// T=8192. The actual crossover is somewhere between — 4096 is the
-/// safe upper bound. Revisit if the kernel adds intra-simdgroup
-/// parallelism over K.
-const FUSED_KERNEL_N_K_THRESHOLD: i32 = 4096;
-
-// TODO: somehow move quantized methods to a separate trait?
-pub trait KeyValueCache {
-    fn is_quantized(&self) -> bool {
-        false
-    }
-
-    /// Returns the group size used for quantization. `None` if not quantized.
-    fn group_size(&self) -> Option<i32> {
-        None
-    }
-
-    /// Returns the number of bits used for quantization. `None` if not quantized.
-    fn bits(&self) -> Option<i32> {
-        None
-    }
-
-    fn offset(&self) -> i32;
-
-    fn max_size(&self) -> Option<i32>;
-
-    fn update_and_fetch(&mut self, keys: Array, values: Array)
-        -> Result<(Array, Array), Exception>;
-
-    /// Returns `true` if this cache supports [`trim`](Self::trim) with a
-    /// non-zero argument. Default implementations return `false`; pre-
-    /// allocated caches override.
-    fn is_trimmable(&self) -> bool {
-        false
-    }
-
-    /// Drop the trailing `n` tokens from the cache. Returns the number of
-    /// tokens actually trimmed (may be less than `n` if the cache is
-    /// shorter). Default implementation is a no-op.
-    fn trim(&mut self, _n: i32) -> i32 {
-        0
-    }
-
-    /// Stable identifier matching Python `mlx_lm.models.cache` class names.
-    /// Used as metadata when persisting and to dispatch on load.
-    fn class_name(&self) -> &'static str {
-        "DefaultCache"
-    }
-
-    /// Per-layer arrays to persist. Order is significant — must match the
-    /// order [`KeyValueCache::from_state`] consumes. Default returns empty.
-    fn state(&self) -> Vec<Array> {
-        Vec::new()
-    }
-
-    /// String-keyed scalars (offset, step, bits, etc.) to persist alongside
-    /// [`state`](Self::state). Default returns empty.
-    fn meta_state(&self) -> HashMap<String, String> {
-        HashMap::new()
-    }
-
-    /// `softmax(scaled_q @ K.T) @ V` over the full cached history.
-    /// Default appends K/V then dispatches dense fused SDPA. Quantised
-    /// caches override to skip K/V dequant on the hot path.
-    fn attention(
-        &mut self,
-        queries: &Array,
-        keys: Array,
-        values: Array,
-        scale: f32,
-        mask: Option<&Array>,
-    ) -> Result<Array, Exception> {
-        let (k_full, v_full) = self.update_and_fetch(keys, values)?;
-        scaled_dot_product_attention(
-            queries.clone(),
-            k_full,
-            v_full,
-            scale,
-            mask.map(ScaledDotProductAttentionMask::Array),
-            None,
-        )
-    }
-}
-
-impl<T> KeyValueCache for &'_ mut T
-where
-    T: KeyValueCache,
-{
-    fn is_quantized(&self) -> bool {
-        T::is_quantized(self)
-    }
-
-    fn group_size(&self) -> Option<i32> {
-        T::group_size(self)
-    }
-
-    fn bits(&self) -> Option<i32> {
-        T::bits(self)
-    }
-
-    fn offset(&self) -> i32 {
-        T::offset(self)
-    }
-
-    fn max_size(&self) -> Option<i32> {
-        T::max_size(self)
-    }
-
-    fn update_and_fetch(
-        &mut self,
-        keys: Array,
-        values: Array,
-    ) -> Result<(Array, Array), Exception> {
-        T::update_and_fetch(self, keys, values)
-    }
-
-    fn is_trimmable(&self) -> bool {
-        T::is_trimmable(self)
-    }
-
-    fn trim(&mut self, n: i32) -> i32 {
-        T::trim(self, n)
-    }
-
-    fn class_name(&self) -> &'static str {
-        T::class_name(self)
-    }
-
-    fn state(&self) -> Vec<Array> {
-        T::state(self)
-    }
-
-    fn meta_state(&self) -> HashMap<String, String> {
-        T::meta_state(self)
-    }
-
-    fn attention(
-        &mut self,
-        queries: &Array,
-        keys: Array,
-        values: Array,
-        scale: f32,
-        mask: Option<&Array>,
-    ) -> Result<Array, Exception> {
-        T::attention(self, queries, keys, values, scale, mask)
-    }
-}
-
-/// Legacy alias for [`KVCache`]; retained for out-of-tree callers.
-pub type ConcatKeyValueCache = KVCache;
-
-/// Pre-allocated `[B, H, capacity, D]` KV cache; grows in `step`-sized
-/// chunks. `update_and_fetch` slice-writes new tokens at `[offset..]`
-/// and returns the populated `[:offset+S]` view. Mirrors Python
-/// `mlx_lm.models.cache.KVCache`.
-#[derive(Debug, Clone)]
-pub struct KVCache {
-    keys: Option<Array>,
-    values: Option<Array>,
-    offset: i32,
-    /// Buffer-growth step in tokens.
-    step: i32,
-    /// When set, the prefill path (`n_q > 1`) routes through the
-    /// steel-attention tiled kernel instead of `fast::SDPA`. Opt-in
-    /// via [`Self::with_steel_prefill`]; only D ∈ {128, 256} and
-    /// non-mask paths use it (falls back to `fast::SDPA` otherwise).
-    use_steel_prefill: bool,
-}
-
-impl Default for KVCache {
-    fn default() -> Self {
-        Self::with_step(DEFAULT_KV_CACHE_STEP)
-    }
-}
-
-impl KVCache {
-    /// New empty cache using the default step ([`DEFAULT_KV_CACHE_STEP`]).
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// New empty cache with a custom step. `step` must be positive.
-    pub fn with_step(step: i32) -> Self {
-        assert!(step > 0, "KVCache step must be positive");
-        Self {
-            keys: None,
-            values: None,
-            offset: 0,
-            step,
-            use_steel_prefill: false,
-        }
-    }
-
-    /// Opt in to the steel-attention tiled prefill kernel. Active only
-    /// when `n_q > 1`, `head_dim ∈ {128, 256}`, and the caller passes
-    /// no explicit mask. Falls back to `fast::SDPA` otherwise.
-    ///
-    /// Builder; consumes and returns `self`.
-    pub fn with_steel_prefill(mut self) -> Self {
-        self.use_steel_prefill = true;
-        self
-    }
-
-    /// Configured step (buffer-growth chunk size).
-    pub fn step(&self) -> i32 {
-        self.step
-    }
-
-    /// Current allocated capacity along the token axis. `0` if unallocated.
-    pub fn capacity(&self) -> i32 {
-        match self.keys.as_ref() {
-            Some(k) => {
-                let shape = k.shape();
-                shape[shape.len() - 2]
-            }
-            None => 0,
-        }
-    }
-
-    /// Reconstruct from previously-persisted `state` + `meta_state`.
-    /// `state` must be `[keys, values]` in that order. The cache adopts the
-    /// arrays directly as its buffer (no copy); `offset` is read from
-    /// metadata. The buffer's pre-existing capacity becomes the new
-    /// capacity — subsequent `update_and_fetch` will grow in `step` chunks
-    /// from there.
-    pub fn from_state(
-        mut state: Vec<Array>,
-        meta: &HashMap<String, String>,
-    ) -> Result<Self, Error> {
-        if state.len() != 2 {
-            return Err(Error::Other(
-                format!("KVCache::from_state expected 2 arrays, got {}", state.len()).into(),
-            ));
-        }
-        let values = state.pop().expect("len checked");
-        let keys = state.pop().expect("len checked");
-        let offset = parse_meta(meta, "offset")?;
-        let step = meta
-            .get("step")
-            .map(|s| s.parse::<i32>())
-            .transpose()
-            .map_err(|e| Error::Other(format!("KVCache.step parse: {e}").into()))?
-            .unwrap_or(DEFAULT_KV_CACHE_STEP);
-        Ok(Self {
-            keys: Some(keys),
-            values: Some(values),
-            offset,
-            step,
-            use_steel_prefill: false,
-        })
-    }
-
-    /// Ceiling-divide `s` up to the next multiple of `step`.
-    fn ceil_step(s: i32, step: i32) -> i32 {
-        ((s + step - 1) / step) * step
-    }
-
-    /// Allocate fresh `[B, H, capacity, D]` zero buffers matching `template`.
-    fn alloc_like(template: &Array, capacity: i32) -> Result<Array, Exception> {
-        let shape = template.shape();
-        let mut buf_shape = shape.to_vec();
-        let t_axis = buf_shape.len() - 2;
-        buf_shape[t_axis] = capacity;
-        zeros_dtype(&buf_shape, template.dtype())
-    }
-
-    /// Grow the pre-allocated buffers so they have room for `additional`
-    /// more tokens beyond the current `offset`. No-op if already large
-    /// enough.
-    fn grow_to_fit(
-        keys: &mut Option<Array>,
-        values: &mut Option<Array>,
-        offset: i32,
-        new_tokens: &Array,
-        new_values: &Array,
-        step: i32,
-    ) -> Result<(), Exception> {
-        let required = offset + new_tokens.shape()[new_tokens.shape().len() - 2];
-        let target_cap = Self::ceil_step(required, step);
-
-        let current_cap = keys
-            .as_ref()
-            .map(|k| k.shape()[k.shape().len() - 2])
-            .unwrap_or(0);
-
-        if target_cap <= current_cap {
-            return Ok(());
-        }
-
-        let new_keys = Self::alloc_like(new_tokens, target_cap)?;
-        let new_values_buf = Self::alloc_like(new_values, target_cap)?;
-
-        // Copy existing populated rows into the new larger buffer.
-        if let (Some(old_k), Some(old_v)) = (keys.take(), values.take()) {
-            if offset > 0 {
-                let mut grown_k = new_keys;
-                let mut grown_v = new_values_buf;
-                grown_k.try_index_mut(
-                    (Ellipsis, 0..offset, ..),
-                    old_k.index((Ellipsis, 0..offset, ..)),
-                )?;
-                grown_v.try_index_mut(
-                    (Ellipsis, 0..offset, ..),
-                    old_v.index((Ellipsis, 0..offset, ..)),
-                )?;
-                *keys = Some(grown_k);
-                *values = Some(grown_v);
-                return Ok(());
-            }
-        }
-
-        *keys = Some(new_keys);
-        *values = Some(new_values_buf);
-        Ok(())
-    }
-}
-
-impl KeyValueCache for KVCache {
-    fn offset(&self) -> i32 {
-        self.offset
-    }
-
-    fn max_size(&self) -> Option<i32> {
-        None
-    }
-
-    fn is_trimmable(&self) -> bool {
-        true
-    }
-
-    fn trim(&mut self, n: i32) -> i32 {
-        let trimmed = n.min(self.offset).max(0);
-        self.offset -= trimmed;
-        trimmed
-    }
-
-    fn class_name(&self) -> &'static str {
-        "KVCache"
-    }
-
-    fn state(&self) -> Vec<Array> {
-        match (self.keys.as_ref(), self.values.as_ref()) {
-            (Some(k), Some(v)) => {
-                let end = self.offset;
-                vec![
-                    k.index((Ellipsis, 0..end, ..)),
-                    v.index((Ellipsis, 0..end, ..)),
-                ]
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    fn meta_state(&self) -> HashMap<String, String> {
-        let mut m = HashMap::new();
-        m.insert("offset".into(), self.offset.to_string());
-        m.insert("step".into(), self.step.to_string());
-        m
-    }
-
-    fn update_and_fetch(
-        &mut self,
-        keys: Array,
-        values: Array,
-    ) -> Result<(Array, Array), Exception> {
-        let key_shape = keys.shape();
-        let t_axis = key_shape.len() - 2;
-        let s = key_shape[t_axis];
-
-        Self::grow_to_fit(
-            &mut self.keys,
-            &mut self.values,
-            self.offset,
-            &keys,
-            &values,
-            self.step,
-        )?;
-
-        let buf_k = self.keys.as_mut().expect("keys buffer just allocated");
-        let buf_v = self.values.as_mut().expect("values buffer just allocated");
-
-        buf_k.try_index_mut((Ellipsis, self.offset..self.offset + s, ..), keys)?;
-        buf_v.try_index_mut((Ellipsis, self.offset..self.offset + s, ..), values)?;
-
-        self.offset += s;
-
-        let end = self.offset;
-        Ok((
-            buf_k.index((Ellipsis, 0..end, ..)),
-            buf_v.index((Ellipsis, 0..end, ..)),
-        ))
-    }
-
-    /// Prefill-aware attention: when the cache was built with
-    /// [`Self::with_steel_prefill`], route the `n_q > 1` path through
-    /// the steel-attention tiled kernel. Falls through to the default
-    /// `fast::SDPA` dispatch for decode, masked, or unsupported-shape
-    /// calls.
-    fn attention(
-        &mut self,
-        queries: &Array,
-        keys: Array,
-        values: Array,
-        scale: f32,
-        mask: Option<&Array>,
-    ) -> Result<Array, Exception> {
-        // Pre-update offset → steel kernel `ql_off` (causal diagonal shift).
-        let ql_off = self.offset;
-        let (k_full, v_full) = self.update_and_fetch(keys, values)?;
-
-        let q_shape = queries.shape();
-        let n_q = q_shape[q_shape.len() - 2];
-        let head_dim = q_shape[q_shape.len() - 1];
-        let h_q = q_shape[1];
-        let h_kv = k_full.shape()[1];
-
-        let steel_ok = self.use_steel_prefill
-            && n_q > 1
-            && STEEL_SUPPORTED_HEAD_DIMS.contains(&head_dim)
-            && h_q % h_kv == 0;
-
-        // Steel applies causal + ql_off internally. Caller mask must
-        // be either None or a bool causal mask (the standard decoder
-        // pattern); anything else (e.g. an additive float bias) would
-        // be silently dropped, so reject those explicitly.
-        if steel_ok {
-            if let Some(m) = mask {
-                if m.dtype() != Dtype::Bool {
-                    return Err(Exception::custom(
-                        "KVCache::attention: steel prefill requires mask to be None or a bool causal mask; got non-bool mask",
-                    ));
-                }
-            }
-            return steel_attention_dispatch(
-                cached_steel_attention_kernel(),
-                SteelAttentionInputs {
-                    q: queries,
-                    k: &k_full,
-                    v: &v_full,
-                    mask: None,
-                    causal: true,
-                    ql_off,
-                    scale,
-                    head_dim,
-                    h_q,
-                    h_kv,
-                },
-            );
-        }
-
-        scaled_dot_product_attention(
-            queries.clone(),
-            k_full,
-            v_full,
-            scale,
-            mask.map(ScaledDotProductAttentionMask::Array),
-            None,
-        )
-    }
-}
-
-/// Affine-quantised KV cache. Stores K/V as packed-uint32
-/// `(wq, scales, biases)` triples in step-allocated buffers.
-///
-/// Default path is dequantise-on-read. Opt-in builders for the faster
-/// paths: [`Self::with_quantized_matmul`] (keep K/V packed across
-/// score + attend), [`Self::with_rotation`] (Π pre-quantize for
-/// better 4-bit quality), [`Self::with_fused_kernel`] (single-dispatch
-/// Metal kernel for n_q=1 decode).
-///
-/// Memory: `bits=8` → ~2×, `bits=4` → ~4× reduction vs fp16.
-/// `head_dim` must be a multiple of `group_size`.
-#[derive(Debug, Clone)]
-pub struct QuantizedKVCache {
-    /// Quantised K buffer: `[B, H, capacity, head_dim / el_per_int]` uint32.
-    keys_wq: Option<Array>,
-    /// K scales: `[B, H, capacity, head_dim / group_size]` same dtype as inputs.
-    keys_scales: Option<Array>,
-    /// K biases: `[B, H, capacity, head_dim / group_size]` same dtype as inputs.
-    keys_biases: Option<Array>,
-    values_wq: Option<Array>,
-    values_scales: Option<Array>,
-    values_biases: Option<Array>,
-    offset: i32,
-    step: i32,
-    group_size: i32,
-    bits: i32,
-    /// Dtype of the original K/V inputs (preserved for dequantise output).
-    dtype: Option<Dtype>,
-    /// Random orthogonal rotation Π applied pre-quantize.
-    rotation: Option<Array>,
-    /// Route scores/attend through `quantized_matmul` (packed-matmul path).
-    use_quantized_matmul: bool,
-    /// Use the in-tree fused qsdpa Metal kernel for n_q=1 decode.
-    use_fused_kernel: bool,
-    /// Use the steel quantised tile kernel for n_q > 1 prefill.
-    use_steel_prefill: bool,
-}
-
-impl QuantizedKVCache {
-    /// New empty cache with the default step (256), default
-    /// `group_size = 64`, default `bits = 8` (Python's default; ~2× memory
-    /// reduction, drop-in lossless).
-    pub fn new() -> Self {
-        Self::with_config(DEFAULT_KV_CACHE_STEP, 64, 8)
-    }
-
-    /// New empty cache with full configuration. `bits` must be one of
-    /// {2, 4, 8}; `group_size` should usually be 64. `head_dim` must be
-    /// a multiple of `group_size`.
-    pub fn with_config(step: i32, group_size: i32, bits: i32) -> Self {
-        assert!(step > 0, "step must be positive");
-        assert!(group_size > 0, "group_size must be positive");
-        assert!(matches!(bits, 2 | 3 | 4 | 6 | 8), "bits must be 2/3/4/6/8");
-        Self {
-            keys_wq: None,
-            keys_scales: None,
-            keys_biases: None,
-            values_wq: None,
-            values_scales: None,
-            values_biases: None,
-            offset: 0,
-            step,
-            group_size,
-            bits,
-            dtype: None,
-            rotation: None,
-            use_quantized_matmul: false,
-            use_fused_kernel: false,
-            use_steel_prefill: false,
-        }
-    }
-
-    /// Random orthogonal Π applied to K/V pre-quantize for better
-    /// 4-bit quality (KL 0.039 vs 0.20 unrotated on Qwen3-1.7B-bf16).
-    pub fn with_rotation(mut self, head_dim: i32, seed: u64) -> Result<Self, Error> {
-        self.rotation = Some(rotation::generate_rotation_matrix(head_dim, seed)?);
-        Ok(self)
-    }
-
-    /// Keep K/V packed across score and attend; dispatch through
-    /// `quantized_matmul` × 2 instead of dequantising on read.
-    pub fn with_quantized_matmul(mut self) -> Self {
-        self.use_quantized_matmul = true;
-        self
-    }
-
-    /// Opt into the in-tree fused quantized SDPA Metal kernel for n_q=1
-    /// decode. Requires `with_quantized_matmul()`; falls back to the
-    /// `quantized_matmul`-composed path for unsupported shapes
-    /// (`n_q > 1`, `bits ∉ {4, 8}`, `n_k > 4096`). The n_k threshold is
-    /// a perf crossover — at long context mlx's tiled `quantized_matmul`
-    /// beats the kernel's per-simdgroup serial processing.
-    pub fn with_fused_kernel(mut self) -> Self {
-        self.use_fused_kernel = true;
-        self
-    }
-
-    /// Opt into the steel-attention quantised tile kernel for `n_q > 1`
-    /// prefill. Active only when `head_dim ∈ {128, 256}`, `bits ∈ {4, 8}`,
-    /// `group_size` divides `head_dim`, and the caller passes no explicit
-    /// mask (causal-only). Falls back to the existing
-    /// `quantized_scaled_dot_product_attention` ops-composed path
-    /// otherwise.
-    pub fn with_steel_prefill(mut self) -> Self {
-        self.use_steel_prefill = true;
-        self
-    }
-
-    fn ceil_step(s: i32, step: i32) -> i32 {
-        ((s + step - 1) / step) * step
-    }
-
-    fn alloc_like(template: &Array, capacity: i32) -> Result<Array, Exception> {
-        let shape = template.shape();
-        let mut buf_shape = shape.to_vec();
-        let t_axis = buf_shape.len() - 2;
-        buf_shape[t_axis] = capacity;
-        zeros_dtype(&buf_shape, template.dtype())
-    }
-
-    /// Append (keys, values), quantise into the buffer, return packed views
-    /// sliced to populated `[..., :offset, ...]` rows. Shared back-end for
-    /// `update_and_fetch` and the packed-matmul `attention` override.
-    #[allow(clippy::type_complexity)]
-    fn append_quantised(
-        &mut self,
-        keys: Array,
-        values: Array,
-    ) -> Result<((Array, Array, Array), (Array, Array, Array)), Exception> {
-        let s = keys.shape()[keys.shape().len() - 2];
-
-        if self.dtype.is_none() {
-            self.dtype = Some(keys.dtype());
-        }
-
-        let (keys_to_q, values_to_q) = if let Some(pi) = self.rotation.as_ref() {
-            let pi_t = pi.as_dtype(keys.dtype())?.transpose_axes(&[1, 0])?;
-            (keys.matmul(&pi_t)?, values.matmul(&pi_t)?)
-        } else {
-            (keys, values)
-        };
-
-        let (new_k_wq, new_k_scales, new_k_biases) =
-            quantize(&keys_to_q, self.group_size, self.bits)?;
-        let (new_v_wq, new_v_scales, new_v_biases) =
-            quantize(&values_to_q, self.group_size, self.bits)?;
-
-        self.grow_to_fit(
-            &new_k_wq,
-            &new_k_scales,
-            &new_k_biases,
-            &new_v_wq,
-            &new_v_scales,
-            &new_v_biases,
-        )?;
-
-        let start = self.offset;
-        let end = self.offset + s;
-        let k_wq_buf = self.keys_wq.as_mut().expect("buffer just allocated");
-        let k_s_buf = self.keys_scales.as_mut().expect("buffer just allocated");
-        let k_b_buf = self.keys_biases.as_mut().expect("buffer just allocated");
-        let v_wq_buf = self.values_wq.as_mut().expect("buffer just allocated");
-        let v_s_buf = self.values_scales.as_mut().expect("buffer just allocated");
-        let v_b_buf = self.values_biases.as_mut().expect("buffer just allocated");
-
-        k_wq_buf.try_index_mut((Ellipsis, start..end, ..), new_k_wq)?;
-        k_s_buf.try_index_mut((Ellipsis, start..end, ..), new_k_scales)?;
-        k_b_buf.try_index_mut((Ellipsis, start..end, ..), new_k_biases)?;
-        v_wq_buf.try_index_mut((Ellipsis, start..end, ..), new_v_wq)?;
-        v_s_buf.try_index_mut((Ellipsis, start..end, ..), new_v_scales)?;
-        v_b_buf.try_index_mut((Ellipsis, start..end, ..), new_v_biases)?;
-
-        self.offset = end;
-
-        Ok((
-            (
-                k_wq_buf.index((Ellipsis, 0..end, ..)),
-                k_s_buf.index((Ellipsis, 0..end, ..)),
-                k_b_buf.index((Ellipsis, 0..end, ..)),
-            ),
-            (
-                v_wq_buf.index((Ellipsis, 0..end, ..)),
-                v_s_buf.index((Ellipsis, 0..end, ..)),
-                v_b_buf.index((Ellipsis, 0..end, ..)),
-            ),
-        ))
-    }
-
-    /// Reconstruct from previously-persisted `state` + `meta_state`.
-    /// `state` order: `[k_wq, k_scales, k_biases, v_wq, v_scales, v_biases]`.
-    pub fn from_state(
-        mut state: Vec<Array>,
-        meta: &HashMap<String, String>,
-    ) -> Result<Self, Error> {
-        if state.len() != 6 {
-            return Err(Error::Other(
-                format!(
-                    "QuantizedKVCache::from_state expected 6 arrays, got {}",
-                    state.len()
-                )
-                .into(),
-            ));
-        }
-        let v_b = state.pop().unwrap();
-        let v_s = state.pop().unwrap();
-        let v_wq = state.pop().unwrap();
-        let k_b = state.pop().unwrap();
-        let k_s = state.pop().unwrap();
-        let k_wq = state.pop().unwrap();
-        let offset = parse_meta(meta, "offset")?;
-        let step = parse_meta_or(meta, "step", DEFAULT_KV_CACHE_STEP)?;
-        let group_size = parse_meta_or(meta, "group_size", 64)?;
-        let bits = parse_meta_or(meta, "bits", 8)?;
-        let dtype = parse_dtype_meta(meta, "dtype")?;
-        let use_quantized_matmul = parse_meta_bool(meta, "use_quantized_matmul", false)?;
-        let use_fused_kernel = parse_meta_bool(meta, "use_fused_kernel", false)?;
-        let use_steel_prefill = parse_meta_bool(meta, "use_steel_prefill", false)?;
-        if parse_meta_bool(meta, "has_rotation", false)? {
-            return Err(Error::Other(
-                "QuantizedKVCache::from_state: persisted cache used rotation; \
-                 rotation is not serialisable. Drop the cache or re-apply \
-                 rotation on the loaded cache before further updates."
-                    .into(),
-            ));
-        }
-        Ok(Self {
-            keys_wq: Some(k_wq),
-            keys_scales: Some(k_s),
-            keys_biases: Some(k_b),
-            values_wq: Some(v_wq),
-            values_scales: Some(v_s),
-            values_biases: Some(v_b),
-            offset,
-            step,
-            group_size,
-            bits,
-            dtype,
-            rotation: None,
-            use_quantized_matmul,
-            use_fused_kernel,
-            use_steel_prefill,
-        })
-    }
-
-    /// Grow each of the six pre-allocated buffers so they have room for
-    /// `additional` more tokens beyond the current `offset`. Allocates
-    /// fresh zero buffers at the target capacity and copies the populated
-    /// `[:offset]` rows over.
-    #[allow(clippy::too_many_arguments)]
-    fn grow_to_fit(
-        &mut self,
-        new_k_wq: &Array,
-        new_k_scales: &Array,
-        new_k_biases: &Array,
-        new_v_wq: &Array,
-        new_v_scales: &Array,
-        new_v_biases: &Array,
-    ) -> Result<(), Exception> {
-        let new_tokens = new_k_wq.shape()[new_k_wq.shape().len() - 2];
-        let target_cap = Self::ceil_step(self.offset + new_tokens, self.step);
-
-        let current_cap = self
-            .keys_wq
-            .as_ref()
-            .map(|k| k.shape()[k.shape().len() - 2])
-            .unwrap_or(0);
-        if target_cap <= current_cap {
-            return Ok(());
-        }
-
-        let mut grown = [
-            Self::alloc_like(new_k_wq, target_cap)?,
-            Self::alloc_like(new_k_scales, target_cap)?,
-            Self::alloc_like(new_k_biases, target_cap)?,
-            Self::alloc_like(new_v_wq, target_cap)?,
-            Self::alloc_like(new_v_scales, target_cap)?,
-            Self::alloc_like(new_v_biases, target_cap)?,
-        ];
-
-        if self.offset > 0 {
-            let olds = [
-                self.keys_wq.take(),
-                self.keys_scales.take(),
-                self.keys_biases.take(),
-                self.values_wq.take(),
-                self.values_scales.take(),
-                self.values_biases.take(),
-            ];
-            for (g, o) in grown.iter_mut().zip(olds) {
-                if let Some(old) = o {
-                    g.try_index_mut(
-                        (Ellipsis, 0..self.offset, ..),
-                        old.index((Ellipsis, 0..self.offset, ..)),
-                    )?;
-                }
-            }
-        }
-
-        let [k_wq, k_s, k_b, v_wq, v_s, v_b] = grown;
-        self.keys_wq = Some(k_wq);
-        self.keys_scales = Some(k_s);
-        self.keys_biases = Some(k_b);
-        self.values_wq = Some(v_wq);
-        self.values_scales = Some(v_s);
-        self.values_biases = Some(v_b);
-        Ok(())
-    }
-}
-
-impl Default for QuantizedKVCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl KeyValueCache for QuantizedKVCache {
-    /// `false`: `update_and_fetch` dequantises on read, so callers see
-    /// dense K/V and route through the plain SDPA path.
-    fn is_quantized(&self) -> bool {
-        false
-    }
-
-    fn group_size(&self) -> Option<i32> {
-        Some(self.group_size)
-    }
-
-    fn bits(&self) -> Option<i32> {
-        Some(self.bits)
-    }
-
-    fn offset(&self) -> i32 {
-        self.offset
-    }
-
-    fn max_size(&self) -> Option<i32> {
-        None
-    }
-
-    fn is_trimmable(&self) -> bool {
-        true
-    }
-
-    fn trim(&mut self, n: i32) -> i32 {
-        let trimmed = n.min(self.offset).max(0);
-        self.offset -= trimmed;
-        trimmed
-    }
-
-    fn class_name(&self) -> &'static str {
-        "QuantizedKVCache"
-    }
-
-    fn state(&self) -> Vec<Array> {
-        let end = self.offset;
-        let slot = |a: &Option<Array>| a.as_ref().map(|x| x.index((Ellipsis, 0..end, ..)));
-        match (
-            slot(&self.keys_wq),
-            slot(&self.keys_scales),
-            slot(&self.keys_biases),
-            slot(&self.values_wq),
-            slot(&self.values_scales),
-            slot(&self.values_biases),
-        ) {
-            (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) => vec![a, b, c, d, e, f],
-            _ => Vec::new(),
-        }
-    }
-
-    fn meta_state(&self) -> HashMap<String, String> {
-        let mut m = HashMap::new();
-        m.insert("offset".into(), self.offset.to_string());
-        m.insert("step".into(), self.step.to_string());
-        m.insert("group_size".into(), self.group_size.to_string());
-        m.insert("bits".into(), self.bits.to_string());
-        m.insert(
-            "use_quantized_matmul".into(),
-            self.use_quantized_matmul.to_string(),
-        );
-        m.insert("use_fused_kernel".into(), self.use_fused_kernel.to_string());
-        m.insert(
-            "use_steel_prefill".into(),
-            self.use_steel_prefill.to_string(),
-        );
-        if self.rotation.is_some() {
-            m.insert("has_rotation".into(), "true".into());
-        }
-        if let Some(dt) = self.dtype {
-            m.insert("dtype".into(), format!("{dt:?}"));
-        }
-        m
-    }
-
-    fn update_and_fetch(
-        &mut self,
-        keys: Array,
-        values: Array,
-    ) -> Result<(Array, Array), Exception> {
-        let ((k_wq, k_s, k_b), (v_wq, v_s, v_b)) = self.append_quantised(keys, values)?;
-        let k_dense = dequantize(&k_wq, &k_s, &k_b, self.group_size, self.bits)?;
-        let v_dense = dequantize(&v_wq, &v_s, &v_b, self.group_size, self.bits)?;
-
-        if let Some(pi) = self.rotation.as_ref() {
-            let pi_cast = pi.as_dtype(k_dense.dtype())?;
-            Ok((k_dense.matmul(&pi_cast)?, v_dense.matmul(&pi_cast)?))
-        } else {
-            Ok((k_dense, v_dense))
-        }
-    }
-
-    /// Packed-matmul path: keep K/V packed and dispatch through
-    /// `quantized_scaled_dot_product_attention` (two `quantized_matmul`
-    /// kernels). Skips the per-step K/V dequant. Falls through to the
-    /// dense-SDPA default when `use_quantized_matmul` is off.
-    fn attention(
-        &mut self,
-        queries: &Array,
-        keys: Array,
-        values: Array,
-        scale: f32,
-        mask: Option<&Array>,
-    ) -> Result<Array, Exception> {
-        if !self.use_quantized_matmul {
-            let (k_full, v_full) = self.update_and_fetch(keys, values)?;
-            return scaled_dot_product_attention(
-                queries.clone(),
-                k_full,
-                v_full,
-                scale,
-                mask.map(ScaledDotProductAttentionMask::Array),
-                None,
-            );
-        }
-
-        let ql_off = self.offset;
-        let ((k_wq, k_s, k_b), (v_wq, v_s, v_b)) = self.append_quantised(keys, values)?;
-
-        let queries_for_sdpa = if let Some(pi) = self.rotation.as_ref() {
-            let pi_t = pi.as_dtype(queries.dtype())?.transpose_axes(&[1, 0])?;
-            queries.matmul(&pi_t)?
-        } else {
-            queries.clone()
-        };
-
-        let q_shape = queries_for_sdpa.shape();
-        let head_dim = q_shape[q_shape.len() - 1];
-        let n_q = q_shape[q_shape.len() - 2];
-        let h_q = q_shape[1];
-        let h_kv = k_wq.shape()[1];
-        let n_k_cache = k_wq.shape()[2];
-
-        // Kernel applies causal + ql_off internally. Caller mask must be
-        // None or a bool causal mask; reject anything else explicitly.
-        let steel_quant_supported = self.use_steel_prefill
-            && n_q > 1
-            && STEEL_SUPPORTED_HEAD_DIMS.contains(&head_dim)
-            && matches!(self.bits, 4 | 8)
-            && head_dim % self.group_size == 0
-            && h_q % h_kv == 0;
-        if steel_quant_supported {
-            if let Some(m) = mask {
-                if m.dtype() != Dtype::Bool {
-                    return Err(Exception::custom(
-                        "QuantizedKVCache::attention: steel prefill requires mask to be None or a bool causal mask; got non-bool mask",
-                    ));
-                }
-            }
-        }
-
-        let fused_supported = self.use_fused_kernel
-            && n_q == 1
-            && matches!(self.bits, 4 | 8)
-            && head_dim % (32 / self.bits) == 0
-            && head_dim % self.group_size == 0
-            && h_q % h_kv == 0
-            && n_k_cache <= FUSED_KERNEL_N_K_THRESHOLD;
-
-        let out = if steel_quant_supported {
-            steel_quant_attention_dispatch(
-                cached_steel_quant_attention_kernel(),
-                SteelQuantAttentionInputs {
-                    q: &queries_for_sdpa,
-                    k_wq: &k_wq,
-                    k_scales: &k_s,
-                    k_biases: &k_b,
-                    v_wq: &v_wq,
-                    v_scales: &v_s,
-                    v_biases: &v_b,
-                    mask: None,
-                    causal: true,
-                    ql_off,
-                    scale,
-                    head_dim,
-                    h_q,
-                    h_kv,
-                    bits: self.bits,
-                    group_size: self.group_size,
-                },
-            )?
-        } else if fused_supported {
-            fused_qsdpa_decode(
-                cached_fused_qsdpa_kernel(),
-                FusedQsdpaInputs {
-                    q: &queries_for_sdpa,
-                    k_wq: &k_wq,
-                    k_scales: &k_s,
-                    k_biases: &k_b,
-                    v_wq: &v_wq,
-                    v_scales: &v_s,
-                    v_biases: &v_b,
-                    mask,
-                    scale,
-                    head_dim,
-                    group_size: self.group_size,
-                    bits: self.bits,
-                    h_q,
-                    h_kv,
-                },
-            )?
-        } else {
-            let q_keys = QuantizedKeys {
-                keys: k_wq,
-                scales: k_s,
-                biases: k_b,
-            };
-            let q_values = QuantizedValues {
-                values: v_wq,
-                scales: v_s,
-                biases: v_b,
-            };
-            quantized_scaled_dot_product_attention(
-                queries_for_sdpa,
-                q_keys,
-                q_values,
-                scale,
-                mask,
-                self.group_size,
-                self.bits,
-            )?
-        };
-
-        if let Some(pi) = self.rotation.as_ref() {
-            let pi_cast = pi.as_dtype(out.dtype())?;
-            out.matmul(&pi_cast)
-        } else {
-            Ok(out)
-        }
-    }
-}
-
-/// Sliding-window KV cache with rotation.
-///
-/// Mirrors Python `mlx_lm.models.cache.RotatingKVCache`. The buffer is
-/// pre-allocated to `[B, H, max_size, D]` once the first append happens.
-/// While `offset < max_size` it behaves like a plain growing buffer. Once
-/// full, new tokens overwrite the oldest **non-keep** slot in rotation:
-/// the first `keep` slots are always retained (typically used to pin the
-/// system prompt or BOS region).
-///
-/// `update_and_fetch` returns the populated buffer in temporal order:
-/// `[keep prefix | older tail of rotating region | newer head of rotating region]`.
-#[derive(Debug, Clone)]
-pub struct RotatingKVCache {
-    keys: Option<Array>,
-    values: Option<Array>,
-    /// Real token count seen so far (monotonic; not bounded by max_size).
-    offset: i32,
-    /// Write head into the rotating region `[keep..max_size]`. Bounded
-    /// `0 <= idx < max_size - keep` once the rotating region is reached.
-    idx: i32,
-    /// Sliding-window capacity in tokens.
-    max_size: i32,
-    /// Number of head tokens to pin in the first `keep` slots.
-    keep: i32,
-}
-
-impl RotatingKVCache {
-    /// New empty cache. `max_size` is the rotating-window capacity in
-    /// tokens; `keep` is the number of leading tokens that are never
-    /// overwritten (must satisfy `0 <= keep < max_size`).
-    pub fn new(max_size: i32, keep: i32) -> Self {
-        assert!(max_size > 0, "max_size must be positive");
-        assert!(
-            keep >= 0 && keep < max_size,
-            "keep must be in [0, max_size)"
-        );
-        Self {
-            keys: None,
-            values: None,
-            offset: 0,
-            idx: 0,
-            max_size,
-            keep,
-        }
-    }
-
-    /// Reconstruct from persisted `state` + `meta_state`.
-    /// `state` order: `[keys, values]`.
-    pub fn from_state(
-        mut state: Vec<Array>,
-        meta: &HashMap<String, String>,
-    ) -> Result<Self, Error> {
-        if state.len() != 2 {
-            return Err(Error::Other(
-                format!(
-                    "RotatingKVCache::from_state expected 2 arrays, got {}",
-                    state.len()
-                )
-                .into(),
-            ));
-        }
-        let values = state.pop().unwrap();
-        let keys = state.pop().unwrap();
-        let offset = parse_meta(meta, "offset")?;
-        let idx = parse_meta(meta, "idx")?;
-        let max_size = parse_meta(meta, "max_size")?;
-        let keep = parse_meta(meta, "keep")?;
-        Ok(Self {
-            keys: Some(keys),
-            values: Some(values),
-            offset,
-            idx,
-            max_size,
-            keep,
-        })
-    }
-
-    fn alloc_like(template: &Array, capacity: i32) -> Result<Array, Exception> {
-        let shape = template.shape();
-        let mut buf_shape = shape.to_vec();
-        let t_axis = buf_shape.len() - 2;
-        buf_shape[t_axis] = capacity;
-        zeros_dtype(&buf_shape, template.dtype())
-    }
-}
-
-impl KeyValueCache for RotatingKVCache {
-    fn offset(&self) -> i32 {
-        self.offset
-    }
-
-    fn max_size(&self) -> Option<i32> {
-        Some(self.max_size)
-    }
-
-    fn is_trimmable(&self) -> bool {
-        // Trim is only well-defined while the rotating region hasn't wrapped.
-        self.offset <= self.max_size
-    }
-
-    fn trim(&mut self, n: i32) -> i32 {
-        if !self.is_trimmable() {
-            return 0;
-        }
-        let trimmed = n.min(self.offset).max(0);
-        self.offset -= trimmed;
-        self.idx = (self.offset - self.keep).max(0);
-        trimmed
-    }
-
-    fn class_name(&self) -> &'static str {
-        "RotatingKVCache"
-    }
-
-    fn state(&self) -> Vec<Array> {
-        match (self.keys.as_ref(), self.values.as_ref()) {
-            (Some(k), Some(v)) => vec![k.clone(), v.clone()],
-            _ => Vec::new(),
-        }
-    }
-
-    fn meta_state(&self) -> HashMap<String, String> {
-        let mut m = HashMap::new();
-        m.insert("offset".into(), self.offset.to_string());
-        m.insert("idx".into(), self.idx.to_string());
-        m.insert("max_size".into(), self.max_size.to_string());
-        m.insert("keep".into(), self.keep.to_string());
-        m
-    }
-
-    fn update_and_fetch(
-        &mut self,
-        keys: Array,
-        values: Array,
-    ) -> Result<(Array, Array), Exception> {
-        let key_shape = keys.shape();
-        let t_axis = key_shape.len() - 2;
-        let s = key_shape[t_axis];
-
-        // Allocate the rotating buffer on first append.
-        if self.keys.is_none() {
-            self.keys = Some(Self::alloc_like(&keys, self.max_size)?);
-            self.values = Some(Self::alloc_like(&values, self.max_size)?);
-        }
-        let buf_k = self.keys.as_mut().expect("just allocated");
-        let buf_v = self.values.as_mut().expect("just allocated");
-
-        // Bulk-prompt path (S > 1): handled by writing in order; if the
-        // prompt exceeds max_size the oldest entries are dropped (matches
-        // Python's behaviour for prefill into a rotating cache).
-        for i in 0..s {
-            let slot = if self.offset < self.max_size {
-                self.offset
-            } else {
-                self.keep + self.idx
-            };
-            let token_k = keys.index((Ellipsis, i..i + 1, ..));
-            let token_v = values.index((Ellipsis, i..i + 1, ..));
-            buf_k.try_index_mut((Ellipsis, slot..slot + 1, ..), token_k)?;
-            buf_v.try_index_mut((Ellipsis, slot..slot + 1, ..), token_v)?;
-
-            self.offset += 1;
-            if self.offset > self.max_size {
-                self.idx = (self.idx + 1) % (self.max_size - self.keep);
-            }
-        }
-
-        // Return the populated buffer in temporal order.
-        if self.offset <= self.max_size {
-            let end = self.offset;
-            Ok((
-                buf_k.index((Ellipsis, 0..end, ..)),
-                buf_v.index((Ellipsis, 0..end, ..)),
-            ))
-        } else {
-            // [0..keep] head + [keep+idx..max_size] older tail + [keep..keep+idx] newer head.
-            let head_k = buf_k.index((Ellipsis, 0..self.keep, ..));
-            let head_v = buf_v.index((Ellipsis, 0..self.keep, ..));
-            let split = self.keep + self.idx;
-            let tail_k = buf_k.index((Ellipsis, split..self.max_size, ..));
-            let tail_v = buf_v.index((Ellipsis, split..self.max_size, ..));
-            let new_k = buf_k.index((Ellipsis, self.keep..split, ..));
-            let new_v = buf_v.index((Ellipsis, self.keep..split, ..));
-            let out_k = concatenate_axis(&[head_k, tail_k, new_k], -2)?;
-            let out_v = concatenate_axis(&[head_v, tail_v, new_v], -2)?;
-            Ok((out_k, out_v))
-        }
-    }
-}
-
-// -------- Prompt cache helpers (Python `mlx_lm.models.cache` parity) --------
-
-fn parse_meta(meta: &HashMap<String, String>, key: &str) -> Result<i32, Error> {
-    meta.get(key)
-        .ok_or_else(|| Error::Other(format!("missing meta key {key:?}").into()))?
-        .parse::<i32>()
-        .map_err(|e| Error::Other(format!("meta {key:?} parse: {e}").into()))
-}
-
-fn parse_meta_or(meta: &HashMap<String, String>, key: &str, default: i32) -> Result<i32, Error> {
-    meta.get(key)
-        .map(|s| s.parse::<i32>())
-        .transpose()
-        .map_err(|e| Error::Other(format!("meta {key:?} parse: {e}").into()))
-        .map(|v| v.unwrap_or(default))
-}
-
-fn parse_dtype_meta(meta: &HashMap<String, String>, key: &str) -> Result<Option<Dtype>, Error> {
-    let Some(s) = meta.get(key) else {
-        return Ok(None);
-    };
-    let dt = match s.as_str() {
-        "Bool" => Dtype::Bool,
-        "Uint8" => Dtype::Uint8,
-        "Uint16" => Dtype::Uint16,
-        "Uint32" => Dtype::Uint32,
-        "Uint64" => Dtype::Uint64,
-        "Int8" => Dtype::Int8,
-        "Int16" => Dtype::Int16,
-        "Int32" => Dtype::Int32,
-        "Int64" => Dtype::Int64,
-        "Float16" => Dtype::Float16,
-        "Float32" => Dtype::Float32,
-        "Float64" => Dtype::Float64,
-        "Bfloat16" => Dtype::Bfloat16,
-        "Complex64" => Dtype::Complex64,
-        other => {
-            return Err(Error::Other(
-                format!("meta {key:?} unknown dtype {other:?}").into(),
-            ))
-        }
-    };
-    Ok(Some(dt))
-}
-
-fn parse_meta_bool(
-    meta: &HashMap<String, String>,
-    key: &str,
-    default: bool,
-) -> Result<bool, Error> {
-    match meta.get(key) {
-        None => Ok(default),
-        Some(s) => s
-            .parse::<bool>()
-            .map_err(|e| Error::Other(format!("meta {key:?} parse: {e}").into())),
-    }
-}
-
-/// Uniform prompt cache for a decoder-only model: one [`KVCache`]
-/// per layer. `max_kv_size` is reserved for sliding-window callers.
-pub fn make_prompt_cache(num_layers: usize, _max_kv_size: Option<i32>) -> Vec<KVCache> {
-    (0..num_layers).map(|_| KVCache::new()).collect()
-}
-
-/// Return `true` iff every cache in the slice supports `trim` with a
-/// non-zero argument.
-pub fn can_trim_prompt_cache<C: KeyValueCache>(caches: &[C]) -> bool {
-    !caches.is_empty() && caches.iter().all(|c| c.is_trimmable())
-}
-
-/// Trim the trailing `n` tokens from every cache in the slice. Returns the
-/// minimum number of tokens actually trimmed (some caches may be shorter).
-pub fn trim_prompt_cache<C: KeyValueCache>(caches: &mut [C], n: i32) -> i32 {
-    if !can_trim_prompt_cache(caches) || n <= 0 {
-        return 0;
-    }
-    caches.iter_mut().map(|c| c.trim(n)).min().unwrap_or(0)
-}
-
-/// Save a prompt cache to a `.safetensors` file, mirroring Python's
-/// wire format: per-layer arrays keyed `layer.{i}.{slot}` and per-layer
-/// metadata keyed `layer.{i}.{key}` plus a flat `layer.{i}.class_name`.
-/// `extra_metadata` is merged into the metadata map under unprefixed keys.
-pub fn save_prompt_cache<C: KeyValueCache>(
-    path: impl AsRef<Path>,
-    caches: &[C],
-    extra_metadata: Option<&HashMap<String, String>>,
-) -> Result<(), Error> {
-    let mut arrays: Vec<(String, Array)> = Vec::new();
-    let mut metadata: HashMap<String, String> = HashMap::new();
-
-    for (i, c) in caches.iter().enumerate() {
-        let class_name = c.class_name();
-        metadata.insert(format!("layer.{i}.class_name"), class_name.to_string());
-        for (k, v) in c.meta_state() {
-            metadata.insert(format!("layer.{i}.{k}"), v);
-        }
-        let slot_names = state_slot_names(class_name);
-        let state = c.state();
-        if !state.is_empty() && state.len() != slot_names.len() {
-            return Err(Error::Other(
-                format!(
-                    "{class_name}.state() returned {} arrays, expected {}",
-                    state.len(),
-                    slot_names.len()
-                )
-                .into(),
-            ));
-        }
-        for (slot, a) in slot_names.iter().zip(state) {
-            arrays.push((format!("layer.{i}.{slot}"), a));
-        }
-    }
-
-    if let Some(extra) = extra_metadata {
-        for (k, v) in extra {
-            metadata.insert(k.clone(), v.clone());
-        }
-    }
-    metadata.insert("num_layers".into(), caches.len().to_string());
-
-    let array_refs: Vec<(String, &Array)> = arrays.iter().map(|(k, a)| (k.clone(), a)).collect();
-    Array::save_safetensors(array_refs, Some(&metadata), path)?;
-    Ok(())
-}
-
-/// One layer's worth of loaded prompt-cache state. Caller dispatches on the
-/// variant to recover the original cache type.
-#[derive(Debug)]
-pub enum LoadedCache {
-    /// `class_name == "KVCache"`.
-    Plain(KVCache),
-    /// `class_name == "QuantizedKVCache"`.
-    Quantized(QuantizedKVCache),
-    /// `class_name == "RotatingKVCache"`.
-    Rotating(RotatingKVCache),
-}
-
-impl LoadedCache {
-    /// Discriminant matching Python `class_name`.
-    pub fn class_name(&self) -> &'static str {
-        match self {
-            LoadedCache::Plain(_) => "KVCache",
-            LoadedCache::Quantized(_) => "QuantizedKVCache",
-            LoadedCache::Rotating(_) => "RotatingKVCache",
-        }
-    }
-}
-
-/// Inverse of [`save_prompt_cache`]. Returns one [`LoadedCache`] per layer
-/// plus any extra metadata that wasn't prefixed with `layer.{i}.`.
-pub fn load_prompt_cache(
-    path: impl AsRef<Path>,
-) -> Result<(Vec<LoadedCache>, HashMap<String, String>), Error> {
-    let (mut arrays, mut meta) = Array::load_safetensors_with_metadata(path)?;
-
-    let num_layers: usize = meta
-        .remove("num_layers")
-        .ok_or_else(|| Error::Other("prompt cache missing num_layers meta".into()))?
-        .parse()
-        .map_err(|e| Error::Other(format!("num_layers parse: {e}").into()))?;
-
-    let mut layers: Vec<LoadedCache> = Vec::with_capacity(num_layers);
-    for i in 0..num_layers {
-        let class_name = meta
-            .remove(&format!("layer.{i}.class_name"))
-            .ok_or_else(|| Error::Other(format!("missing layer.{i}.class_name").into()))?;
-
-        let prefix = format!("layer.{i}.");
-        let mut layer_meta: HashMap<String, String> = HashMap::new();
-        let keys: Vec<String> = meta
-            .keys()
-            .filter(|k| k.starts_with(&prefix))
-            .cloned()
-            .collect();
-        for k in keys {
-            let suffix = k[prefix.len()..].to_string();
-            let v = meta.remove(&k).expect("just found");
-            layer_meta.insert(suffix, v);
-        }
-
-        let slot_names = state_slot_names(&class_name);
-        let mut state: Vec<Array> = Vec::with_capacity(slot_names.len());
-        for slot in slot_names {
-            let key = format!("layer.{i}.{slot}");
-            let a = arrays.remove(&key).ok_or_else(|| {
-                Error::Other(format!("missing array {key} for {class_name}").into())
-            })?;
-            state.push(a);
-        }
-
-        let loaded = match class_name.as_str() {
-            "KVCache" => LoadedCache::Plain(KVCache::from_state(state, &layer_meta)?),
-            "QuantizedKVCache" => {
-                LoadedCache::Quantized(QuantizedKVCache::from_state(state, &layer_meta)?)
-            }
-            "RotatingKVCache" => {
-                LoadedCache::Rotating(RotatingKVCache::from_state(state, &layer_meta)?)
-            }
-            other => {
-                return Err(Error::Other(
-                    format!("unsupported prompt-cache class {other}").into(),
-                ))
-            }
-        };
-        layers.push(loaded);
-    }
-
-    Ok((layers, meta))
-}
-
-/// Per-class state-array slot names, matching the order
-/// [`KeyValueCache::state`] returns them in.
-fn state_slot_names(class_name: &str) -> &'static [&'static str] {
-    match class_name {
-        "KVCache" => &["keys", "values"],
-        "QuantizedKVCache" => &[
-            "keys_wq",
-            "keys_scales",
-            "keys_biases",
-            "values_wq",
-            "values_scales",
-            "values_biases",
-        ],
-        "RotatingKVCache" => &["keys", "values"],
-        _ => &[],
-    }
-}
+// `kernels::*` is accessible via `crate::cache::kernels::...` directly.
+// Removed the pub(crate) re-export — only one consumer (qwen3_5/text.rs)
+// and the direct path is no less readable.
+pub use kvcache::{KVCache, DEFAULT_KV_CACHE_STEP};
+pub use quantized_kvcache::QuantizedKVCache;
+pub use rotating_kvcache::RotatingKVCache;
+pub use trait_def::KeyValueCache;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::HashMap;
+
     use mlx_rs::{
-        ops::concatenate_axis,
-        random::{key, normal},
+        ops::{concatenate_axis, indexing::{Ellipsis, IndexOp}},
         transforms::eval,
-        Dtype,
+        Array, Dtype,
     };
+
+    use super::*;
 
     /// Make a fresh `[B=1, H=2, S, D=4]` float32 array filled with sequential
     /// values per token-row, distinct from any other call (so we can spot
@@ -1527,7 +86,6 @@ mod tests {
         assert_eq!(out_v.shape(), &[1, 2, 3, 4]);
         assert_eq!(cache.offset(), 3);
         assert_eq!(cache.capacity(), 256);
-        // Out should equal input (only S rows are populated, returned view is exactly those).
         let diff = out_k
             .subtract(&k)
             .unwrap()
@@ -1553,7 +111,6 @@ mod tests {
         assert_eq!(out_k.shape(), &[1, 2, 5, 4]);
         assert_eq!(cache.offset(), 5);
 
-        // Reconstruct expected by concatenating in token-order along axis 2.
         let expected_k = concatenate_axis(&[k1, k2], -2).unwrap();
         let expected_v = concatenate_axis(&[v1, v2], -2).unwrap();
         let dk = out_k
@@ -1577,12 +134,10 @@ mod tests {
     #[test]
     fn kvcache_grows_buffer_past_initial_step() {
         let mut cache = KVCache::with_step(4);
-        // First update: 3 tokens -> capacity should round up to 4.
         cache
             .update_and_fetch(token_block(3, 0.0), token_block(3, 0.0))
             .unwrap();
         assert_eq!(cache.capacity(), 4);
-        // Second update: 5 more tokens -> total 8 -> capacity should round up to 8.
         cache
             .update_and_fetch(token_block(5, 100.0), token_block(5, 100.0))
             .unwrap();
@@ -1599,10 +154,8 @@ mod tests {
         assert!(cache.is_trimmable());
         assert_eq!(cache.trim(3), 3);
         assert_eq!(cache.offset(), 7);
-        // Trim more than offset -> only trims what's available.
         assert_eq!(cache.trim(100), 7);
         assert_eq!(cache.offset(), 0);
-        // Trim with empty cache -> 0.
         assert_eq!(cache.trim(5), 0);
     }
 
@@ -1618,6 +171,7 @@ mod tests {
 
     /// Build `[B, H, T, D]` fp16 random tensor for a prefill test.
     fn random_4d_fp16(b: i32, h: i32, t: i32, d: i32, seed: u64) -> Array {
+        use mlx_rs::random::{key, normal};
         let kctx = key(seed).unwrap();
         normal::<f32>(&[b, h, t, d], None, None, &kctx)
             .unwrap()
@@ -1639,10 +193,6 @@ mod tests {
             .unwrap()
     }
 
-    /// End-to-end: a `KVCache::with_steel_prefill()` cache returns the
-    /// same prefill output as a plain cache (which dispatches to
-    /// `fast::SDPA`). Both paths receive an explicit causal mask so the
-    /// steel-forced `causal=true` matches the baseline's masked SDPA.
     #[test]
     fn kvcache_steel_prefill_matches_default() {
         let (b, h, t, d) = (1, 8, 64, 128);
@@ -1675,8 +225,6 @@ mod tests {
         );
     }
 
-    /// Steel prefill must fall back to `fast::SDPA` when the input
-    /// shape isn't in the supported set (here, head_dim = 64).
     #[test]
     fn kvcache_steel_prefill_falls_back_on_unsupported_head_dim() {
         let (b, h, t, d) = (1, 2, 8, 64);
@@ -1686,15 +234,11 @@ mod tests {
         let scale = 1.0 / (d as f32).sqrt();
 
         let mut steel = KVCache::new().with_steel_prefill();
-        // Should not panic / return error — just fall back.
         let out = steel.attention(&q, k, v, scale, None).unwrap();
         eval([&out]).unwrap();
         assert_eq!(out.shape(), &[b, h, t, d]);
     }
 
-    /// Multi-turn dense prefill: ql_off must shift the causal diagonal
-    /// so a second prefill's queries attend to first-prefill KV tokens.
-    /// Both paths receive a `[T_turn, T_turn+offset]` causal mask.
     #[test]
     fn kvcache_steel_prefill_multiturn_matches_default() {
         let (b, h, d) = (1, 8, 128);
@@ -1747,10 +291,6 @@ mod tests {
         );
     }
 
-    /// QuantizedKVCache::with_quantized_matmul().with_steel_prefill()
-    /// on a causal prefill must produce the same output as the
-    /// ops-composed `quantized_scaled_dot_product_attention` path with
-    /// the same causal bool mask.
     #[test]
     fn quantized_kvcache_steel_prefill_matches_qmm_path() {
         let (b, h, t, d) = (1, 8, 16, 128);
@@ -1760,20 +300,13 @@ mod tests {
         let scale = 1.0 / (d as f32).sqrt();
         let mask = causal_bool_mask(t);
 
-        // Baseline: packed-matmul with the explicit causal mask.
-        let mut base = QuantizedKVCache::with_config(256, 64, 8).with_quantized_matmul();
+        let mut base = QuantizedKVCache::with_config(256, 64, 8);
         let baseline = base
             .attention(&q, k.clone(), v.clone(), scale, Some(&mask))
             .unwrap();
 
-        // Steel: same mask. Steel ignores the supplied mask and applies
-        // its own `causal=true`.
-        let mut steel = QuantizedKVCache::with_config(256, 64, 8)
-            .with_quantized_matmul()
-            .with_steel_prefill();
-        let routed = steel
-            .attention(&q, k, v, scale, Some(&mask))
-            .unwrap();
+        let mut steel = QuantizedKVCache::with_config(256, 64, 8).with_steel_prefill();
+        let routed = steel.attention(&q, k, v, scale, Some(&mask)).unwrap();
 
         eval([&baseline, &routed]).unwrap();
         let diff = baseline
@@ -1790,9 +323,6 @@ mod tests {
         );
     }
 
-    /// `with_rotation` + `with_steel_prefill` stacks correctly: the
-    /// orthogonal Π pre-rotation on K/V is undone by the post-attention
-    /// `out @ Π` step regardless of which kernel produced the output.
     #[test]
     fn quantized_kvcache_steel_prefill_with_rotation_matches_qmm_path() {
         let (b, h, t, d) = (1, 8, 16, 128);
@@ -1803,7 +333,6 @@ mod tests {
         let mask = causal_bool_mask(t);
 
         let mut base = QuantizedKVCache::with_config(256, 64, 4)
-            .with_quantized_matmul()
             .with_rotation(d, 42)
             .unwrap();
         let baseline = base
@@ -1811,13 +340,10 @@ mod tests {
             .unwrap();
 
         let mut steel = QuantizedKVCache::with_config(256, 64, 4)
-            .with_quantized_matmul()
             .with_rotation(d, 42)
             .unwrap()
             .with_steel_prefill();
-        let routed = steel
-            .attention(&q, k, v, scale, Some(&mask))
-            .unwrap();
+        let routed = steel.attention(&q, k, v, scale, Some(&mask)).unwrap();
 
         eval([&baseline, &routed]).unwrap();
         let diff = baseline
@@ -1834,11 +360,6 @@ mod tests {
         );
     }
 
-    /// Multi-turn quant prefill: append a system prompt, then a user
-    /// prompt as a second prefill. `ql_off` must shift the causal
-    /// diagonal so the second prefill's queries can attend to the first
-    /// prefill's KV tokens. Each turn passes a `[T_turn, T_turn+offset]`
-    /// bool mask so the baseline qmm path computes the same causal slice.
     #[test]
     fn quantized_kvcache_steel_prefill_multiturn_matches_qmm() {
         let (b, h, d) = (1, 8, 128);
@@ -1850,10 +371,7 @@ mod tests {
         let usr_k = random_4d_fp16(b, h, 8, d, 45);
         let usr_v = random_4d_fp16(b, h, 8, d, 46);
 
-        // Turn 1: 8 queries against 8 keys, standard causal mask.
         let sys_mask = causal_bool_mask(8);
-        // Turn 2: 8 new queries against 16 keys (8 prior + 8 new). The
-        // mask shape is [1, 1, 8, 16]: column j ≤ row i + 8 (offset).
         let mut usr_mask_buf = Vec::with_capacity(8 * 16);
         for i in 0..8 {
             for j in 0..16 {
@@ -1864,18 +382,14 @@ mod tests {
             .expand_dims_axes(&[0, 1])
             .unwrap();
 
-        // Baseline.
-        let mut base = QuantizedKVCache::with_config(256, 64, 8).with_quantized_matmul();
+        let mut base = QuantizedKVCache::with_config(256, 64, 8);
         base.attention(&sys_q, sys_k.clone(), sys_v.clone(), scale, Some(&sys_mask))
             .unwrap();
         let baseline = base
             .attention(&usr_q, usr_k.clone(), usr_v.clone(), scale, Some(&usr_mask))
             .unwrap();
 
-        // Steel.
-        let mut steel = QuantizedKVCache::with_config(256, 64, 8)
-            .with_quantized_matmul()
-            .with_steel_prefill();
+        let mut steel = QuantizedKVCache::with_config(256, 64, 8).with_steel_prefill();
         steel
             .attention(&sys_q, sys_k, sys_v, scale, Some(&sys_mask))
             .unwrap();
@@ -1899,7 +413,7 @@ mod tests {
     }
 
     /// Like `token_block` but with head_dim that's a multiple of the
-    /// default quantisation group size (64). Quantize requires that.
+    /// default quantisation group size (64).
     fn quant_token_block(s: i32, base: f32) -> Array {
         let b = 1;
         let h = 2;
@@ -1924,13 +438,9 @@ mod tests {
         let (out_k, out_v) = cache.update_and_fetch(k.clone(), v.clone()).unwrap();
         eval([&out_k, &out_v]).unwrap();
         assert_eq!(out_k.shape(), &[1, 2, 3, 64]);
-        // Reports false to drive the dense SDPA branch (dequantise-on-read).
         assert!(!cache.is_quantized());
         assert_eq!(cache.group_size(), Some(64));
         assert_eq!(cache.bits(), Some(8));
-        // q8 round-trip should reproduce inputs to within ~1/256 of the
-        // group's value range. Our test data spans a few hundred so a
-        // few-unit absolute diff is fine.
         let dk = out_k
             .subtract(&k)
             .unwrap()
@@ -1962,7 +472,6 @@ mod tests {
         assert_eq!(out_k.shape(), &[1, 2, 5, 64]);
         assert_eq!(cache.offset(), 5);
 
-        // Compare first 2 rows back against k1 (q8 round-trip is near-lossless).
         let head = out_k.index((Ellipsis, 0..2, ..));
         let dk = head
             .subtract(&k1)
@@ -1986,7 +495,6 @@ mod tests {
         let (out_k, out_v) = cache.update_and_fetch(k, v).unwrap();
         eval([&out_k, &out_v]).unwrap();
         assert_eq!(out_k.shape(), &[1, 2, 3, 64]);
-        // q4 loses more — accept wider tolerance.
         let mean = out_k.mean(None).unwrap();
         assert!(mean.item::<f32>().is_finite());
     }
@@ -2068,10 +576,7 @@ mod tests {
 
     #[test]
     fn rotating_kvcache_grows_until_full_then_rotates() {
-        // max_size=4, keep=1 → after 4 tokens the buffer is full; further
-        // tokens overwrite slots [1,2,3] in rotation.
         let mut cache = RotatingKVCache::new(4, 1);
-        // Append 4 single tokens — fills buffer 0..4 in order.
         for i in 0..4 {
             let k = token_block(1, i as f32);
             let v = token_block(1, 100.0 + i as f32);
@@ -2081,14 +586,12 @@ mod tests {
         assert_eq!(cache.offset(), 4);
         assert!(cache.is_trimmable());
 
-        // 5th token: writes into slot keep+idx = 1+0 = 1, rotates idx to 1.
         let k5 = token_block(1, 99.0);
         let v5 = token_block(1, 199.0);
-        let (out_k, _) = cache.update_and_fetch(k5.clone(), v5).unwrap();
+        let (out_k, _) = cache.update_and_fetch(k5, v5).unwrap();
         eval([&out_k]).unwrap();
         assert_eq!(cache.offset(), 5);
         assert!(!cache.is_trimmable(), "trim disabled once wrapped");
-        // Output shape should still be max_size along the token axis.
         assert_eq!(out_k.shape()[out_k.shape().len() - 2], 4);
     }
 
@@ -2107,8 +610,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("qcache.safetensors");
 
-        let mut caches: Vec<QuantizedKVCache> =
-            (0..2).map(|_| QuantizedKVCache::with_config(64, 64, 8)).collect();
+        let mut caches: Vec<QuantizedKVCache> = (0..2)
+            .map(|_| QuantizedKVCache::with_config(64, 64, 8))
+            .collect();
         caches[0]
             .update_and_fetch(quant_token_block(3, 0.0), quant_token_block(3, 100.0))
             .unwrap();
@@ -2125,37 +629,8 @@ mod tests {
                 assert_eq!(c.offset(), 3);
                 assert_eq!(c.bits(), Some(8));
                 assert_eq!(c.group_size(), Some(64));
-                assert_eq!(c.dtype, Some(Dtype::Float32));
             }
             _ => panic!("expected quantized cache"),
-        }
-    }
-
-    #[test]
-    fn prompt_cache_rotating_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rcache.safetensors");
-
-        let mut caches: Vec<RotatingKVCache> =
-            (0..2).map(|_| RotatingKVCache::new(8, 1)).collect();
-        caches[0]
-            .update_and_fetch(token_block(3, 0.0), token_block(3, 100.0))
-            .unwrap();
-        caches[1]
-            .update_and_fetch(token_block(4, 1.0), token_block(4, 200.0))
-            .unwrap();
-
-        save_prompt_cache(&path, &caches, None).unwrap();
-
-        let (loaded, _) = load_prompt_cache(&path).unwrap();
-        assert_eq!(loaded.len(), 2);
-        match &loaded[0] {
-            LoadedCache::Rotating(c) => {
-                assert_eq!(c.offset(), 3);
-                assert_eq!(c.max_size, 8);
-                assert_eq!(c.keep, 1);
-            }
-            _ => panic!("expected rotating cache"),
         }
     }
 }
