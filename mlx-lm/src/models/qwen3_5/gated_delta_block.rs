@@ -156,6 +156,10 @@ pub struct GatedDeltaNet {
     /// Per-block compiled-graph caches for the GDN scan + gated RMS norm.
     precise_swiglu_cache: PreciseSwigluCache,
     compute_g_cache: ComputeGCache,
+    /// Cached 0-D constants used per-call in the rms_norm + scale path.
+    /// `Array::from_f32` allocates a fresh GPU array each call.
+    q_inv_scale_sq: OnceLock<Array>,
+    k_inv_scale: OnceLock<Array>,
 }
 
 impl GatedDeltaNet {
@@ -225,6 +229,8 @@ impl GatedDeltaNet {
             out_proj: MaybeQuantized::Original(out_proj),
             precise_swiglu_cache: PreciseSwigluCache::default(),
             compute_g_cache: ComputeGCache::default(),
+            q_inv_scale_sq: OnceLock::new(),
+            k_inv_scale: OnceLock::new(),
         })
     }
 
@@ -289,12 +295,20 @@ impl GatedDeltaNet {
         // Scale q/k with the head-dim power. `fast::rms_norm` with `None`
         // weight emits a single Metal kernel; the explicit `.as_dtype` cast
         // restores the input dtype after the f32 scalar promotion.
-        let inv_scale = (self.head_k_dim as f32).powf(-0.5);
+        let head_k_dim = self.head_k_dim;
+        let q_scale = self.q_inv_scale_sq.get_or_init(|| {
+            let inv = (head_k_dim as f32).powf(-0.5);
+            Array::from_f32(inv * inv)
+        });
+        let k_scale = self.k_inv_scale.get_or_init(|| {
+            let inv = (head_k_dim as f32).powf(-0.5);
+            Array::from_f32(inv)
+        });
         let q_normed = rms_norm(&q, None, 1e-6)?
-            .multiply(Array::from_f32(inv_scale * inv_scale))?
+            .multiply(q_scale)?
             .as_dtype(q.dtype())?;
         let k_normed = rms_norm(&k, None, 1e-6)?
-            .multiply(Array::from_f32(inv_scale))?
+            .multiply(k_scale)?
             .as_dtype(k.dtype())?;
 
         let state_in = cache
