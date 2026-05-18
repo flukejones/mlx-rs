@@ -1030,10 +1030,15 @@ where
 
     fn forward(&mut self, input: ModelInput<'_, C>) -> Result<Self::Output, Self::Error> {
         let ModelInput { inputs, cache, .. } = input;
-        let embed_scale_arr = self
-            .embed_scale_arr
-            .get_or_init(|| Array::from_f32(self.embed_scale));
         let mut h = self.embed_tokens.forward(inputs)?;
+        // Stage scale in `h`'s dtype so the multiply doesn't promote
+        // bf16 embeddings to f32 (and poison the entire forward).
+        let h_dtype = h.dtype();
+        let embed_scale_arr = self.embed_scale_arr.get_or_init(|| {
+            Array::from_f32(self.embed_scale)
+                .as_dtype(h_dtype)
+                .expect("embed_scale cast cannot fail")
+        });
         h = h.multiply(embed_scale_arr)?;
 
         ensure_cache_populated(cache, self.layers.len());
@@ -1243,7 +1248,14 @@ where
             }
         };
         if let Some(cap) = self.final_logit_softcapping {
-            let cap_arr = self.softcap_array.get_or_init(|| Array::from_f32(cap));
+            // Stage cap in logits' dtype so `divide(logits, cap)` stays
+            // in bf16/f16 instead of promoting to f32.
+            let logits_dtype = logits.dtype();
+            let cap_arr = self.softcap_array.get_or_init(|| {
+                Array::from_f32(cap)
+                    .as_dtype(logits_dtype)
+                    .expect("cap cast cannot fail")
+            });
             logits = logit_softcap(&mut self.softcap_cache, &logits, cap_arr)?;
         }
         Ok(logits)
