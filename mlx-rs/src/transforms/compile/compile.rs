@@ -4,11 +4,15 @@ use std::marker::PhantomData;
 
 use crate::{error::Exception, Array};
 
-use super::{type_id_to_usize, Closure, Compiled, CompiledState, Guarded, VectorArray};
+use super::{next_compile_id, Closure, Compiled, CompiledState, Guarded, VectorArray};
 
 /// Boxed adapter from the per-arity user closure to the slice-based one MLX
-/// invokes internally (infallible path). `+ Send` lets a `Compiled<F, G>`
-/// holding one of these cross thread boundaries.
+/// invokes internally (infallible path).
+///
+/// `+ Send` is required so a `Compiled<F, G>` (which holds one of these in
+/// `CompiledState.f`) can move across thread boundaries — necessary for
+/// downstream consumers that pass models into `tokio::task::spawn_blocking`
+/// (e.g. examples/chandra).
 pub type BoxedSliceFn = Box<dyn FnMut(&[Array]) -> Vec<Array> + Send + 'static>;
 
 /// Boxed adapter from the per-arity user closure to the slice-based one MLX
@@ -53,6 +57,14 @@ pub trait Compile<A, O, E>: Sized {
     /// times via [`CallMut::call_mut`]; the underlying compiled graph
     /// is built on the first call and reused afterwards.
     fn compile(self, shapeless: bool) -> Self::Output;
+
+    /// Like [`Self::compile`] but pins the compile-cache id to `id`
+    /// instead of allocating a fresh one. Mirrors Python's
+    /// `@mx.compile` decorator: one cache entry per logical function
+    /// shared across every caller. Use this when the same activation
+    /// runs from many module instances and you want MLX's compiler
+    /// cache to reuse one compiled metal kernel.
+    fn compile_with_id(self, id: usize, shapeless: bool) -> Self::Output;
 }
 
 /// A trait for a compiled function that can be called.
@@ -97,7 +109,10 @@ where
     type Output = Compiled<F, F, shape::ArraySlice>;
 
     fn compile(self, shapeless: bool) -> Self::Output {
-        let id = type_id_to_usize(&self);
+        self.compile_with_id(next_compile_id(), shapeless)
+    }
+
+    fn compile_with_id(self, id: usize, shapeless: bool) -> Self::Output {
         Compiled {
             shape: PhantomData,
             f_marker: PhantomData,
@@ -117,8 +132,11 @@ where
 {
     type Output = Compiled<F, BoxedSliceFn, shape::OneArg>;
 
-    fn compile(mut self, shapeless: bool) -> Self::Output {
-        let id = type_id_to_usize(&self);
+    fn compile(self, shapeless: bool) -> Self::Output {
+        self.compile_with_id(next_compile_id(), shapeless)
+    }
+
+    fn compile_with_id(mut self, id: usize, shapeless: bool) -> Self::Output {
         let f: BoxedSliceFn = Box::new(move |args: &[Array]| vec![(self)(&args[0])]);
         Compiled {
             shape: PhantomData,
@@ -139,8 +157,11 @@ where
 {
     type Output = Compiled<F, BoxedSliceFn, shape::TwoArgs>;
 
-    fn compile(mut self, shapeless: bool) -> Self::Output {
-        let id = type_id_to_usize(&self);
+    fn compile(self, shapeless: bool) -> Self::Output {
+        self.compile_with_id(next_compile_id(), shapeless)
+    }
+
+    fn compile_with_id(mut self, id: usize, shapeless: bool) -> Self::Output {
         let f: BoxedSliceFn = Box::new(move |args: &[Array]| vec![(self)((&args[0], &args[1]))]);
         Compiled {
             shape: PhantomData,
@@ -161,8 +182,11 @@ where
 {
     type Output = Compiled<F, BoxedSliceFn, shape::ThreeArgs>;
 
-    fn compile(mut self, shapeless: bool) -> Self::Output {
-        let id = type_id_to_usize(&self);
+    fn compile(self, shapeless: bool) -> Self::Output {
+        self.compile_with_id(next_compile_id(), shapeless)
+    }
+
+    fn compile_with_id(mut self, id: usize, shapeless: bool) -> Self::Output {
         let f: BoxedSliceFn =
             Box::new(move |args: &[Array]| vec![(self)((&args[0], &args[1], &args[2]))]);
         Compiled {
@@ -185,7 +209,10 @@ where
     type Output = Compiled<F, F, shape::ArraySlice>;
 
     fn compile(self, shapeless: bool) -> Self::Output {
-        let id = type_id_to_usize(&self);
+        self.compile_with_id(next_compile_id(), shapeless)
+    }
+
+    fn compile_with_id(self, id: usize, shapeless: bool) -> Self::Output {
         Compiled {
             shape: PhantomData,
             f_marker: PhantomData,
@@ -205,8 +232,11 @@ where
 {
     type Output = Compiled<F, BoxedSliceTryFn, shape::OneArg>;
 
-    fn compile(mut self, shapeless: bool) -> Self::Output {
-        let id = type_id_to_usize(&self);
+    fn compile(self, shapeless: bool) -> Self::Output {
+        self.compile_with_id(next_compile_id(), shapeless)
+    }
+
+    fn compile_with_id(mut self, id: usize, shapeless: bool) -> Self::Output {
         let f: BoxedSliceTryFn = Box::new(move |args: &[Array]| Ok(vec![(self)(&args[0])?]));
         Compiled {
             shape: PhantomData,
@@ -227,8 +257,11 @@ where
 {
     type Output = Compiled<F, BoxedSliceTryFn, shape::TwoArgs>;
 
-    fn compile(mut self, shapeless: bool) -> Self::Output {
-        let id = type_id_to_usize(&self);
+    fn compile(self, shapeless: bool) -> Self::Output {
+        self.compile_with_id(next_compile_id(), shapeless)
+    }
+
+    fn compile_with_id(mut self, id: usize, shapeless: bool) -> Self::Output {
         let f: BoxedSliceTryFn =
             Box::new(move |args: &[Array]| Ok(vec![(self)((&args[0], &args[1]))?]));
         Compiled {
@@ -250,8 +283,11 @@ where
 {
     type Output = Compiled<F, BoxedSliceTryFn, shape::ThreeArgs>;
 
-    fn compile(mut self, shapeless: bool) -> Self::Output {
-        let id = type_id_to_usize(&self);
+    fn compile(self, shapeless: bool) -> Self::Output {
+        self.compile_with_id(next_compile_id(), shapeless)
+    }
+
+    fn compile_with_id(mut self, id: usize, shapeless: bool) -> Self::Output {
         let f: BoxedSliceTryFn =
             Box::new(move |args: &[Array]| Ok(vec![(self)((&args[0], &args[1], &args[2]))?]));
         Compiled {
@@ -444,8 +480,6 @@ impl<F> CompiledState<F> {
 
 #[cfg(test)]
 mod tests {
-    use core::panic;
-
     use crate::{
         array,
         error::Exception,
@@ -453,44 +487,26 @@ mod tests {
         Array,
     };
 
-    use super::compile;
-
-    fn example_fn_0(x: f32) -> f32 {
-        x + 1.0
-    }
-
-    fn example_fn_3(x: f32) -> f32 {
-        x + 1.0
-    }
+    use super::{compile, Compile};
 
     #[test]
-    fn test_type_id_to_usize() {
-        let example_fn_1 = |x: f32| x + 1.0;
-        let example_fn_2 = |x: f32| x + 1.0;
-
-        let mut ids = Vec::new();
-
-        ids.push(super::type_id_to_usize(&example_fn_0));
-
-        let id1 = super::type_id_to_usize(&example_fn_1);
-        if ids.contains(&id1) {
-            panic!("id1 already exists");
+    fn distinct_fn_pointers_get_distinct_compile_ids() {
+        // Regression: prior `type_id_to_usize<T>()` derived the cache id from
+        // `TypeId::of::<T>()`. Two `fn` pointers cast to the same concrete
+        // signature share a TypeId — so the second compile reused the first
+        // compiled graph (chandra-ocr-2 produced `sigmoid(output) * gate`
+        // instead of `sigmoid(gate) * output` after swiglu warmed the slot).
+        // The current `next_compile_id()` counter must hand out distinct ids
+        // for every compile call regardless of source type.
+        fn f0(x: &Array) -> Array {
+            x.clone()
         }
-        ids.push(id1);
-
-        let id2 = super::type_id_to_usize(&example_fn_2);
-        if ids.contains(&id2) {
-            panic!("id2 already exists");
+        fn f1(x: &Array) -> Array {
+            x.clone()
         }
-        ids.push(id2);
-
-        let id3 = super::type_id_to_usize(&example_fn_3);
-        if ids.contains(&id3) {
-            panic!("id3 already exists");
-        }
-        ids.push(id3);
-
-        assert_eq!(ids.len(), 4);
+        let c0 = (f0 as fn(&Array) -> Array).compile(false);
+        let c1 = (f1 as fn(&Array) -> Array).compile(false);
+        assert_ne!(c0.state.id, c1.state.id);
     }
 
     #[test]

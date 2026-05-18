@@ -142,9 +142,6 @@
 //! See mlx-rs/mlx-tests/tests/test_compile_with_state.rs for more examples.
 //!
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
 use super::{Closure, Guarded, VectorArray};
 use crate::Array;
 
@@ -208,12 +205,19 @@ struct CompiledState<F> {
     cached_compiled: Option<Closure<'static>>,
 }
 
-// Safety: `Closure<'static>` is not auto-Send because its inner C struct
-// holds a `*mut c_void` payload. The compile path's payload is always
-// a `BoxedSliceFn` / `BoxedSliceTryFn` — both `+ Send`. The mlx-c
+// Safety: `Closure<'static>` is not auto-Send because its inner
+// `mlx_closure_` C struct holds a `*mut c_void` payload. For the
+// compile path, the payload is always a `BoxedSliceFn` /
+// `BoxedSliceTryFn` (both `+ Send` — see `compile.rs`). The mlx-c
 // closure handle itself contains only function pointers + the
 // already-Send payload, so transferring `CompiledState<F>` between
 // threads is sound when `F: Send`.
+//
+// Required by chandra (and any other consumer that wants to move a
+// model across a `tokio::task::spawn_blocking` boundary). Models
+// holding `Compiled<F, G>` inside `SwigluCache` (via `crate::activations`)
+// need to be `Send`; this `unsafe impl` is the only thing standing
+// between them and that.
 unsafe impl<F: Send> Send for CompiledState<F> {}
 
 impl<F> Drop for CompiledState<F> {
@@ -225,15 +229,34 @@ impl<F> Drop for CompiledState<F> {
     }
 }
 
-fn type_id_to_usize<T>(_val: &T) -> usize
-where
-    T: 'static,
-{
-    // hash type id to usize
-    let type_id = std::any::TypeId::of::<T>();
-    let mut hasher = DefaultHasher::new();
-    type_id.hash(&mut hasher);
-    hasher.finish() as usize
+/// Allocate a unique id for a freshly-built [`Compiled`] state.
+///
+/// **Why this is not derived from `TypeId::of::<T>()`**: two distinct
+/// `fn` pointers cast as the same concrete signature share a single
+/// `TypeId`. Using the type id as the cache key in `mlx_detail_compile`
+/// causes the second `compile()` call to silently reuse the first
+/// function's compiled graph — the chandra-ocr-2 forward returned
+/// `sigmoid(output) * gate` instead of `sigmoid(gate) * output` after a
+/// `swiglu` warmed the same-signatured slot. Process-wide monotonic ids
+/// guarantee one compiled-graph slot per call regardless of source type.
+fn next_compile_id() -> usize {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(1);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Public hook to bump the global counter once and reuse the id, so
+/// many callers of the same logical operation share one compiled-graph
+/// slot in MLX's `compiler_cache`. Mirrors Python's `@mx.compile`
+/// decorator semantics — without this, every per-layer cache instance
+/// burns a fresh JIT compile.
+///
+/// Stash the returned id in a `OnceLock<usize>` keyed to the logical
+/// operation (e.g. `static SWIGLU_ID: OnceLock<usize>`); pass the same
+/// id to `Compile::compile_with_id` (see `compile.rs`) from every cache
+/// init.
+pub fn allocate_compile_id() -> usize {
+    next_compile_id()
 }
 
 fn update_by_replace_with_ref_to_new_array(src: &mut Array, new_array: &Array) {
