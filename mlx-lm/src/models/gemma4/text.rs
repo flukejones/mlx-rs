@@ -1117,10 +1117,12 @@ where
         let n = self.layers.len();
         let mut intermediates: Vec<Option<(Array, Array, i32)>> = (0..n).map(|_| None).collect();
 
-        let previous_kvs = self.previous_kvs.clone();
+        // Split borrow: previous_kvs is immutable, layers is mutated.
+        let layers = &mut self.layers;
+        let previous_kvs = self.previous_kvs.as_slice();
 
         for i in 0..n {
-            let kind = self.layers[i].layer_kind;
+            let kind = layers[i].layer_kind;
             let mask = match kind {
                 LayerKind::FullAttention => global_arr.as_ref(),
                 LayerKind::SlidingAttention => sliding_arr.as_ref(),
@@ -1138,7 +1140,7 @@ where
 
             let cache_slot = cache.get_mut(i).and_then(|c| c.as_mut());
             let pli_slice = per_layer_inputs.as_ref().map(|v| &v[i]);
-            let out = self.layers[i].forward_layer::<C>(
+            let out = layers[i].forward_layer::<C>(
                 &h, mask, cache_slot, shared_kv, offset_in, pli_slice,
             )?;
             h = out.h;
