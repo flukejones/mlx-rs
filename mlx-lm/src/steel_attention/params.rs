@@ -82,24 +82,24 @@ impl FlatAttnParams {
         }
     }
 
-    pub fn b_param(&self) -> Array { self.b.clone() }
-    pub fn h_param(&self) -> Array { self.h.clone() }
-    pub fn d_param(&self) -> Array { self.d.clone() }
-    pub fn q_len_param(&self) -> Array { self.q_len.clone() }
-    pub fn k_len_param(&self) -> Array { self.k_len.clone() }
-    pub fn gqa_factor_param(&self) -> Array { self.gqa_factor.clone() }
-    pub fn scale_param(&self) -> Array { self.scale.clone() }
-    pub fn nq_param(&self) -> Array { self.nq.clone() }
-    pub fn nk_param(&self) -> Array { self.nk.clone() }
-    pub fn nq_aligned_param(&self) -> Array { self.nq_aligned.clone() }
-    pub fn nk_aligned_param(&self) -> Array { self.nk_aligned.clone() }
-    pub fn ql_rem_param(&self) -> Array { self.ql_rem.clone() }
-    pub fn kl_rem_param(&self) -> Array { self.kl_rem.clone() }
-    pub fn ql_off_param(&self) -> Array { self.ql_off.clone() }
-    pub fn q_strides_arr(&self) -> Array { self.q_strides.clone() }
-    pub fn k_strides_arr(&self) -> Array { self.k_strides.clone() }
-    pub fn v_strides_arr(&self) -> Array { self.v_strides.clone() }
-    pub fn o_strides_arr(&self) -> Array { self.o_strides.clone() }
+    pub fn b_param(&self) -> &Array { &self.b }
+    pub fn h_param(&self) -> &Array { &self.h }
+    pub fn d_param(&self) -> &Array { &self.d }
+    pub fn q_len_param(&self) -> &Array { &self.q_len }
+    pub fn k_len_param(&self) -> &Array { &self.k_len }
+    pub fn gqa_factor_param(&self) -> &Array { &self.gqa_factor }
+    pub fn scale_param(&self) -> &Array { &self.scale }
+    pub fn nq_param(&self) -> &Array { &self.nq }
+    pub fn nk_param(&self) -> &Array { &self.nk }
+    pub fn nq_aligned_param(&self) -> &Array { &self.nq_aligned }
+    pub fn nk_aligned_param(&self) -> &Array { &self.nk_aligned }
+    pub fn ql_rem_param(&self) -> &Array { &self.ql_rem }
+    pub fn kl_rem_param(&self) -> &Array { &self.kl_rem }
+    pub fn ql_off_param(&self) -> &Array { &self.ql_off }
+    pub fn q_strides_arr(&self) -> &Array { &self.q_strides }
+    pub fn k_strides_arr(&self) -> &Array { &self.k_strides }
+    pub fn v_strides_arr(&self) -> &Array { &self.v_strides }
+    pub fn o_strides_arr(&self) -> &Array { &self.o_strides }
 }
 
 /// Returns (batch_stride, head_stride, seq_stride) for a row-major
