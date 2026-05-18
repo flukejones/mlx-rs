@@ -559,6 +559,13 @@ pub struct Router {
     /// reused thereafter. Not a learnable parameter.
     scaled_weight: OnceLock<Array>,
 
+    /// `per_expert_scale` re-cast to the scores' dtype. Loaded weights
+    /// may differ from the scores dtype (e.g. f32 inits, bf16 scores);
+    /// without this cache the `softmax * gathered` multiply would
+    /// promote `weights` to f32 every call and poison downstream
+    /// ops (the fused MoE kernel needs bf16/f16 inputs).
+    per_expert_scale_cast: OnceLock<Array>,
+
     /// Compiled `softmax(take(scores)) * take(per_expert_scale)` cache —
     /// the whole router post-processing in one fused launch.
     router_post_cache: RouterPostCache,
@@ -576,6 +583,7 @@ impl Router {
             scale: Param::new(Array::ones::<f32>(&[hidden_size])?),
             per_expert_scale: Param::new(Array::ones::<f32>(&[num_experts])?),
             scaled_weight: OnceLock::new(),
+            per_expert_scale_cast: OnceLock::new(),
             router_post_cache: RouterPostCache::default(),
         })
     }
@@ -584,10 +592,16 @@ impl Router {
     pub fn forward(&mut self, x: &Array) -> Result<(Array, Array), Exception> {
         // Lazily pre-multiply `scale * root_size` once per layer instead
         // of every forward — the weights are loaded once and never change.
+        // Stage the f32 scalar into scale's dtype so the multiply keeps
+        // bf16/f16 (otherwise `rms_norm(x_bf16, w_f32)` promotes the
+        // entire MoE forward to f32).
         let weight = self.scaled_weight.get_or_init(|| {
-            self.scale
-                .as_ref()
-                .multiply(Array::from_f32(self.root_size))
+            let scale = self.scale.as_ref();
+            let root_size_arr = Array::from_f32(self.root_size)
+                .as_dtype(scale.dtype())
+                .expect("root_size cast cannot fail");
+            scale
+                .multiply(&root_size_arr)
                 .expect("scale × root_size cannot fail")
         });
         let normed = fast::rms_norm(x, Some(weight), self.eps)?;
@@ -602,11 +616,20 @@ impl Router {
         let start = part_len - self.top_k;
         let top_k_indices = part.index((.., .., start..part_len));
 
+        // Cast `per_expert_scale` once to the scores dtype to keep the
+        // post-softmax multiply from promoting weights to f32.
+        let scores_dtype = scores.dtype();
+        let per_expert_scale_cast = self.per_expert_scale_cast.get_or_init(|| {
+            self.per_expert_scale
+                .as_ref()
+                .as_dtype(scores_dtype)
+                .expect("per_expert_scale cast cannot fail")
+        });
         let top_k_weights = router_post(
             &mut self.router_post_cache,
             &scores,
             &top_k_indices,
-            self.per_expert_scale.as_ref(),
+            per_expert_scale_cast,
         )?;
 
         Ok((top_k_indices, top_k_weights))
