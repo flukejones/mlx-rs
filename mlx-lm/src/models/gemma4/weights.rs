@@ -159,9 +159,11 @@ pub fn load_sanitized_gemma4_weights(
     }
 
     // Merge pre-split `gate_proj` + `up_proj` into a fused `gate_up_proj`
-    // (concat along output-rows axis -2) so SwitchGLU can run one
-    // `gather_qmm` per layer instead of two.
-    merge_gate_up(&mut raw)?;
+    // (concat along output-rows axis -2) so SwitchGLU runs one
+    // `gather_qmm` per layer instead of two. The dense `Mlp` keeps
+    // gate / up split — a single `[D, 2*intermediate]` matmul fell off
+    // the q-matmul kernel sweet spot on M4 Max and regressed decode.
+    merge_gate_up(&mut raw, ".switch_glu", -2)?;
 
     // Quantised tensors carry `<prefix>.scales` (and `.biases`)
     // siblings; the `<prefix>.weight` slot must be redirected to
@@ -184,15 +186,24 @@ pub fn load_sanitized_gemma4_weights(
     Ok(out)
 }
 
-fn merge_gate_up(raw: &mut HashMap<String, Array>) -> Result<(), Error> {
+/// Concat `<base><module>.gate_proj.{weight,scales,biases}` with its
+/// `up_proj` sibling along `axis` into `<base><module>.gate_up_proj.*`.
+/// Removes the split entries. `module` is `.mlp` (dense) or
+/// `.switch_glu` (MoE).
+fn merge_gate_up(
+    raw: &mut HashMap<String, Array>,
+    module: &str,
+    axis: i32,
+) -> Result<(), Error> {
+    let suffix_pat = format!("{module}.gate_proj.weight");
     let bases: Vec<String> = raw
         .keys()
-        .filter_map(|k| k.strip_suffix(".switch_glu.gate_proj.weight").map(String::from))
+        .filter_map(|k| k.strip_suffix(&suffix_pat).map(String::from))
         .collect();
     for base in bases {
         for suffix in [".weight", ".scales", ".biases"] {
-            let gate_key = format!("{base}.switch_glu.gate_proj{suffix}");
-            let up_key = format!("{base}.switch_glu.up_proj{suffix}");
+            let gate_key = format!("{base}{module}.gate_proj{suffix}");
+            let up_key = format!("{base}{module}.up_proj{suffix}");
             let gate = match raw.remove(&gate_key) {
                 Some(v) => v,
                 None => continue,
@@ -200,9 +211,9 @@ fn merge_gate_up(raw: &mut HashMap<String, Array>) -> Result<(), Error> {
             let up = raw.remove(&up_key).ok_or_else(|| {
                 Error::Other(format!("gemma4: missing {up_key} to pair with {gate_key}").into())
             })?;
-            let fused =
-                mlx_rs::ops::concatenate_axis(&[gate, up], -2).map_err(Error::Exception)?;
-            raw.insert(format!("{base}.switch_glu.gate_up_proj{suffix}"), fused);
+            let fused = mlx_rs::ops::concatenate_axis(&[gate, up], axis)
+                .map_err(Error::Exception)?;
+            raw.insert(format!("{base}{module}.gate_up_proj{suffix}"), fused);
         }
     }
     Ok(())
