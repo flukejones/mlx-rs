@@ -21,7 +21,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use mlx_lm::cache::ConcatKeyValueCache;
+use mlx_lm::cache::KVCache;
 use mlx_lm::models::{
     llama::{load_llama_model, Generate as LlamaGenerate, Model as LlamaModel},
     qwen3::{load_qwen3_model, Generate as Qwen3Generate, Model as Qwen3Model},
@@ -186,9 +186,9 @@ fn maybe_bench_qwen3(c: &mut Criterion, label: &str, repo_id: &str) {
 }
 
 fn run_qwen3_warmup(model: &mut Qwen3Model, prompt: &Array) {
-    let mut cache: Vec<Option<ConcatKeyValueCache>> = Vec::new();
+    let mut cache: Vec<Option<KVCache>> = Vec::new();
     let mut tokens = Vec::new();
-    let iter = Qwen3Generate::<ConcatKeyValueCache>::new(model, &mut cache, 0.0, prompt);
+    let iter = Qwen3Generate::<KVCache>::new(model, &mut cache, 0.0, prompt);
     for (tok, n) in (iter).zip(0..WARMUP_TOKENS) {
         tokens.push(tok.unwrap());
         if n == 0 {
@@ -201,8 +201,8 @@ fn run_qwen3_warmup(model: &mut Qwen3Model, prompt: &Array) {
 /// Time only the prompt prefill: one `Generate::next()` call eval'd. The
 /// returned token is discarded.
 fn time_qwen3_prefill(model: &mut Qwen3Model, prompt: &Array) -> Duration {
-    let mut cache: Vec<Option<ConcatKeyValueCache>> = Vec::new();
-    let mut iter = Qwen3Generate::<ConcatKeyValueCache>::new(model, &mut cache, 0.0, prompt);
+    let mut cache: Vec<Option<KVCache>> = Vec::new();
+    let mut iter = Qwen3Generate::<KVCache>::new(model, &mut cache, 0.0, prompt);
     let t_start = Instant::now();
     let first = iter.next().expect("at least one token").unwrap();
     eval([&first]).unwrap();
@@ -212,8 +212,8 @@ fn time_qwen3_prefill(model: &mut Qwen3Model, prompt: &Array) -> Duration {
 /// Time only the post-prefill decode steps. The first token's eval is
 /// outside the timing window so prefill cost is excluded.
 fn time_qwen3_decode(model: &mut Qwen3Model, prompt: &Array, steps: i32) -> Duration {
-    let mut cache: Vec<Option<ConcatKeyValueCache>> = Vec::new();
-    let mut iter = Qwen3Generate::<ConcatKeyValueCache>::new(model, &mut cache, 0.0, prompt);
+    let mut cache: Vec<Option<KVCache>> = Vec::new();
+    let mut iter = Qwen3Generate::<KVCache>::new(model, &mut cache, 0.0, prompt);
     let first = iter.next().expect("at least one token").unwrap();
     eval([&first]).unwrap();
     let mut tokens = Vec::with_capacity(steps as usize);
@@ -273,8 +273,8 @@ fn bench_qwen3_group(
 }
 
 fn time_llama_prefill(model: &mut LlamaModel, prompt: &Array) -> Duration {
-    let mut cache: Vec<Option<ConcatKeyValueCache>> = Vec::new();
-    let mut iter = LlamaGenerate::<ConcatKeyValueCache>::new(model, &mut cache, 0.0, prompt);
+    let mut cache: Vec<Option<KVCache>> = Vec::new();
+    let mut iter = LlamaGenerate::<KVCache>::new(model, &mut cache, 0.0, prompt);
     let t_start = Instant::now();
     let first = iter.next().expect("at least one token").unwrap();
     eval([&first]).unwrap();
@@ -282,8 +282,8 @@ fn time_llama_prefill(model: &mut LlamaModel, prompt: &Array) -> Duration {
 }
 
 fn time_llama_decode(model: &mut LlamaModel, prompt: &Array, steps: i32) -> Duration {
-    let mut cache: Vec<Option<ConcatKeyValueCache>> = Vec::new();
-    let mut iter = LlamaGenerate::<ConcatKeyValueCache>::new(model, &mut cache, 0.0, prompt);
+    let mut cache: Vec<Option<KVCache>> = Vec::new();
+    let mut iter = LlamaGenerate::<KVCache>::new(model, &mut cache, 0.0, prompt);
     let first = iter.next().expect("at least one token").unwrap();
     eval([&first]).unwrap();
     let mut tokens = Vec::with_capacity(steps as usize);
@@ -315,9 +315,9 @@ fn maybe_bench_llama(c: &mut Criterion, label: &str, repo_id: &str) {
 
     // Warmup: drive WARMUP_TOKENS through the short prompt so any one-shot
     // init costs (kernel compile, lazy weight materialise) are amortised.
-    let mut warm_cache: Vec<Option<ConcatKeyValueCache>> = Vec::new();
+    let mut warm_cache: Vec<Option<KVCache>> = Vec::new();
     let mut warm_tokens = Vec::new();
-    let iter = LlamaGenerate::<ConcatKeyValueCache>::new(&mut model, &mut warm_cache, 0.0, &short);
+    let iter = LlamaGenerate::<KVCache>::new(&mut model, &mut warm_cache, 0.0, &short);
     for (tok, n) in (iter).zip(0..WARMUP_TOKENS) {
         warm_tokens.push(tok.unwrap());
         if n == 0 {

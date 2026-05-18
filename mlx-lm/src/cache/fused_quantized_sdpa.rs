@@ -342,16 +342,10 @@ pub fn fused_qsdpa_decode(
     };
 
     // 32 simdgroups × 32 lanes = 1024 threads per TG (Flash-Attention pattern).
+    // Online softmax keeps (max, sum, o_partial) in private registers; no
+    // TG-mem scales with n_k, so n_k is unbounded by TG memory.
     let threads = 32 * 32;
     let n_k_max = ((n_k as u32).next_power_of_two().max(32)) as i32;
-    // Threadgroup memory budget: scores[N_K_MAX] (fp32) + q_row[D] (fp32).
-    // Apple M-series TG mem is ~32 KB. 4096 fp32 = 16 KB; leaves headroom.
-    if n_k_max > 4096 {
-        return Err(Exception::custom(format!(
-            "fused_qsdpa_decode: n_k={n_k} exceeds n_k_max=4096 limit; \
-             caller should fall back to ops-composed quantized SDPA"
-        )));
-    }
     let config = MetalKernelConfig::new()
         .add_output(vec![b, h_q, 1, inputs.head_dim], out_dtype)
         .grid(threads * h_q, b, 1)
@@ -392,6 +386,7 @@ pub fn fused_qsdpa_decode(
 mod tests {
     use super::*;
     use mlx_rs::ops::{dequantize, quantize, softmax_axis};
+    use mlx_rs::random::{key, normal};
     use mlx_rs::transforms::eval;
 
     fn max_abs(a: &Array, b: &Array) -> f32 {
@@ -516,12 +511,12 @@ mod tests {
     }
 
     fn run(b: i32, h_q: i32, h_kv: i32, n_k: i32, d: i32, bits: i32, group_size: i32) {
-        let prng = mlx_rs::random::key(11).unwrap();
-        let q = mlx_rs::random::normal::<f32>(&[b, h_q, 1, d], None, None, &prng).unwrap();
-        let prng = mlx_rs::random::key(22).unwrap();
-        let k = mlx_rs::random::normal::<f32>(&[b, h_kv, n_k, d], None, None, &prng).unwrap();
-        let prng = mlx_rs::random::key(33).unwrap();
-        let v = mlx_rs::random::normal::<f32>(&[b, h_kv, n_k, d], None, None, &prng).unwrap();
+        let prng = key(11).unwrap();
+        let q = normal::<f32>(&[b, h_q, 1, d], None, None, &prng).unwrap();
+        let prng = key(22).unwrap();
+        let k = normal::<f32>(&[b, h_kv, n_k, d], None, None, &prng).unwrap();
+        let prng = key(33).unwrap();
+        let v = normal::<f32>(&[b, h_kv, n_k, d], None, None, &prng).unwrap();
 
         let (k_wq, k_scales, k_biases) = quantize(&k, group_size, bits).unwrap();
         let (v_wq, v_scales, v_biases) = quantize(&v, group_size, bits).unwrap();
@@ -605,8 +600,8 @@ mod tests {
     /// kernel uses flat-offset indexing into the buffers).
     #[test]
     fn check_quantize_output_strides() {
-        let prng = mlx_rs::random::key(42).unwrap();
-        let arr = mlx_rs::random::normal::<f32>(&[2, 4, 8, 128], None, None, &prng).unwrap();
+        let prng = key(42).unwrap();
+        let arr = normal::<f32>(&[2, 4, 8, 128], None, None, &prng).unwrap();
         let (wq, scales, biases) = quantize(&arr, 64, 4).unwrap();
         eval([&wq, &scales, &biases]).unwrap();
         eprintln!("wq:      shape={:?} strides={:?}", wq.shape(), wq.strides());
@@ -680,5 +675,16 @@ mod tests {
     #[test]
     fn fused_handles_long_context() {
         run(1, 8, 4, 1024, 128, 4, 64);
+    }
+
+    #[test]
+    fn fused_handles_n_k_4097() {
+        // Crosses the old 4096 cap; first non-power-of-2 above 4096.
+        run(1, 8, 4, 4097, 128, 4, 64);
+    }
+
+    #[test]
+    fn fused_handles_n_k_8192_4bit() {
+        run(1, 8, 4, 8192, 128, 4, 64);
     }
 }

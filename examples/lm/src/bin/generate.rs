@@ -6,7 +6,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use mlx_lm::cache::ConcatKeyValueCache;
+use mlx_lm::cache::KVCache;
 use mlx_lm::models::{
     llama::{load_llama_model, sample as llama_sample, Generate as LlamaGenerate},
     qwen3::{load_qwen3_model, sample as qwen3_sample, Generate as Qwen3Generate},
@@ -112,8 +112,8 @@ fn run_qwen3(args: &Args) -> Result<()> {
     let prompt_ids = encode_prompt(&args.model, &args.prompt)?;
     let prompt = Array::from(&prompt_ids[..]).index(NewAxis);
 
-    let mut cache: Vec<Option<ConcatKeyValueCache>> = Vec::new();
-    let gen = Qwen3Generate::<ConcatKeyValueCache>::new(&mut model, &mut cache, args.temp, &prompt);
+    let mut cache: Vec<Option<KVCache>> = Vec::new();
+    let gen = Qwen3Generate::<KVCache>::new(&mut model, &mut cache, args.temp, &prompt);
 
     decode_and_stream(gen, args.max_tokens, &args.model, prompt_ids.len(), qwen3_sample)
 }
@@ -123,8 +123,8 @@ fn run_llama(args: &Args) -> Result<()> {
     let prompt_ids = encode_prompt(&args.model, &args.prompt)?;
     let prompt = Array::from(&prompt_ids[..]).index(NewAxis);
 
-    let mut cache: Vec<Option<ConcatKeyValueCache>> = Vec::new();
-    let gen = LlamaGenerate::<ConcatKeyValueCache>::new(&mut model, &mut cache, args.temp, &prompt);
+    let mut cache: Vec<Option<KVCache>> = Vec::new();
+    let gen = LlamaGenerate::<KVCache>::new(&mut model, &mut cache, args.temp, &prompt);
 
     decode_and_stream(gen, args.max_tokens, &args.model, prompt_ids.len(), llama_sample)
 }

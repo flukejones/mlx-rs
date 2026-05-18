@@ -676,7 +676,7 @@ mod tests {
     };
 
     use crate::{
-        cache::ConcatKeyValueCache,
+        cache::KVCache,
         models::qwen3::{load_qwen3_model, load_qwen3_tokenizer},
     };
 
@@ -699,7 +699,7 @@ mod tests {
     fn quantized_qwen3_model_loads_and_forwards() {
         let mut model = super::load_qwen3_model(CACHED_QUANT_TEST_MODEL_DIR).unwrap();
         let prompt = Array::from_slice(&[1i32, 2, 3, 4], &[1, 4]);
-        let mut cache: Vec<Option<ConcatKeyValueCache>> = Vec::new();
+        let mut cache: Vec<Option<KVCache>> = Vec::new();
         let input = super::ModelInput {
             inputs: &prompt,
             mask: None,
@@ -730,7 +730,7 @@ mod tests {
         let mut cache = Vec::new();
 
         let mut tokens = Vec::new();
-        let generate = super::Generate::<ConcatKeyValueCache>::new(
+        let generate = super::Generate::<KVCache>::new(
             &mut model,
             &mut cache,
             0.0,
