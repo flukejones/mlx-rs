@@ -12,6 +12,7 @@ mlx-lm-utils = { path = "../../mlx-lm-utils" }
 
 anyhow = "1"
 ctrlc = "3"
+plotters = { version = "0.3", default-features = false, features = ["svg_backend", "line_series", "ttf"] }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
