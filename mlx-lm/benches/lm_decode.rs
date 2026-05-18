@@ -368,13 +368,20 @@ fn bench_decode(c: &mut Criterion) {
     let set = bench_set();
     eprintln!("lm_decode bench set: {set:?} (override with MLX_LM_BENCH_SET={{trimmed,full}})");
 
-    // bf16 cells per family. Quant cells land once M1.1 quant-loader is in scope.
     maybe_bench_qwen3(c, "large_bf16", "mlx-community/Qwen3-1.7B-bf16");
+    maybe_bench_qwen3(c, "large_q8", "mlx-community/Qwen3-1.7B-8bit");
+    maybe_bench_qwen3(c, "large_q4", "mlx-community/Qwen3-1.7B-4bit");
     maybe_bench_llama(c, "small_bf16", "mlx-community/Llama-3.2-1B-Instruct-bf16");
+    maybe_bench_llama(c, "small_q8", "mlx-community/Llama-3.2-1B-Instruct-8bit");
+    maybe_bench_llama(c, "small_q4", "mlx-community/Llama-3.2-1B-Instruct-4bit");
 
     if set == BenchSet::Full {
         maybe_bench_qwen3(c, "small_bf16", "mlx-community/Qwen3-0.6B-bf16");
+        maybe_bench_qwen3(c, "small_q8", "mlx-community/Qwen3-0.6B-8bit");
+        maybe_bench_qwen3(c, "small_q4", "mlx-community/Qwen3-0.6B-4bit");
         maybe_bench_llama(c, "large_bf16", "mlx-community/Llama-3.2-3B-Instruct-bf16");
+        maybe_bench_llama(c, "large_q8", "mlx-community/Llama-3.2-3B-Instruct-8bit");
+        maybe_bench_llama(c, "large_q4", "mlx-community/Llama-3.2-3B-Instruct-4bit");
     }
 }
 
