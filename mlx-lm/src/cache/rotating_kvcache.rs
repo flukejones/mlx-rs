@@ -26,6 +26,7 @@ use std::collections::HashMap;
 
 use mlx_rs::{
     error::Exception,
+    fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask},
     ops::{
         concatenate_axis,
         indexing::{Ellipsis, IndexOp, TryIndexMutOp},
@@ -34,7 +35,9 @@ use mlx_rs::{
     Array,
 };
 
+use super::kernels::{cached_steel_attention_kernel, STEEL_SUPPORTED_HEAD_DIMS};
 use super::trait_def::KeyValueCache;
+use crate::steel_attention::{steel_attention_dispatch, SteelAttentionInputs};
 
 /// Sliding-window KV cache.
 ///
@@ -56,6 +59,9 @@ pub struct RotatingKVCache {
     max_size: i32,
     /// Number of head tokens to pin in the first `keep` slots.
     keep: i32,
+    /// Route prefill (`n_q > 1`) through the steel-attention tiled
+    /// kernel when shape/mask permit. Opt-in via [`Self::with_steel_prefill`].
+    use_steel_prefill: bool,
 }
 
 impl RotatingKVCache {
@@ -75,7 +81,16 @@ impl RotatingKVCache {
             write_head: 0,
             max_size,
             keep,
+            use_steel_prefill: false,
         }
+    }
+
+    /// Opt in to the steel-attention tiled prefill kernel. Active only
+    /// when `n_q > 1`, `head_dim ∈ {128, 256}`, and the caller passes
+    /// no explicit mask. Falls back to `fast::SDPA` otherwise.
+    pub fn with_steel_prefill(mut self) -> Self {
+        self.use_steel_prefill = true;
+        self
     }
 
     #[inline]
@@ -95,6 +110,60 @@ impl RotatingKVCache {
         let t_axis = buf_shape.len() - 2;
         buf_shape[t_axis] = capacity;
         zeros_dtype(&buf_shape, template.dtype())
+    }
+
+    /// Snapshot the current logical window (keep prefix + rotating
+    /// region in temporal order) as a pair of fresh arrays. Used by the
+    /// prefill path so attention can see `old_window ++ new` without
+    /// having to write the new tokens back through the ring first.
+    fn snapshot_window(&self) -> Result<(Array, Array), Exception> {
+        let buf_k = self.keys.as_ref().expect("snapshot: buffer exists");
+        let buf_v = self.values.as_ref().expect("snapshot: buffer exists");
+        let keep = self.keep;
+        let window = self.window();
+        let visible_rot = self.write_head.min(window);
+        let rot_start = keep + self.write_head - visible_rot;
+        let rot_end = keep + self.write_head;
+        let keep_filled = self.offset.min(keep);
+        let rot_k = buf_k.index((Ellipsis, rot_start..rot_end, ..));
+        let rot_v = buf_v.index((Ellipsis, rot_start..rot_end, ..));
+        if keep_filled == 0 {
+            Ok((rot_k, rot_v))
+        } else {
+            let head_k = buf_k.index((Ellipsis, 0..keep_filled, ..));
+            let head_v = buf_v.index((Ellipsis, 0..keep_filled, ..));
+            Ok((
+                concatenate_axis(&[head_k, rot_k], -2)?,
+                concatenate_axis(&[head_v, rot_v], -2)?,
+            ))
+        }
+    }
+
+    /// Write one token (S=1 slice) into the ring buffer. Extracted from
+    /// the decode loop so the prefill path can reuse the same eviction
+    /// semantics without duplicating logic.
+    fn write_one(&mut self, token_k: Array, token_v: Array) -> Result<(), Exception> {
+        let keep = self.keep;
+        let window = self.window();
+        if self.offset < keep {
+            let slot = self.offset;
+            let buf_k = self.keys.as_mut().expect("write_one: buffer exists");
+            let buf_v = self.values.as_mut().expect("write_one: buffer exists");
+            buf_k.try_index_mut((Ellipsis, slot..slot + 1, ..), token_k)?;
+            buf_v.try_index_mut((Ellipsis, slot..slot + 1, ..), token_v)?;
+        } else {
+            if self.write_head >= 2 * window {
+                self.compact()?;
+            }
+            let slot = keep + self.write_head;
+            let buf_k = self.keys.as_mut().expect("write_one: buffer exists");
+            let buf_v = self.values.as_mut().expect("write_one: buffer exists");
+            buf_k.try_index_mut((Ellipsis, slot..slot + 1, ..), token_k)?;
+            buf_v.try_index_mut((Ellipsis, slot..slot + 1, ..), token_v)?;
+            self.write_head += 1;
+        }
+        self.offset += 1;
+        Ok(())
     }
 
     /// Compact: copy the last `window` rotating slots to the first
@@ -181,6 +250,24 @@ impl KeyValueCache for RotatingKVCache {
             self.values = Some(Self::alloc_like(&values, cap)?);
         }
 
+        // Prefill (S > 1) after the cache already holds context: return
+        // `pre_window ++ new` so every new token can attend to the full
+        // sliding window of past context. Total cols =
+        // `min(prev_offset, max_size) + S`, matching the mask built by
+        // `create_attention_mask` (which clamps `offset` to `max_size`).
+        if s > 1 && self.offset > 0 {
+            let (old_k, old_v) = self.snapshot_window()?;
+            for i in 0..s {
+                let token_k = keys.index((Ellipsis, i..i + 1, ..));
+                let token_v = values.index((Ellipsis, i..i + 1, ..));
+                self.write_one(token_k, token_v)?;
+            }
+            return Ok((
+                concatenate_axis(&[old_k, keys], -2)?,
+                concatenate_axis(&[old_v, values], -2)?,
+            ));
+        }
+
         // Per-token write loop. The keep prefix fills first, then the
         // rotating region. Compaction triggers when write_head reaches
         // 2 * window. S=1 decode bypasses any loop overhead for the
@@ -242,5 +329,56 @@ impl KeyValueCache for RotatingKVCache {
                 concatenate_axis(&[head_v, rot_v], -2)?,
             ))
         }
+    }
+
+    fn attention(
+        &mut self,
+        queries: &Array,
+        keys: Array,
+        values: Array,
+        scale: f32,
+        mask: Option<&Array>,
+    ) -> Result<Array, Exception> {
+        // Pre-update offset = steel `ql_off` (causal diagonal shift).
+        let ql_off = self.offset;
+        let (k_full, v_full) = self.update_and_fetch(keys, values)?;
+
+        let q_shape = queries.shape();
+        let n_q = q_shape[q_shape.len() - 2];
+        let head_dim = q_shape[q_shape.len() - 1];
+        let h_q = q_shape[1];
+        let h_kv = k_full.shape()[1];
+
+        let steel_ok = self.use_steel_prefill
+            && n_q > 1
+            && STEEL_SUPPORTED_HEAD_DIMS.contains(&head_dim)
+            && h_q % h_kv == 0;
+
+        if steel_ok {
+            return steel_attention_dispatch(
+                cached_steel_attention_kernel(),
+                SteelAttentionInputs {
+                    q: queries,
+                    k: &k_full,
+                    v: &v_full,
+                    mask: None,
+                    causal: true,
+                    ql_off,
+                    scale,
+                    head_dim,
+                    h_q,
+                    h_kv,
+                },
+            );
+        }
+
+        scaled_dot_product_attention(
+            queries.clone(),
+            k_full,
+            v_full,
+            scale,
+            mask.map(ScaledDotProductAttentionMask::Array),
+            None,
+        )
     }
 }
