@@ -46,19 +46,17 @@ fn gdn_kernel() -> Result<&'static MetalKernel, Exception> {
 ///
 /// The trailing silu+multiply+cast triple runs through
 /// `transforms::compile` to match Python's `@partial(mx.compile,
-/// shapeless=True) _precise_swiglu`.
+/// shapeless=True) _precise_swiglu`. `weight_f32` is the norm weight
+/// pre-cast to f32 (caller-cached) so this fn doesn't pay the cast
+/// launch per call.
 fn rms_norm_gated(
     cache: &mut PreciseSwigluCache,
     hidden: &Array,
     gate: &Array,
-    weight: &Array,
+    weight_f32: &Array,
     eps: f32,
 ) -> Result<Array, Exception> {
-    let normed = rms_norm(
-        hidden.as_dtype(Dtype::Float32)?,
-        Some(&weight.as_dtype(Dtype::Float32)?),
-        eps,
-    )?;
+    let normed = rms_norm(hidden.as_dtype(Dtype::Float32)?, Some(weight_f32), eps)?;
     precise_swiglu(cache, hidden, gate, &normed)
 }
 
@@ -160,6 +158,10 @@ pub struct GatedDeltaNet {
     /// `Array::from_f32` allocates a fresh GPU array each call.
     q_inv_scale_sq: OnceLock<Array>,
     k_inv_scale: OnceLock<Array>,
+    /// `norm_weight` cast to f32 once. `rms_norm_gated` needs the f32
+    /// view every call; the original weight is bf16 (or whatever the
+    /// loader stored). Caching avoids the per-call cast launch.
+    norm_weight_f32: OnceLock<Array>,
 }
 
 impl GatedDeltaNet {
@@ -231,6 +233,7 @@ impl GatedDeltaNet {
             compute_g_cache: ComputeGCache::default(),
             q_inv_scale_sq: OnceLock::new(),
             k_inv_scale: OnceLock::new(),
+            norm_weight_f32: OnceLock::new(),
         })
     }
 
@@ -292,24 +295,25 @@ impl GatedDeltaNet {
         let k = reshape(&parts[1], &[b, s, self.num_k_heads, self.head_k_dim])?;
         let v = reshape(&parts[2], &[b, s, self.num_v_heads, self.head_v_dim])?;
 
-        // Scale q/k with the head-dim power. `fast::rms_norm` with `None`
-        // weight emits a single Metal kernel; the explicit `.as_dtype` cast
-        // restores the input dtype after the f32 scalar promotion.
+        // Scale q/k with the head-dim power. The scale arrays are stored
+        // in the input dtype so the multiply doesn't promote → no
+        // trailing `as_dtype` cast launch.
         let head_k_dim = self.head_k_dim;
+        let q_dtype = q.dtype();
         let q_scale = self.q_inv_scale_sq.get_or_init(|| {
             let inv = (head_k_dim as f32).powf(-0.5);
             Array::from_f32(inv * inv)
+                .as_dtype(q_dtype)
+                .expect("scale cast cannot fail")
         });
         let k_scale = self.k_inv_scale.get_or_init(|| {
             let inv = (head_k_dim as f32).powf(-0.5);
             Array::from_f32(inv)
+                .as_dtype(q_dtype)
+                .expect("scale cast cannot fail")
         });
-        let q_normed = rms_norm(&q, None, 1e-6)?
-            .multiply(q_scale)?
-            .as_dtype(q.dtype())?;
-        let k_normed = rms_norm(&k, None, 1e-6)?
-            .multiply(k_scale)?
-            .as_dtype(k.dtype())?;
+        let q_normed = rms_norm(&q, None, 1e-6)?.multiply(q_scale)?;
+        let k_normed = rms_norm(&k, None, 1e-6)?.multiply(k_scale)?;
 
         let state_in = cache
             .as_ref()
@@ -351,12 +355,21 @@ impl GatedDeltaNet {
             cache.offset += s;
         }
 
-        // Apply the gated RMS norm with the per-head `z`.
+        // Apply the gated RMS norm with the per-head `z`. norm_weight
+        // is loaded as bf16 (or model dtype); cast once.
+        let weight_f32 = self
+            .norm_weight_f32
+            .get_or_init(|| {
+                self.norm_weight
+                    .value
+                    .as_dtype(Dtype::Float32)
+                    .expect("norm_weight cast to f32 cannot fail")
+            });
         let gated = rms_norm_gated(
             &mut self.precise_swiglu_cache,
             &out,
             &z,
-            &self.norm_weight.value,
+            weight_f32,
             self.eps,
         )?;
         let flat = reshape(&gated, &[b, s, self.num_v_heads * self.head_v_dim])?;
