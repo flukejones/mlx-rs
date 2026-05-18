@@ -282,11 +282,11 @@ pub fn gated_delta_update_metal(
     let beta = sigmoid(b)?;
     let g = compute_g(compute_g_cache, a_log, a, dt_bias)?;
     let owned_state;
-    let state_in = match state {
-        Some(s) => s.clone(),
+    let state_in: &Array = match state {
+        Some(s) => s,
         None => {
             owned_state = zeros::<f32>(&[batch, hv, dv, dk])?;
-            owned_state
+            &owned_state
         }
     };
 
@@ -306,7 +306,7 @@ pub fn gated_delta_update_metal(
 
     let t_arr = Array::from_int(time);
     let outs = kernel.apply(
-        &[q.clone(), k.clone(), v.clone(), g, beta, state_in, t_arr],
+        &[q, k, v, &g, &beta, state_in, &t_arr],
         config,
         Stream::default(),
     )?;
