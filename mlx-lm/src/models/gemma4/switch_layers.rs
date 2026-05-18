@@ -12,7 +12,8 @@ use mlx_rs::macros::ModuleParameters;
 use mlx_rs::module::Param;
 use mlx_rs::ops::indexing::take_axis;
 use mlx_rs::ops::{
-    argsort, expand_dims_axes, gather_mm, gather_qmm, quantize, swap_axes, unflatten,
+    argsort, expand_dims_axes, gather_mm, gather_qmm, quantize, split_sections, swap_axes,
+    unflatten,
 };
 use mlx_rs::quantization::{MaybeQuantized, Quantizable};
 use mlx_rs::Array;
@@ -170,12 +171,15 @@ fn apply_proj(
 
 #[derive(Debug, ModuleParameters)]
 pub struct SwitchGLU {
+    /// Fused gate+up: weight `[E, 2*H, D]`. One `gather_qmm` per layer
+    /// instead of two; split the `2*H` output into (gate, up).
     #[param]
-    pub gate_proj: MaybeQuantized<SwitchLinear>,
-    #[param]
-    pub up_proj: MaybeQuantized<SwitchLinear>,
+    pub gate_up_proj: MaybeQuantized<SwitchLinear>,
     #[param]
     pub down_proj: MaybeQuantized<SwitchLinear>,
+    /// Inner hidden width per expert (`H`). Used to split `gate_up_proj`
+    /// output along the last axis.
+    hidden_dims: i32,
     /// Per-layer compiled-graph cache for `gelu_approx(gate) * up`.
     /// Filled on first forward; reused across every decode step.
     geglu_cache: GegluCache,
@@ -189,15 +193,13 @@ impl SwitchGLU {
         bias: bool,
     ) -> Result<Self, Exception> {
         Ok(Self {
-            gate_proj: MaybeQuantized::Original(
-                SwitchLinear::new(input_dims, hidden_dims, num_experts, bias)?,
-            ),
-            up_proj: MaybeQuantized::Original(
-                SwitchLinear::new(input_dims, hidden_dims, num_experts, bias)?,
+            gate_up_proj: MaybeQuantized::Original(
+                SwitchLinear::new(input_dims, 2 * hidden_dims, num_experts, bias)?,
             ),
             down_proj: MaybeQuantized::Original(
                 SwitchLinear::new(hidden_dims, input_dims, num_experts, bias)?,
             ),
+            hidden_dims,
             geglu_cache: GegluCache::default(),
         })
     }
@@ -215,8 +217,11 @@ impl SwitchGLU {
             (x.clone(), indices.clone(), None)
         };
 
-        let x_up = apply_proj(&self.up_proj, &x_in, &idx_in, do_sort)?;
-        let x_gate = apply_proj(&self.gate_proj, &x_in, &idx_in, do_sort)?;
+        // Fused gate+up: one gather_qmm returns [..., 2*H]; split along
+        // the last axis. MLX split is a view, no copy.
+        let gate_up = apply_proj(&self.gate_up_proj, &x_in, &idx_in, do_sort)?;
+        let parts = split_sections(&gate_up, &[self.hidden_dims], -1)?;
+        let (x_gate, x_up) = (parts[0].clone(), parts[1].clone());
         let activated = geglu(&mut self.geglu_cache, &x_gate, &x_up)?;
         let mut y = apply_proj(&self.down_proj, &activated, &idx_in, do_sort)?;
 
@@ -238,9 +243,9 @@ impl Quantizable for SwitchGLU {
         bits: i32,
     ) -> Result<Self::Quantized, Self::QuantizationError> {
         Ok(SwitchGLU {
-            gate_proj: self.gate_proj.try_into_quantized(group_size, bits)?,
-            up_proj: self.up_proj.try_into_quantized(group_size, bits)?,
+            gate_up_proj: self.gate_up_proj.try_into_quantized(group_size, bits)?,
             down_proj: self.down_proj.try_into_quantized(group_size, bits)?,
+            hidden_dims: self.hidden_dims,
             geglu_cache: self.geglu_cache,
         })
     }
