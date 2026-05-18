@@ -40,7 +40,12 @@ pub fn make_gemma4_caches(args: &Gemma4Config) -> Vec<Option<Gemma4LayerCache>> 
                 None
             } else {
                 Some(match layer_types[i] {
-                    LayerKind::FullAttention => Gemma4LayerCache::Global(KVCache::new()),
+                    // Full attention: steel `causal=true` ≡ standard causal mask.
+                    LayerKind::FullAttention => {
+                        Gemma4LayerCache::Global(KVCache::new().with_steel_prefill())
+                    }
+                    // Sliding attention: steel `causal=true` ≠ sliding-causal once
+                    // prompt > sliding_window. Keep `fast::SDPA` for correctness.
                     LayerKind::SlidingAttention => {
                         Gemma4LayerCache::Sliding(RotatingKVCache::new(args.sliding_window, 0))
                     }
