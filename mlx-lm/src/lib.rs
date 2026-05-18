@@ -1,9 +1,11 @@
 pub mod activations;
 pub mod cache;
+pub mod chat_template;
 pub mod error;
 pub mod loader;
 pub mod models;
 pub mod nn;
+pub mod prelude;
 pub mod quantization;
 pub mod sampler;
 pub mod steel_attention;
