@@ -10,6 +10,11 @@ use mlx_lm::cache::KVCache;
 use mlx_lm::models::{
     llama::{load_llama_model, sample as llama_sample, Generate as LlamaGenerate},
     qwen3::{load_qwen3_model, sample as qwen3_sample, Generate as Qwen3Generate},
+    qwen3_5::{
+        generation::{Generate as Qwen35Generate, SamplingParams, StopCriteria},
+        weights::load_language_model as load_qwen35_lm,
+        ModelConfig as Qwen35Config,
+    },
 };
 use mlx_lm_utils::tokenizer::{
     load_model_chat_template_from_file, ApplyChatTemplateArgs, Conversation, Role, Tokenizer,
@@ -129,6 +134,48 @@ fn run_llama(args: &Args) -> Result<()> {
     decode_and_stream(gen, args.max_tokens, &args.model, prompt_ids.len(), llama_sample)
 }
 
+fn run_qwen3_5(args: &Args) -> Result<()> {
+    let cfg = Qwen35Config::from_file(args.model.join("config.json"))?;
+    let (mut model, _leftover) = load_qwen35_lm(&cfg, &args.model)?;
+    let prompt_ids = encode_prompt(&args.model, &args.prompt)?;
+    let prompt = Array::from(&prompt_ids[..]);
+    let stop = StopCriteria::from_config(&cfg, args.max_tokens as i32);
+    let params = SamplingParams { temperature: args.temp, top_p: None };
+    let iter = Qwen35Generate::new(&mut model, &cfg, prompt, stop, params);
+
+    let t_start = Instant::now();
+    let mut t_first: Option<Instant> = None;
+    let mut ids: Vec<u32> = Vec::with_capacity(args.max_tokens);
+    for tok in iter {
+        let id = tok?;
+        if t_first.is_none() {
+            t_first = Some(Instant::now());
+        }
+        ids.push(id);
+    }
+
+    let text = detok(&args.model, &ids)?;
+    println!("{text}");
+
+    let t_end = Instant::now();
+    let t_first = t_first.unwrap_or(t_end);
+    let prefill_s = (t_first - t_start).as_secs_f64();
+    let decode_s = (t_end - t_first).as_secs_f64();
+    let n_decode = ids.len().saturating_sub(1);
+    let n_prompt = prompt_ids.len();
+    eprintln!();
+    eprintln!("--- speed ---");
+    eprintln!(
+        "  prefill: {n_prompt} prompt tokens in {prefill_s:.2}s ({:.1} tok/s)",
+        n_prompt as f64 / prefill_s.max(1e-6)
+    );
+    eprintln!(
+        "  decode:  {n_decode} tokens in {decode_s:.2}s ({:.1} tok/s)",
+        n_decode as f64 / decode_s.max(1e-6)
+    );
+    Ok(())
+}
+
 fn decode_and_stream<I>(
     gen: I,
     max_tokens: usize,
@@ -182,6 +229,7 @@ fn main() -> Result<()> {
     match family.as_str() {
         "qwen3" => run_qwen3(&args),
         "llama" => run_llama(&args),
+        "qwen3_5_moe_omni" | "qwen3_5_omni" | "qwen3_5" => run_qwen3_5(&args),
         other => Err(format!("unsupported model_type: {other}").into()),
     }
 }
