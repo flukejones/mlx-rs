@@ -14,7 +14,7 @@ use std::{
 
 use crate::{
     error::Exception,
-    transforms::compile::{type_id_to_usize, CompiledState},
+    transforms::compile::{next_compile_id, CompiledState},
     utils::Updatable,
     Array,
 };
@@ -32,12 +32,6 @@ where
     U: Updatable,
 {
     let shapeless = shapeless.into().unwrap_or(false);
-    // BUG: rebuilds CompiledState each call, defeating the cache.
-    // Fix needs `type Args<'a>` GAT on CallMutWithState so the
-    // hoisted `compiled` accepts varying borrow lifetimes (see how
-    // CallMut in compile.rs does it). Trait-shape refactor; out of
-    // scope here. No production caller uses compile_with_state on
-    // a hot path, so impact is currently zero.
     move |state, args| {
         let mut compiled = f.compile(shapeless);
         compiled.call_mut(state, args)
@@ -78,7 +72,7 @@ where
         self,
         shapeless: bool,
     ) -> impl CallMutWithState<U, Self::Args<'args>, Vec<Array>, ()> {
-        let id = type_id_to_usize(&self);
+        let id = next_compile_id();
         let state = CompiledState {
             f: self,
             shapeless,
@@ -104,7 +98,7 @@ where
         mut self,
         shapeless: bool,
     ) -> impl CallMutWithState<U, Self::Args<'args>, Array, ()> {
-        let id = type_id_to_usize(&self);
+        let id = next_compile_id();
         let f = move |state: &mut U, args: &[Array]| -> Vec<Array> {
             let result = (self)(state, &args[0]);
             vec![result]
@@ -134,7 +128,7 @@ where
         mut self,
         shapeless: bool,
     ) -> impl CallMutWithState<U, Self::Args<'args>, Array, ()> {
-        let id = type_id_to_usize(&self);
+        let id = next_compile_id();
         let f = move |state: &mut U, args: &[Array]| -> Vec<Array> {
             let result = (self)(state, (&args[0], &args[1]));
             vec![result]
@@ -164,7 +158,7 @@ where
         mut self,
         shapeless: bool,
     ) -> impl CallMutWithState<U, Self::Args<'args>, Array, ()> {
-        let id = type_id_to_usize(&self);
+        let id = next_compile_id();
         let f = move |state: &mut U, args: &[Array]| -> Vec<Array> {
             let result = (self)(state, (&args[0], &args[1], &args[2]));
             vec![result]
@@ -194,7 +188,7 @@ where
         self,
         shapeless: bool,
     ) -> impl CallMutWithState<U, Self::Args<'args>, Vec<Array>, Exception> {
-        let id = type_id_to_usize(&self);
+        let id = next_compile_id();
         let state = CompiledState {
             f: self,
             shapeless,
@@ -220,7 +214,7 @@ where
         mut self,
         shapeless: bool,
     ) -> impl CallMutWithState<U, Self::Args<'args>, Array, Exception> {
-        let id = type_id_to_usize(&self);
+        let id = next_compile_id();
         let f = move |state: &mut U, args: &[Array]| -> Result<Vec<Array>, Exception> {
             let result = (self)(state, &args[0])?;
             Ok(vec![result])
@@ -250,7 +244,7 @@ where
         mut self,
         shapeless: bool,
     ) -> impl CallMutWithState<U, Self::Args<'args>, Array, Exception> {
-        let id = type_id_to_usize(&self);
+        let id = next_compile_id();
         let f = move |state: &mut U, args: &[Array]| -> Result<Vec<Array>, Exception> {
             let result = (self)(state, (&args[0], &args[1]))?;
             Ok(vec![result])
@@ -280,7 +274,7 @@ where
         mut self,
         shapeless: bool,
     ) -> impl CallMutWithState<U, Self::Args<'args>, Array, Exception> {
-        let id = type_id_to_usize(&self);
+        let id = next_compile_id();
         let f = move |state: &mut U, args: &[Array]| -> Result<Vec<Array>, Exception> {
             let result = (self)(state, (&args[0], &args[1], &args[2]))?;
             Ok(vec![result])
