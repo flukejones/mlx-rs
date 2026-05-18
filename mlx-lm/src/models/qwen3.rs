@@ -1,22 +1,17 @@
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
-};
+use std::{collections::HashMap, path::Path};
 
 use mlx_rs::{
-    argmax_axis, array,
     builder::Builder,
-    categorical,
     error::Exception,
     macros::{ModuleParameters, Quantizable},
-    module::{Module, ModuleParameters},
+    module::Module,
     nn,
     ops::indexing::{IndexOp, NewAxis},
     quantization::{MaybeQuantized, Quantizable as _},
+    transforms::async_eval,
     Array,
 };
 use serde::Deserialize;
-use serde_json::Value;
 use tokenizers::Tokenizer;
 
 use crate::{
@@ -26,9 +21,10 @@ use crate::{
     utils::{
         create_attention_mask,
         rope::{initialize_rope, FloatOrString, RopeVariant},
-        AttentionMask,
     },
 };
+
+pub use crate::nn::{AttentionInput, ModelInput};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelArgs {
@@ -129,13 +125,6 @@ impl Attention {
     }
 }
 
-// TODO: check if this input can be generic for other attention modules
-pub struct AttentionInput<'a, C> {
-    pub x: &'a Array,
-    pub mask: Option<&'a Array>,
-    pub cache: Option<&'a mut C>,
-}
-
 impl<C> Module<AttentionInput<'_, C>> for Attention
 where
     C: KeyValueCache + Default,
@@ -146,7 +135,7 @@ where
 
     #[allow(non_snake_case)]
     fn forward(&mut self, input: AttentionInput<'_, C>) -> Result<Self::Output, Self::Error> {
-        let AttentionInput { x, mask, mut cache } = input;
+        let AttentionInput { x, mask, mut cache, .. } = input;
 
         let shape = x.shape();
         let B = shape[0];
@@ -180,14 +169,19 @@ where
                 .build()?;
             keys = self.rope.forward(k_input)?;
 
-            // Dispatch through the cache so quantised caches (TurboQuant)
-            // can fuse update + attention without dequantising K.
+            // Dispatch through the cache so quantised caches can fuse
+            // update + attention without dequantising K.
             cache.attention(&queries, keys, values, self.scale, mask)?
         } else {
             queries = self.rope.forward(nn::RopeInput::new(&queries))?;
             keys = self.rope.forward(nn::RopeInput::new(&keys))?;
-            crate::utils::scaled_dot_product_attention::<&mut C>(
-                queries, keys, values, None, self.scale, mask,
+            mlx_rs::fast::scaled_dot_product_attention(
+                queries,
+                keys,
+                values,
+                self.scale,
+                mask.map(mlx_rs::fast::ScaledDotProductAttentionMask::Array),
+                None,
             )?
         };
 
@@ -206,60 +200,12 @@ where
     }
 }
 
-#[derive(Debug, Clone, ModuleParameters, Quantizable)]
-pub struct Mlp {
-    #[quantizable]
-    #[param]
-    pub gate_proj: MaybeQuantized<nn::Linear>,
+/// Re-export the canonical SwiGLU MLP at the historical path.
+/// Qwen3's old `Mlp::new(dim, hidden_dim)` becomes
+/// `Mlp::new(dim, hidden_dim, false)` since qwen3 hardcodes bias=false.
+pub use crate::nn::SwigluMlp as Mlp;
 
-    #[quantizable]
-    #[param]
-    pub down_proj: MaybeQuantized<nn::Linear>,
-
-    #[quantizable]
-    #[param]
-    pub up_proj: MaybeQuantized<nn::Linear>,
-}
-
-impl Mlp {
-    pub fn new(dim: i32, hidden_dim: i32) -> Result<Self, Exception> {
-        let gate_proj = nn::LinearBuilder::new(dim, hidden_dim)
-            .bias(false)
-            .build()?;
-        let down_proj = nn::LinearBuilder::new(hidden_dim, dim)
-            .bias(false)
-            .build()?;
-        let up_proj = nn::LinearBuilder::new(dim, hidden_dim)
-            .bias(false)
-            .build()?;
-
-        Ok(Self {
-            gate_proj: MaybeQuantized::Original(gate_proj),
-            down_proj: MaybeQuantized::Original(down_proj),
-            up_proj: MaybeQuantized::Original(up_proj),
-        })
-    }
-}
-
-impl Module<&Array> for Mlp {
-    type Output = Array;
-
-    type Error = Exception;
-
-    fn forward(&mut self, input: &Array) -> Result<Self::Output, Self::Error> {
-        let down_proj_input =
-            nn::silu(self.gate_proj.forward(input)?)?.multiply(self.up_proj.forward(input)?)?;
-        self.down_proj.forward(&down_proj_input)
-    }
-
-    fn training_mode(&mut self, mode: bool) {
-        self.gate_proj.training_mode(mode);
-        self.down_proj.training_mode(mode);
-        self.up_proj.training_mode(mode);
-    }
-}
-
-#[derive(Debug, Clone, ModuleParameters, Quantizable)]
+#[derive(Debug, ModuleParameters, Quantizable)]
 pub struct TransformerBlock {
     pub num_attention_heads: i32,
     pub hidden_size: i32,
@@ -285,7 +231,7 @@ impl TransformerBlock {
         let hidden_size = args.hidden_size;
 
         let self_attn = Attention::new(args)?;
-        let mlp = Mlp::new(args.hidden_size, args.intermediate_size)?;
+        let mlp = Mlp::new(args.hidden_size, args.intermediate_size, false)?;
         let input_layernorm = nn::RmsNormBuilder::new(args.hidden_size)
             .eps(args.rms_norm_eps)
             .build()?;
@@ -313,13 +259,10 @@ where
     type Error = Exception;
 
     fn forward(&mut self, input: AttentionInput<'_, C>) -> Result<Self::Output, Self::Error> {
-        let AttentionInput { x, mask, cache } = input;
+        let AttentionInput { x, mask, cache, .. } = input;
 
-        let self_attn_input = AttentionInput {
-            x: &self.input_layernorm.forward(x)?,
-            mask,
-            cache,
-        };
+        let normalized = self.input_layernorm.forward(x)?;
+        let self_attn_input = AttentionInput::plain(&normalized, mask, cache);
         let r = self.self_attn.forward(self_attn_input)?;
         let h = x.add(r)?;
 
@@ -337,7 +280,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, ModuleParameters, Quantizable)]
+#[derive(Debug, ModuleParameters, Quantizable)]
 pub struct Qwen3Model {
     pub vocab_size: i32,
     pub num_hidden_layers: i32,
@@ -379,12 +322,6 @@ impl Qwen3Model {
     }
 }
 
-pub struct ModelInput<'a, C> {
-    pub inputs: &'a Array,
-    pub mask: Option<&'a Array>,
-    pub cache: &'a mut Vec<Option<C>>,
-}
-
 impl<C> Module<ModelInput<'_, C>> for Qwen3Model
 where
     C: KeyValueCache + Default,
@@ -404,25 +341,13 @@ where
 
         let mask = match mask {
             Some(mask) => Some(mask.clone()),
-            None => match create_attention_mask(&h, cache, Some(true))? {
-                Some(AttentionMask::Array(a)) => Some(a),
-                Some(AttentionMask::Causal) => {
-                    return Err(Exception::custom("Only `Array` mask is supported"));
-                }
-                None => None,
-            },
+            None => create_attention_mask(&h, cache)?,
         };
 
-        if cache.is_empty() {
-            *cache = (0..self.layers.len()).map(|_| Some(C::default())).collect();
-        }
+        crate::nn::ensure_cache_populated(cache, self.layers.len());
 
         for (layer, c) in self.layers.iter_mut().zip(cache.iter_mut()) {
-            let layer_input = AttentionInput {
-                x: &h,
-                mask: mask.as_ref(),
-                cache: c.as_mut(),
-            };
+            let layer_input = AttentionInput::plain(&h, mask.as_ref(), c.as_mut());
             h = layer.forward(layer_input)?;
         }
 
@@ -438,7 +363,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, ModuleParameters, Quantizable)]
+#[derive(Debug, ModuleParameters, Quantizable)]
 pub struct Model {
     pub args: ModelArgs,
 
@@ -474,6 +399,18 @@ impl Model {
     pub fn model_type(&self) -> &str {
         &self.args.model_type
     }
+
+    /// Number of transformer layers — the length any per-layer cache
+    /// `Vec<Option<C>>` must have.
+    pub fn layer_count(&self) -> usize {
+        self.args.num_hidden_layers as usize
+    }
+
+    /// Per-head dimension. Required by quantised KV caches whose state
+    /// arrays are shaped `[B, H, S, D]`.
+    pub fn head_dim(&self) -> i32 {
+        self.args.head_dim
+    }
 }
 
 impl<C> Module<ModelInput<'_, C>> for Model
@@ -505,22 +442,11 @@ where
 }
 
 pub fn load_qwen3_tokenizer(model_dir: impl AsRef<Path>) -> Result<Tokenizer, Error> {
-    let file = model_dir.as_ref().join("tokenizer.json");
-    Tokenizer::from_file(file).map_err(Into::into)
+    crate::loader::load_tokenizer(model_dir)
 }
 
 pub fn get_qwen3_model_args(model_dir: impl AsRef<Path>) -> Result<ModelArgs, Error> {
-    let model_args_filename = model_dir.as_ref().join("config.json");
-    let file = std::fs::File::open(model_args_filename)?;
-    let model_args: ModelArgs = serde_json::from_reader(file)?;
-
-    Ok(model_args)
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct WeightMap {
-    pub metadata: HashMap<String, Value>,
-    pub weight_map: HashMap<String, String>,
+    crate::loader::load_config(model_dir)
 }
 
 pub fn load_qwen3_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
@@ -533,59 +459,14 @@ pub fn load_qwen3_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
         model = model.try_into_quantized(q.group_size, q.bits)?;
     }
 
-    let mut raw: HashMap<String, Array> = HashMap::new();
-    let weights_index = model_dir.join("model.safetensors.index.json");
-    if weights_index.exists() {
-        let json = std::fs::read_to_string(weights_index)?;
-        let weight_map: WeightMap = serde_json::from_str(&json)?;
-        let weight_files: HashSet<&String> = weight_map.weight_map.values().collect();
-        for weight_file in weight_files {
-            let path = model_dir.join(weight_file);
-            for (k, v) in Array::load_safetensors(&path).map_err(Error::LoadWeights)? {
-                raw.insert(k, v);
-            }
-        }
-    } else {
-        let path = model_dir.join("model.safetensors");
-        for (k, v) in Array::load_safetensors(&path).map_err(Error::LoadWeights)? {
-            raw.insert(k, v);
-        }
-    }
-
-    // QuantizedLinear wraps weight in `inner: Linear`; redirect
-    // `<prefix>.weight` → `<prefix>.inner.weight` for keys with a `.scales` sibling.
-    let quantised_prefixes: HashSet<String> = raw
-        .keys()
-        .filter_map(|k| k.strip_suffix(".scales").map(|p| p.to_string()))
-        .collect();
-
-    let mut params = model.parameters_mut().flatten();
-    for (k, v) in raw {
-        let key = match k.strip_suffix(".weight") {
-            Some(prefix) if quantised_prefixes.contains(prefix) => {
-                format!("{prefix}.inner.weight")
-            }
-            _ => k,
-        };
-        if let Some(slot) = params.get_mut(&*key) {
-            **slot = v;
-        }
-    }
-    drop(params);
-    mlx_rs::transforms::eval_params(model.parameters()).map_err(Error::Exception)?;
-
+    // Canonical loader transparently handles sharded + single-file
+    // (fixes earlier qwen3 no-fallback bug where missing index.json
+    // would panic instead of falling back to model.safetensors).
+    crate::loader::load_sharded(&mut model, model_dir)?;
     Ok(model)
 }
 
-pub fn sample(logits: &Array, temp: f32) -> Result<Array, Exception> {
-    match temp {
-        0.0 => argmax_axis!(logits, -1),
-        _ => {
-            let logits = logits.multiply(array!(1.0 / temp))?;
-            categorical!(logits)
-        }
-    }
-}
+pub use crate::sampler::sample;
 
 pub struct Generate<'a, C> {
     model: &'a mut Model,
@@ -615,16 +496,26 @@ where
 
 pub enum GenerateState<'a> {
     Prefill { prompt_token: &'a Array },
-    Decode { y: Array },
+    /// `pending` is the next token to hand out; its predecessor has
+    /// already been returned to the caller.
+    Decode { pending: Array },
 }
 
-macro_rules! tri {
-    ($expr:expr) => {
-        match $expr {
-            Ok(val) => val,
-            Err(e) => return Some(Err(e.into())),
-        }
-    };
+use crate::tri;
+
+impl<'a, C> Generate<'a, C>
+where
+    C: KeyValueCache + Default,
+{
+    fn step(&mut self, inputs: &Array) -> Result<Array, Exception> {
+        let input = ModelInput {
+            inputs,
+            mask: None,
+            cache: self.cache,
+        };
+        let logits = self.model.forward(input)?;
+        sample(&logits.index((.., -1, ..)), self.temp)
+    }
 }
 
 impl<'a, C> Iterator for Generate<'a, C>
@@ -634,33 +525,27 @@ where
     type Item = Result<Array, Exception>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match &self.state {
+        match std::mem::replace(
+            &mut self.state,
+            GenerateState::Decode {
+                pending: Array::from_int(0),
+            },
+        ) {
             GenerateState::Prefill { prompt_token } => {
-                let input = ModelInput {
-                    inputs: prompt_token,
-                    mask: None,
-                    cache: self.cache,
-                };
-                let logits = tri!(self.model.forward(input));
-                let y = tri!(sample(&logits.index((.., -1, ..)), self.temp));
-                self.state = GenerateState::Decode { y: y.clone() };
-
-                Some(Ok(y))
+                let y0 = tri!(self.step(prompt_token));
+                tri!(async_eval([&y0]));
+                let inputs = y0.index((.., NewAxis));
+                let y1 = tri!(self.step(&inputs));
+                tri!(async_eval([&y1]));
+                self.state = GenerateState::Decode { pending: y1 };
+                Some(Ok(y0))
             }
-            GenerateState::Decode { y } => {
-                let inputs = y.index((.., NewAxis));
-                let input = ModelInput {
-                    inputs: &inputs,
-                    mask: None,
-                    cache: self.cache,
-                };
-                let logits = tri!(self.model.forward(input));
-                // Slice last-position logits; sample wants rank-2 input.
-                let y = tri!(sample(&logits.index((.., -1, ..)), self.temp));
-
-                self.state = GenerateState::Decode { y: y.clone() };
-
-                Some(Ok(y))
+            GenerateState::Decode { pending } => {
+                let inputs = pending.index((.., NewAxis));
+                let next_y = tri!(self.step(&inputs));
+                tri!(async_eval([&next_y]));
+                self.state = GenerateState::Decode { pending: next_y };
+                Some(Ok(pending))
             }
         }
     }
