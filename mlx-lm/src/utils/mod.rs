@@ -93,7 +93,13 @@ pub(crate) fn quantized_scaled_dot_product_attention(
     let n_kv_heads = q_keys_shape[q_keys_shape.len() - 3];
     let n_repeats = n_q_heads / n_kv_heads;
 
-    let mut queries = queries * scale;
+    // `queries * f32_scale` would promote bf16/f16 inputs to f32 and
+    // poison every downstream op (gemm, softmax, the layer's residual
+    // path) for the rest of the forward. Stage scale into the input
+    // dtype so the multiply stays in-place.
+    let q_dtype = queries.dtype();
+    let scale_arr = Array::from_f32(scale).as_dtype(q_dtype)?;
+    let mut queries = queries.multiply(&scale_arr)?;
 
     if n_repeats > 1 {
         queries = reshape(&queries, &[B, n_kv_heads, n_repeats, L, D])?;
