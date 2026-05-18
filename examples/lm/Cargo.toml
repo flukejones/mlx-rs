@@ -1,18 +1,16 @@
 [package]
 name = "lm"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
-license.workspace = true
-documentation.workspace = true
-rust-version.workspace = true
+edition = "2021"
+version = "0.0.1"
+
+[workspace]
 
 [dependencies]
-mlx-rs.workspace = true
-mlx-lm.workspace = true
-mlx-lm-utils.workspace = true
+mlx-rs = { path = "../../mlx-rs" }
+mlx-lm = { path = "../../mlx-lm" }
+mlx-lm-utils = { path = "../../mlx-lm-utils" }
 
 anyhow = "1"
+serde = { version = "1", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
