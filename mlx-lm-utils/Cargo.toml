@@ -11,9 +11,9 @@ documentation.workspace = true
 description = "Generic utility functions for mlx-lm"
 
 [dependencies]
-minijinja = { version = "2", features = ["loader"] }
-minijinja-contrib = { version = "2", features = ["pycompat"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tokenizers = "0.22"
+minijinja.workspace = true
+minijinja-contrib.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokenizers.workspace = true
