@@ -458,18 +458,16 @@ mod tests {
         assert_eq!(logits2.shape(), &[1, 1, cfg.text_config.vocab_size]);
 
         // The full-attn layer's KV cache should be at offset 6 now.
-        let fa = match &caches[3] {
-            LayerCache::FullAttention(c) => c,
-            _ => panic!("expected FullAttention cache at index 3"),
+        let LayerCache::FullAttention(fa) = &caches[3] else {
+            panic!("expected FullAttention cache at index 3");
         };
         use crate::cache::KeyValueCache;
         assert_eq!(fa.offset(), 6);
 
         // The linear-attn layers should each be at offset 6 too.
         for (i, cache) in caches.iter().enumerate().take(3) {
-            let la = match cache {
-                LayerCache::LinearAttention(c) => c,
-                _ => panic!("expected LinearAttention cache at index {i}"),
+            let LayerCache::LinearAttention(la) = cache else {
+                panic!("expected LinearAttention cache at index {i}");
             };
             assert_eq!(la.offset, 6, "linear layer {i} offset");
         }

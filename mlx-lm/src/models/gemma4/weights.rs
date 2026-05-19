@@ -195,17 +195,14 @@ fn is_shared_kv_layer_key(key: &str, num_layers: i32, num_shared: i32) -> bool {
         return false;
     }
     let first_shared = num_layers - num_shared;
-    let rest = match key.strip_prefix("model.layers.") {
-        Some(r) => r,
-        None => return false,
+    let Some(rest) = key.strip_prefix("model.layers.") else {
+        return false;
     };
-    let dot = match rest.find('.') {
-        Some(i) => i,
-        None => return false,
+    let Some(dot) = rest.find('.') else {
+        return false;
     };
-    let layer_idx: i32 = match rest[..dot].parse() {
-        Ok(i) => i,
-        Err(_) => return false,
+    let Ok(layer_idx) = rest[..dot].parse::<i32>() else {
+        return false;
     };
     if layer_idx < first_shared {
         return false;
@@ -232,9 +229,8 @@ fn merge_gate_up(
         for suffix in [".weight", ".scales", ".biases"] {
             let gate_key = format!("{base}{module}.gate_proj{suffix}");
             let up_key = format!("{base}{module}.up_proj{suffix}");
-            let gate = match raw.remove(&gate_key) {
-                Some(v) => v,
-                None => continue,
+            let Some(gate) = raw.remove(&gate_key) else {
+                continue;
             };
             let up = raw.remove(&up_key).ok_or_else(|| {
                 Error::Other(format!("gemma4: missing {up_key} to pair with {gate_key}").into())

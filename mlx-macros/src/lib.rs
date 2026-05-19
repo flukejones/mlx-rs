@@ -1,3 +1,8 @@
+#![allow(
+    clippy::needless_continue,
+    reason = "darling::FromDeriveInput derive expands to a loop containing a redundant continue"
+)]
+
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput};
 

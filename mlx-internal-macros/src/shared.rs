@@ -291,9 +291,8 @@ fn parse_fields(fields: &syn::Fields) -> Result<(Vec<MandatoryField>, Vec<Option
             continue;
         }
 
-        let mut ident = match field_prop.ident {
-            Some(ident) => ident,
-            None => return Err("Unnamed fields are not supported".into()),
+        let Some(mut ident) = field_prop.ident else {
+            return Err("Unnamed fields are not supported".into());
         };
 
         if let Some(rename) = field_prop.rename {
@@ -309,13 +308,10 @@ fn parse_fields(fields: &syn::Fields) -> Result<(Vec<MandatoryField>, Vec<Option
         };
 
         if field_prop.optional {
-            let default = match field_prop.default {
-                Some(default) => default,
-                None => {
-                    return Err(
-                        format!("Field {ident} is optional but has no default value").into(),
-                    );
-                }
+            let Some(default) = field_prop.default else {
+                return Err(
+                    format!("Field {ident} is optional but has no default value").into(),
+                );
             };
 
             optional_fields.push(OptionalField {

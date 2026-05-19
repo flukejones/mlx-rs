@@ -1,3 +1,8 @@
+#![allow(
+    clippy::needless_continue,
+    reason = "darling::FromDeriveInput / FromField derives expand to a loop containing a redundant continue"
+)]
+
 use darling::FromMeta;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};

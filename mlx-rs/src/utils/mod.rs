@@ -370,7 +370,7 @@ where
         let raw_closure: *mut F = payload.cast();
         // Let the box take care of freeing the closure
         let mut closure = Box::from_raw(raw_closure);
-        let arrays = if let Ok(arrays) = mlx_vector_array_values(vector_array) { arrays } else {
+        let Ok(arrays) = mlx_vector_array_values(vector_array) else {
             let _ = Box::into_raw(closure); // prevent premature drop
             return FAILURE;
         };

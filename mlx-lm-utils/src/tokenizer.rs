@@ -274,9 +274,8 @@ pub fn load_special_tokens_from_str(
     content: &str,
 ) -> std::io::Result<HashMap<String, String>> {
     let v: serde_json::Value = serde_json::from_str(content)?;
-    let obj = match v.as_object() {
-        Some(o) => o,
-        None => return Ok(Default::default()),
+    let Some(obj) = v.as_object() else {
+        return Ok(Default::default());
     };
     let mut out = HashMap::new();
     for (k, val) in obj {
