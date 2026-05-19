@@ -59,6 +59,24 @@ test-integration:
 bench:
 	cargo bench -p mlx-lm --bench lm_decode
 
+# Run one criterion group. Usage: just bench-one gemma4_decode_26b_a4b_it_q8
+# Pass `set=full` to opt into MLX_LM_BENCH_SET=full gated cells.
+bench-one group set="trimmed":
+	MLX_LM_BENCH_NO_DOWNLOAD=1 MLX_LM_BENCH_SET={{set}} \
+	  cargo bench -p mlx-lm --bench lm_decode -- '{{group}}'
+	@just bench-results {{group}}
+
+# Print median tok/s for every cell under a criterion group.
+# Usage: just bench-results gemma4_decode_26b_a4b_it_q8
+bench-results group:
+	@for f in target/criterion/{{group}}/*/*/new/estimates.json; do \
+	  [ -f "$f" ] || { echo "no estimates under target/criterion/{{group}}"; exit 1; }; \
+	  ns=$(jq -r .mean.point_estimate "$f"); \
+	  n=$(echo "$f" | awk -F/ '{print $(NF-2)}'); \
+	  cell=$(echo "$f" | awk -F/ '{print $(NF-3)}'); \
+	  awk -v c="$cell" -v p="$n" -v ns="$ns" 'BEGIN{printf "%-16s %5s\t%7.2f tok/s\n", c, p, p*1e9/ns}'; \
+	done
+
 # Run mlx-rs compile-overhead bench.
 bench-compile:
 	cargo bench -p mlx-rs --bench compile_overhead
