@@ -231,7 +231,7 @@ impl Qwen35Decoder {
         // - Linear-attention layers don't need a mask in single-batch /
         //   non-chunked prefill, so we always pass `None` (the Python
         //   reference's `create_ssm_mask` returns `None` here too).
-        let full_attn_mask = self.build_full_attn_mask(&h, caches)?;
+        let full_attn_mask = Self::build_full_attn_mask(&h, caches)?;
         let full_attn_mask_ref = full_attn_mask.as_ref();
         let ssm_mask_ref: Option<&Array> = None;
 
@@ -258,7 +258,6 @@ impl Qwen35Decoder {
     /// handling inside `fast::scaled_dot_product_attention` already covers
     /// the trivial mask shape.
     fn build_full_attn_mask(
-        &self,
         h: &Array,
         caches: &[LayerCache],
     ) -> Result<Option<Array>, Exception> {

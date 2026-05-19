@@ -118,10 +118,9 @@ impl VectorArray {
                     slot.write(arr);
                 }
                 Err(e) => {
-                    // Drop the elements we successfully initialised.
-                    for j in 0..i {
-                        // SAFETY: indices [0..i) were just written above.
-                        unsafe { out[j].assume_init_drop() };
+                    // SAFETY: slots [0..i) were just written above.
+                    for written in &mut out[..i] {
+                        unsafe { written.assume_init_drop() };
                     }
                     return Err(e);
                 }

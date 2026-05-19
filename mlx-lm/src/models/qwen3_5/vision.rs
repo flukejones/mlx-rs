@@ -421,30 +421,34 @@ fn rot_pos_emb(
     let max_hw = grid_thw.iter().map(|g| g[1].max(g[2])).max().unwrap_or(1);
     let freq_table = build_rotary_freqs(head_dim / 2, max_hw, 10_000.0)?;
 
-    let mut pos_ids: Vec<Vec<[i32; 2]>> = Vec::new();
+    // Precompute total i32 count to size `flat` exactly once and avoid
+    // the intermediate Vec<Vec<[i32; 2]>> + per-t coords.clone().
+    let total_pairs: usize = grid_thw
+        .iter()
+        .map(|&[t, h, w]| (t as usize) * (h as usize) * (w as usize))
+        .sum();
+    let mut flat: Vec<i32> = Vec::with_capacity(total_pairs * 2);
     for &[t, h, w] in grid_thw {
         let merged_h = h / merge_size;
         let merged_w = w / merge_size;
-        let mut coords: Vec<[i32; 2]> = Vec::with_capacity((h * w) as usize);
+        // Build the coordinate sequence once per image (h*w*2 i32s),
+        // then duplicate the chunk (t-1) more times via memcpy.
+        let chunk_start = flat.len();
         for bh in 0..merged_h {
             for bw in 0..merged_w {
                 for ih in 0..merge_size {
                     for iw in 0..merge_size {
-                        let r = bh * merge_size + ih;
-                        let c = bw * merge_size + iw;
-                        coords.push([r, c]);
+                        flat.push(bh * merge_size + ih);
+                        flat.push(bw * merge_size + iw);
                     }
                 }
             }
         }
-        for _ in 0..t {
-            pos_ids.push(coords.clone());
+        let chunk_end = flat.len();
+        for _ in 1..t {
+            flat.extend_from_within(chunk_start..chunk_end);
         }
     }
-    let flat: Vec<i32> = pos_ids
-        .iter()
-        .flat_map(|chunk| chunk.iter().flat_map(|c| c.iter().copied()))
-        .collect();
     let total = (flat.len() / 2) as i32;
     let pos_array = Array::from_slice(&flat, &[total, 2]);
 

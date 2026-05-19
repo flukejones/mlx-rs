@@ -144,13 +144,13 @@ pub fn get_rope_index_single_batch(
     let _ = video_token_id; // video path follows the same rules; chandra OCR is image-only.
     while i < s {
         let tok = input_ids[i] as u32;
+        // Both branches advance one position uniformly across all 3 axes.
+        t_pos.push(next_pos);
+        h_pos.push(next_pos);
+        w_pos.push(next_pos);
+        i += 1;
+        next_pos += 1;
         if tok == vision_start_token_id {
-            // Emit the vision-start token at the current uniform position.
-            t_pos.push(next_pos);
-            h_pos.push(next_pos);
-            w_pos.push(next_pos);
-            i += 1;
-            next_pos += 1;
             // Read the per-axis grid for this image.
             if img_idx >= image_grid_thw.len() {
                 return Err(Exception::custom(
@@ -190,12 +190,6 @@ pub fn get_rope_index_single_batch(
             // Bump next_pos past the image block.
             let max_axis = t.max(merged_h).max(merged_w);
             next_pos += max_axis;
-        } else {
-            t_pos.push(next_pos);
-            h_pos.push(next_pos);
-            w_pos.push(next_pos);
-            i += 1;
-            next_pos += 1;
         }
     }
 

@@ -1032,11 +1032,7 @@ fn get_item_nd(
                     | TakeArrayRef { indices: _ } => {}
                 }
             }
-
-            // append the remaining operations
-            remaining_indices.extend(operations[(last_array_or_index + 1)..].iter().cloned());
         } else {
-            // !gather_first
             for item in operations.iter() {
                 // Using full match syntax to avoid forgetting to add new cases
                 match item {
@@ -1048,10 +1044,10 @@ fn get_item_nd(
 
             // handle the trailing gathers
             remaining_indices.extend((0..max_dims).map(|_| (..).index_op()));
-
-            // and the remaining operations
-            remaining_indices.extend(operations[(last_array_or_index + 1)..].iter().cloned());
         }
+
+        // append the remaining operations (shared between both branches)
+        remaining_indices.extend(operations[(last_array_or_index + 1)..].iter().cloned());
     }
 
     if have_array && remaining_indices.is_empty() {

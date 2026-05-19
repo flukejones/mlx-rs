@@ -547,7 +547,7 @@ mod tests {
     #![allow(clippy::print_stderr, reason = "test code")]
     use std::{env::home_dir, fs};
 
-    use lazy_static::lazy_static;
+    use std::sync::LazyLock;
     use mlx_rs::{
         ops::indexing::{IndexOp, NewAxis},
         transforms::eval,
@@ -580,36 +580,32 @@ mod tests {
             .into_owned()
     }
 
-    lazy_static! {
-        static ref CACHED_TEST_MODEL_DIR: String = {
-            let cache_dir = home_dir()
-                .map(|p| {
-                    p.join(".cache")
-                        .join("huggingface")
-                        .join("hub")
-                        .join("models--meta-llama--Llama-3.2-1B-Instruct")
-                        .to_string_lossy()
-                        .into_owned()
-                })
-                .unwrap_or_default();
-
-            resolve_hf_cache_dir(&cache_dir)
-        };
-        static ref CACHED_QUANT_TEST_MODEL_DIR: String = {
-            let cache_dir = home_dir()
-                .map(|p| {
-                    p.join(".cache")
-                        .join("huggingface")
-                        .join("hub")
-                        .join("models--mlx-community--Llama-3.2-1B-Instruct-4bit")
-                        .to_string_lossy()
-                        .into_owned()
-                })
-                .unwrap_or_default();
-
-            resolve_hf_cache_dir(&cache_dir)
-        };
-    }
+    static CACHED_TEST_MODEL_DIR: LazyLock<String> = LazyLock::new(|| {
+        let cache_dir = home_dir()
+            .map(|p| {
+                p.join(".cache")
+                    .join("huggingface")
+                    .join("hub")
+                    .join("models--meta-llama--Llama-3.2-1B-Instruct")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_default();
+        resolve_hf_cache_dir(&cache_dir)
+    });
+    static CACHED_QUANT_TEST_MODEL_DIR: LazyLock<String> = LazyLock::new(|| {
+        let cache_dir = home_dir()
+            .map(|p| {
+                p.join(".cache")
+                    .join("huggingface")
+                    .join("hub")
+                    .join("models--mlx-community--Llama-3.2-1B-Instruct-4bit")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_default();
+        resolve_hf_cache_dir(&cache_dir)
+    });
 
     #[test]
     #[ignore = "requires local model files"]

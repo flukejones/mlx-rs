@@ -337,10 +337,11 @@ fn compute_lr(
         array!(lr.expect("The learning rate should be set if the relative step is not enabled"))
     };
 
-    let mut parameter_scale = array!(1.0);
-    if scale_parameter {
-        parameter_scale = maximum(&eps.1, parameter_rms)?;
-    }
+    let parameter_scale = if scale_parameter {
+        maximum(&eps.1, parameter_rms)?
+    } else {
+        array!(1.0)
+    };
 
     parameter_scale.multiply(relative_step_size)
 }
