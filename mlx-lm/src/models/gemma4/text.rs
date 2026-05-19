@@ -179,28 +179,28 @@ fn build_layer_rope(
         .and_then(|p| p.get("rope_theta"))
         .and_then(|v| match v {
             FloatOrString::Float(f) => Some(*f),
-            _ => None,
+            FloatOrString::String(_) => None,
         })
         .unwrap_or(10_000.0);
     let rope_type = params
         .and_then(|p| p.get("rope_type"))
         .and_then(|v| match v {
             FloatOrString::String(s) => Some(s.as_str()),
-            _ => None,
+            FloatOrString::Float(_) => None,
         })
         .unwrap_or("default");
     let partial_rotary_factor = params
         .and_then(|p| p.get("partial_rotary_factor"))
         .and_then(|v| match v {
             FloatOrString::Float(f) => Some(*f),
-            _ => None,
+            FloatOrString::String(_) => None,
         })
         .unwrap_or(1.0);
     let factor = params
         .and_then(|p| p.get("factor"))
         .and_then(|v| match v {
             FloatOrString::Float(f) => Some(*f),
-            _ => None,
+            FloatOrString::String(_) => None,
         })
         .unwrap_or(1.0);
 

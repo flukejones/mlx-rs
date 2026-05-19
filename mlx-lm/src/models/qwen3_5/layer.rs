@@ -275,7 +275,7 @@ impl Qwen35Decoder {
                     use crate::cache::KeyValueCache;
                     Some(kv.offset())
                 }
-                _ => None,
+                LayerCache::LinearAttention(_) => None,
             })
             .unwrap_or(0);
 

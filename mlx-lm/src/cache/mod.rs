@@ -574,7 +574,7 @@ mod tests {
                     .unwrap();
                 assert!(diff.item::<f32>() < 1e-6);
             }
-            _ => panic!("expected plain KVCache"),
+            LoadedCache::Quantized(_) => panic!("expected plain KVCache"),
         }
     }
 
@@ -634,7 +634,7 @@ mod tests {
                 assert_eq!(c.bits(), Some(8));
                 assert_eq!(c.group_size(), Some(64));
             }
-            _ => panic!("expected quantized cache"),
+            LoadedCache::Plain(_) => panic!("expected quantized cache"),
         }
     }
 }

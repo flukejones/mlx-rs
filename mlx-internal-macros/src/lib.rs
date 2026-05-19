@@ -77,7 +77,7 @@ pub fn default_device(attr: TokenStream, item: TokenStream) -> TokenStream {
                     true
                 }
             }
-            _ => true,
+            FnArg::Receiver(_) => true,
         })
         .cloned()
         .collect::<Vec<_>>();
