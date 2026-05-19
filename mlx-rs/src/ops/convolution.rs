@@ -23,7 +23,10 @@ use mlx_internal_macros::{default_device, generate_macro};
 ///   operator otherwise.
 #[generate_macro]
 #[default_device]
-#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+)]
 pub fn conv_general_device<'a>(
     array: impl AsRef<Array>,
     weight: impl AsRef<Array>,
@@ -203,7 +206,10 @@ pub fn conv3d_device(
 /// - dilation: kernel dilation. Default to 1 if not specified.
 /// - groups: input feature groups. Default to 1 if not specified.
 /// - stream: stream or device to evaluate on.
-#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+)]
 #[generate_macro]
 #[default_device]
 pub fn conv_transpose1d_device(
@@ -251,7 +257,10 @@ pub fn conv_transpose1d_device(
 /// - dilation: kernel dilation. Default to (1, 1) if not specified.
 /// - groups: input feature groups. Default to 1 if not specified.
 /// - stream: stream or device to evaluate on.
-#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+)]
 #[generate_macro]
 #[default_device]
 pub fn conv_transpose2d_device(
@@ -303,7 +312,10 @@ pub fn conv_transpose2d_device(
 /// - dilation: kernel dilation. Default to (1, 1, 1) if not specified.
 /// - groups: input feature groups. Default to 1 if not specified.
 /// - stream: stream or device to evaluate on.
-#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+)]
 #[generate_macro]
 #[default_device]
 pub fn conv_transpose3d_device(

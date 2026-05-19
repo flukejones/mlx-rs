@@ -278,7 +278,13 @@
 //! details.
 
 #![deny(unused_unsafe, missing_debug_implementations, missing_docs)]
-#![cfg_attr(test, allow(clippy::approx_constant, reason = "test float literals close to known constants by design"))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::approx_constant,
+        reason = "test float literals close to known constants by design"
+    )
+)]
 
 #[macro_use]
 pub mod macros; // Must be first to ensure the other modules can use the macros

@@ -7,11 +7,11 @@
 //! [`crate::activations::swiglu`]).
 
 use mlx_rs::{
+    builder::Builder,
     error::Exception,
     macros::{ModuleParameters, Quantizable},
     module::Module,
     nn::{Linear, LinearBuilder},
-    builder::Builder,
     quantization::MaybeQuantized,
     Array,
 };

@@ -17,7 +17,7 @@ pub use loader::{
 };
 pub use rope::ProportionalRope;
 pub use text::{
-    Attention, AttentionInput, AttentionOut, DecoderLayer, Gemma4TextModel, LayerRope, Mlp,
-    Model, ModelInput, RmsNormNoScale,
+    Attention, AttentionInput, AttentionOut, DecoderLayer, Gemma4TextModel, LayerRope, Mlp, Model,
+    ModelInput, RmsNormNoScale,
 };
 pub use weights::{load_gemma4_model_sanitized, load_sanitized_gemma4_weights};

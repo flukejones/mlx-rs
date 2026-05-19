@@ -133,9 +133,14 @@ where
 
     type Error = Exception;
 
-    #[allow(non_snake_case, reason = "local bindings mirror ML tensor names (Q, K, V)")]
+    #[allow(
+        non_snake_case,
+        reason = "local bindings mirror ML tensor names (Q, K, V)"
+    )]
     fn forward(&mut self, input: AttentionInput<'_, C>) -> Result<Self::Output, Self::Error> {
-        let AttentionInput { x, mask, mut cache, .. } = input;
+        let AttentionInput {
+            x, mask, mut cache, ..
+        } = input;
 
         let shape = x.shape();
         let B = shape[0];
@@ -495,10 +500,14 @@ where
 }
 
 pub enum GenerateState<'a> {
-    Prefill { prompt_token: &'a Array },
+    Prefill {
+        prompt_token: &'a Array,
+    },
     /// `pending` is the next token to hand out; its predecessor has
     /// already been returned to the caller.
-    Decode { pending: Array },
+    Decode {
+        pending: Array,
+    },
 }
 
 use crate::tri;
@@ -619,12 +628,7 @@ mod tests {
         let mut cache = Vec::new();
 
         let mut tokens = Vec::new();
-        let generate = super::Generate::<KVCache>::new(
-            &mut model,
-            &mut cache,
-            0.0,
-            &prompt_tokens,
-        );
+        let generate = super::Generate::<KVCache>::new(&mut model, &mut cache, 0.0, &prompt_tokens);
         for (token, ntoks) in generate.zip(0..10) {
             let token = token.unwrap();
             tokens.push(token.clone());

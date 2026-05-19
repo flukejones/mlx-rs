@@ -151,7 +151,9 @@ fn resolve_task_local_key() -> Option<Result<Array>> {
 
 fn resolve_thread_default_key() -> Result<Array> {
     THREAD_DEFAULT_STATE.with_borrow_mut(|slot| {
-        if let Some(s) = slot { s.next() } else {
+        if let Some(s) = slot {
+            s.next()
+        } else {
             let mut s = RandomState::new()?;
             let out = s.next();
             *slot = Some(s);

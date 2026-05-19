@@ -36,8 +36,18 @@ struct SteelShape {
 
 fn shape_for_d(d: i32) -> Option<SteelShape> {
     match d {
-        128 | 256 => Some(SteelShape { bq: 32, bk: 16, wm: 4, wn: 1 }),
-        512 => Some(SteelShape { bq: 8, bk: 8, wm: 1, wn: 1 }),
+        128 | 256 => Some(SteelShape {
+            bq: 32,
+            bk: 16,
+            wm: 4,
+            wn: 1,
+        }),
+        512 => Some(SteelShape {
+            bq: 8,
+            bk: 8,
+            wm: 1,
+            wn: 1,
+        }),
         _ => None,
     }
 }
@@ -373,7 +383,9 @@ pub fn steel_quant_attention_dispatch(
         return Err(Exception::custom("steel_quant_attention: H_q % H_kv != 0"));
     }
     if d != inputs.head_dim {
-        return Err(Exception::custom("steel_quant_attention: head_dim mismatch"));
+        return Err(Exception::custom(
+            "steel_quant_attention: head_dim mismatch",
+        ));
     }
     if !matches!(inputs.bits, 4 | 8) {
         return Err(Exception::custom(format!(

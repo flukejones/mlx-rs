@@ -90,22 +90,54 @@ pub struct Gemma4Config {
 fn default_model_type() -> String {
     "gemma4_text".to_owned()
 }
-const fn default_hidden_size() -> i32 { 1536 }
-const fn default_num_hidden_layers() -> i32 { 35 }
-const fn default_intermediate_size() -> i32 { 6144 }
-const fn default_num_attention_heads() -> i32 { 8 }
-const fn default_head_dim() -> i32 { 256 }
-const fn default_global_head_dim() -> i32 { 512 }
-const fn default_num_kv_heads() -> i32 { 1 }
-const fn default_rms_norm_eps() -> f32 { 1e-6 }
-const fn default_vocab_size() -> i32 { 262144 }
-const fn default_max_position_embeddings() -> i32 { 131072 }
-const fn default_sliding_window() -> i32 { 512 }
-const fn default_sliding_window_pattern() -> i32 { 5 }
-const fn default_final_logit_softcapping() -> f32 { 30.0 }
-const fn default_use_double_wide_mlp() -> bool { true }
-const fn default_tie_word_embeddings() -> bool { true }
-const fn default_vocab_size_per_layer_input() -> i32 { 262144 }
+const fn default_hidden_size() -> i32 {
+    1536
+}
+const fn default_num_hidden_layers() -> i32 {
+    35
+}
+const fn default_intermediate_size() -> i32 {
+    6144
+}
+const fn default_num_attention_heads() -> i32 {
+    8
+}
+const fn default_head_dim() -> i32 {
+    256
+}
+const fn default_global_head_dim() -> i32 {
+    512
+}
+const fn default_num_kv_heads() -> i32 {
+    1
+}
+const fn default_rms_norm_eps() -> f32 {
+    1e-6
+}
+const fn default_vocab_size() -> i32 {
+    262144
+}
+const fn default_max_position_embeddings() -> i32 {
+    131072
+}
+const fn default_sliding_window() -> i32 {
+    512
+}
+const fn default_sliding_window_pattern() -> i32 {
+    5
+}
+const fn default_final_logit_softcapping() -> f32 {
+    30.0
+}
+const fn default_use_double_wide_mlp() -> bool {
+    true
+}
+const fn default_tie_word_embeddings() -> bool {
+    true
+}
+const fn default_vocab_size_per_layer_input() -> i32 {
+    262144
+}
 
 /// Outer multimodal-wrapper config schema (`gemma4.ModelArgs` in
 /// Python). HF Gemma 4 checkpoints store all text-model architecture

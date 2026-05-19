@@ -125,7 +125,11 @@ fn handle_generic_args(
     // All generics arguments except for the last one will be inferred
     let infer_tokens = vec![quote! { _ }; count - 1];
 
-    let default_generics = if let Some(path) = default_dtype { quote! { ::<#(#infer_tokens,)* #path> } } else { quote! { ::<#(#infer_tokens,)* f32> } };
+    let default_generics = if let Some(path) = default_dtype {
+        quote! { ::<#(#infer_tokens,)* #path> }
+    } else {
+        quote! { ::<#(#infer_tokens,)* f32> }
+    };
     let dtype_generics = quote! { ::<#(#infer_tokens,)* $dtype> };
 
     (default_generics, Some(dtype_generics))
@@ -152,7 +156,10 @@ fn parse_args(args: Vec<&mut syn::PatType>) -> Vec<Arg> {
                 let arg_type = arg_type(&arg.attrs);
 
                 let is_positional = matches!(arg_type, ArgType::Positional);
-                assert!(!(is_prev_optional && is_positional), "positional argument cannot follow an optional argument");
+                assert!(
+                    !(is_prev_optional && is_positional),
+                    "positional argument cannot follow an optional argument"
+                );
                 is_prev_optional = matches!(arg_type, ArgType::NamedOptional);
 
                 parsed.push(Arg {
@@ -261,7 +268,10 @@ fn generate_macro_variants(
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "codegen helper threads macro parsing context")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "codegen helper threads macro parsing context"
+)]
 fn generate_macro_variants_for_selected_args(
     fn_mod_path: &proc_macro2::TokenStream,
     fn_ident: &Ident,

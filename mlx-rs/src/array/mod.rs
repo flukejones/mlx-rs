@@ -26,7 +26,10 @@ pub use element::ArrayElement;
 // Not using Complex64 because `num_complex::Complex64` is actually Complex<f64>
 
 /// Type alias for `num_complex::Complex<f32>`.
-#[allow(non_camel_case_types, reason = "matches f32/f64 numeric-type naming convention")]
+#[allow(
+    non_camel_case_types,
+    reason = "matches f32/f64 numeric-type naming convention"
+)]
 pub type complex64 = Complex<f32>;
 
 /// An n-dimensional array.
@@ -381,7 +384,8 @@ impl Array {
     /// }
     /// ```
     pub unsafe fn as_slice_unchecked<T: ArrayElement>(&self) -> &[T] {
-        self.eval().expect("Array::as_slice_unchecked: eval() failed");
+        self.eval()
+            .expect("Array::as_slice_unchecked: eval() failed");
 
         unsafe {
             let data = T::array_data(self);

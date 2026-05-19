@@ -41,10 +41,7 @@ impl Array {
     /// Array::ones_device::<f32>(&[5, 10], StreamOrDevice::default()).unwrap();
     /// ```
     #[default_device]
-    pub fn ones_device<T: ArrayElement>(
-        shape: &[i32],
-        stream: impl AsRef<Stream>,
-    ) -> Result<Self> {
+    pub fn ones_device<T: ArrayElement>(shape: &[i32], stream: impl AsRef<Stream>) -> Result<Self> {
         let dtype = T::DTYPE;
         ones_dtype_device(shape, dtype, stream)
     }

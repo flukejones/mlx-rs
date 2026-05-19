@@ -130,9 +130,7 @@ pub fn make_gather_qmm_combine_kernel() -> Result<MetalKernel> {
 
 pub fn cached_gather_qmm_combine_kernel() -> &'static MetalKernel {
     static KERNEL: OnceLock<MetalKernel> = OnceLock::new();
-    KERNEL.get_or_init(|| {
-        make_gather_qmm_combine_kernel().expect("make_gather_qmm_combine_kernel")
-    })
+    KERNEL.get_or_init(|| make_gather_qmm_combine_kernel().expect("make_gather_qmm_combine_kernel"))
 }
 
 /// Inputs to [`gather_qmm_combine`].
@@ -277,7 +275,13 @@ mod tests {
     use mlx_rs::transforms::eval;
 
     fn max_abs_diff(a: &Array, b: &Array) -> f32 {
-        a.subtract(b).unwrap().abs().unwrap().max(None).unwrap().item::<f32>()
+        a.subtract(b)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max(None)
+            .unwrap()
+            .item::<f32>()
     }
 
     /// Reference: gather_qmm then (weights * y).sum(-2) the slow way.

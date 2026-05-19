@@ -110,30 +110,18 @@ fn sanitize_entry(key: &str, value: Array) -> Vec<(String, Array)> {
     // `gate_up_proj` for the fused gather_qmm path.
     for suffix in [".weight", ".scales", ".biases"] {
         if let Some(base) = key.strip_suffix(&format!(".experts.gate_proj{suffix}")) {
-            return vec![(
-                format!("{base}.switch_glu.gate_proj{suffix}"),
-                value,
-            )];
+            return vec![(format!("{base}.switch_glu.gate_proj{suffix}"), value)];
         }
         if let Some(base) = key.strip_suffix(&format!(".experts.up_proj{suffix}")) {
-            return vec![(
-                format!("{base}.switch_glu.up_proj{suffix}"),
-                value,
-            )];
+            return vec![(format!("{base}.switch_glu.up_proj{suffix}"), value)];
         }
         if let Some(base) = key.strip_suffix(&format!(".experts.down_proj{suffix}")) {
-            return vec![(
-                format!("{base}.switch_glu.down_proj{suffix}"),
-                value,
-            )];
+            return vec![(format!("{base}.switch_glu.down_proj{suffix}"), value)];
         }
     }
     // Dense checkpoint ships fused gate_up_proj. Keep it fused.
     if let Some(base) = key.strip_suffix(".experts.gate_up_proj") {
-        return vec![(
-            format!("{base}.switch_glu.gate_up_proj.weight"),
-            value,
-        )];
+        return vec![(format!("{base}.switch_glu.gate_up_proj.weight"), value)];
     }
 
     vec![(key, value)]
@@ -215,11 +203,7 @@ fn is_shared_kv_layer_key(key: &str, num_layers: i32, num_shared: i32) -> bool {
 /// `up_proj` sibling along `axis` into `<base><module>.gate_up_proj.*`.
 /// Removes the split entries. `module` is `.mlp` (dense) or
 /// `.switch_glu` (MoE).
-fn merge_gate_up(
-    raw: &mut HashMap<String, Array>,
-    module: &str,
-    axis: i32,
-) -> Result<(), Error> {
+fn merge_gate_up(raw: &mut HashMap<String, Array>, module: &str, axis: i32) -> Result<(), Error> {
     let suffix_pat = format!("{module}.gate_proj.weight");
     let bases: Vec<String> = raw
         .keys()
@@ -235,8 +219,8 @@ fn merge_gate_up(
             let up = raw.remove(&up_key).ok_or_else(|| {
                 Error::Other(format!("gemma4: missing {up_key} to pair with {gate_key}").into())
             })?;
-            let fused = mlx_rs::ops::concatenate_axis(&[gate, up], axis)
-                .map_err(Error::Exception)?;
+            let fused =
+                mlx_rs::ops::concatenate_axis(&[gate, up], axis).map_err(Error::Exception)?;
             raw.insert(format!("{base}{module}.gate_up_proj{suffix}"), fused);
         }
     }

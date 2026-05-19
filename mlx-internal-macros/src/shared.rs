@@ -152,16 +152,24 @@ impl BuilderStructAnalyzer<'_> {
         let mandatory_field_idents = self.mandatory_fields.iter().map(|field| &field.ident);
         let optional_field_idents = self.optional_fields.iter().map(|field| &field.ident);
 
-        let err_ty = if let Some(err) = self.err { quote! { #err } } else { quote! { std::convert::Infallible } };
+        let err_ty = if let Some(err) = self.err {
+            quote! { #err }
+        } else {
+            quote! { std::convert::Infallible }
+        };
 
-        let build_body = if let Some(f) = self.build_with { quote! {
-            #f(self)
-        } } else { quote! {
-            Ok(#struct_ident {
-                #(#mandatory_field_idents: self.#mandatory_field_idents,)*
-                #(#optional_field_idents: self.#optional_field_idents,)*
-            })
-        } };
+        let build_body = if let Some(f) = self.build_with {
+            quote! {
+                #f(self)
+            }
+        } else {
+            quote! {
+                Ok(#struct_ident {
+                    #(#mandatory_field_idents: self.#mandatory_field_idents,)*
+                    #(#optional_field_idents: self.#optional_field_idents,)*
+                })
+            }
+        };
 
         quote! {
             impl #impl_generics #root::builder::Builder<#struct_ident #type_generics> for #builder_struct_ident #type_generics #where_clause {
@@ -309,9 +317,7 @@ fn parse_fields(fields: &syn::Fields) -> Result<(Vec<MandatoryField>, Vec<Option
 
         if field_prop.optional {
             let Some(default) = field_prop.default else {
-                return Err(
-                    format!("Field {ident} is optional but has no default value").into(),
-                );
+                return Err(format!("Field {ident} is optional but has no default value").into());
             };
 
             optional_fields.push(OptionalField {

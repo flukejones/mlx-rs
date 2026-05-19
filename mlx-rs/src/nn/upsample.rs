@@ -96,7 +96,10 @@ impl Module<&Array> for Upsample {
     fn training_mode(&mut self, _mode: bool) {}
 }
 
-#[allow(non_snake_case, reason = "local bindings mirror ML tensor names (N, C, H, W)")]
+#[allow(
+    non_snake_case,
+    reason = "local bindings mirror ML tensor names (N, C, H, W)"
+)]
 fn upsample_nearest(x: &Array, scale: &[f32]) -> Result<Array, Exception> {
     let dimensions = x.ndim() - 2;
     if dimensions != scale.len() {
@@ -149,7 +152,10 @@ type IndexWeight = (Array, Array);
 
 type IndicesFn = fn(i32, f32, bool, usize, usize) -> Result<Vec<IndexWeight>, Exception>;
 
-#[allow(non_snake_case, reason = "local bindings mirror ML tensor names (N, C, H, W)")]
+#[allow(
+    non_snake_case,
+    reason = "local bindings mirror ML tensor names (N, C, H, W)"
+)]
 fn interpolate(
     x: &Array,
     scale: &[f32],
@@ -315,7 +321,10 @@ fn compiled_get_weight2(ind: &Array, grid: &Array) -> Result<Array, Exception> {
     compiled((ind, grid))
 }
 
-#[allow(non_snake_case, reason = "local bindings mirror ML tensor names (N, C, H, W)")]
+#[allow(
+    non_snake_case,
+    reason = "local bindings mirror ML tensor names (N, C, H, W)"
+)]
 fn scaled_indices(
     N: i32,
     scale: f32,

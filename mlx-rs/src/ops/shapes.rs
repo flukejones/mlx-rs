@@ -86,12 +86,7 @@ impl Array {
 
     /// See [`move_axis`]
     #[default_device]
-    pub fn move_axis_device(
-        &self,
-        src: i32,
-        dst: i32,
-        stream: impl AsRef<Stream>,
-    ) -> Result<Self> {
+    pub fn move_axis_device(&self, src: i32, dst: i32, stream: impl AsRef<Stream>) -> Result<Self> {
         move_axis_device(self, src, dst, stream)
     }
 
@@ -150,7 +145,9 @@ fn resolve_strides(
     shape: &[i32],
     strides: Option<&[i64]>,
 ) -> SmallVec<[i64; DEFAULT_STACK_VEC_LEN]> {
-    if let Some(strides) = strides { SmallVec::from_slice(strides) } else {
+    if let Some(strides) = strides {
+        SmallVec::from_slice(strides)
+    } else {
         let result = shape
             .iter()
             .rev()

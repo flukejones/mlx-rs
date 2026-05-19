@@ -14,7 +14,10 @@
 // re-used across activations. Clippy/rustc's trivial_casts diagnostic
 // prints identical source/dest types, but the source is the fn-item
 // ZST, not a fn-pointer.
-#![allow(trivial_casts, reason = "fn-item ZST → fn-pointer coercion for shared compile cache")]
+#![allow(
+    trivial_casts,
+    reason = "fn-item ZST → fn-pointer coercion for shared compile cache"
+)]
 
 use std::sync::OnceLock;
 
@@ -336,8 +339,7 @@ pub fn residual_add_scale(
 ) -> Result<Array, Exception> {
     let compiled = cache.0.get_or_insert_with(|| {
         Compile::<(&Array, &Array, &Array), Array, Exception>::compile_with_id(
-            residual_add_scale_inner
-                as fn((&Array, &Array, &Array)) -> Result<Array, Exception>,
+            residual_add_scale_inner as fn((&Array, &Array, &Array)) -> Result<Array, Exception>,
             residual_add_scale_id(),
             true,
         )
@@ -431,8 +433,7 @@ mod tests {
         let per_expert_scale = Array::from_slice(&[10.0_f32, 20.0, 30.0, 40.0], &[4]);
 
         let mut cache = RouterPostCache::default();
-        let fused =
-            router_post(&mut cache, &scores, &top_k_indices, &per_expert_scale).unwrap();
+        let fused = router_post(&mut cache, &scores, &top_k_indices, &per_expert_scale).unwrap();
 
         let top_k_scores = take_along_axis(&scores, &top_k_indices, -1).unwrap();
         let gathered = take_axis(&per_expert_scale, &top_k_indices, 0).unwrap();
@@ -476,7 +477,10 @@ mod tests {
         let cap = Array::from_f32(30.0);
         let mut cache = LogitSoftcapCache::default();
         let fused = logit_softcap(&mut cache, &x, &cap).unwrap();
-        let manual = tanh(x.divide(&cap).unwrap()).unwrap().multiply(&cap).unwrap();
+        let manual = tanh(x.divide(&cap).unwrap())
+            .unwrap()
+            .multiply(&cap)
+            .unwrap();
         let diff = fused.subtract(&manual).unwrap();
         let max = diff.abs().unwrap().max(None).unwrap().item::<f32>();
         assert!(max < 1e-5, "fused vs manual logit_softcap diverge: {max}");

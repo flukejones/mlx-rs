@@ -32,7 +32,10 @@ impl FlatAttnParams {
     /// Build flat params from `[B, H_q, qL, D]` / `[B, H_kv, kL, D]`
     /// shapes. Block sizes (`bq`, `bk`) determine the `NQ` / `NK`
     /// tile counts and remainders.
-    #[allow(clippy::too_many_arguments, reason = "from_shapes accepts the full Q/K/V shape tuple per the steel-attention preamble")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "from_shapes accepts the full Q/K/V shape tuple per the steel-attention preamble"
+    )]
     pub fn from_shapes(
         b: i32,
         h_q: i32,
@@ -82,24 +85,60 @@ impl FlatAttnParams {
         }
     }
 
-    pub fn b_param(&self) -> &Array { &self.b }
-    pub fn h_param(&self) -> &Array { &self.h }
-    pub fn d_param(&self) -> &Array { &self.d }
-    pub fn q_len_param(&self) -> &Array { &self.q_len }
-    pub fn k_len_param(&self) -> &Array { &self.k_len }
-    pub fn gqa_factor_param(&self) -> &Array { &self.gqa_factor }
-    pub fn scale_param(&self) -> &Array { &self.scale }
-    pub fn nq_param(&self) -> &Array { &self.nq }
-    pub fn nk_param(&self) -> &Array { &self.nk }
-    pub fn nq_aligned_param(&self) -> &Array { &self.nq_aligned }
-    pub fn nk_aligned_param(&self) -> &Array { &self.nk_aligned }
-    pub fn ql_rem_param(&self) -> &Array { &self.ql_rem }
-    pub fn kl_rem_param(&self) -> &Array { &self.kl_rem }
-    pub fn ql_off_param(&self) -> &Array { &self.ql_off }
-    pub fn q_strides_arr(&self) -> &Array { &self.q_strides }
-    pub fn k_strides_arr(&self) -> &Array { &self.k_strides }
-    pub fn v_strides_arr(&self) -> &Array { &self.v_strides }
-    pub fn o_strides_arr(&self) -> &Array { &self.o_strides }
+    pub fn b_param(&self) -> &Array {
+        &self.b
+    }
+    pub fn h_param(&self) -> &Array {
+        &self.h
+    }
+    pub fn d_param(&self) -> &Array {
+        &self.d
+    }
+    pub fn q_len_param(&self) -> &Array {
+        &self.q_len
+    }
+    pub fn k_len_param(&self) -> &Array {
+        &self.k_len
+    }
+    pub fn gqa_factor_param(&self) -> &Array {
+        &self.gqa_factor
+    }
+    pub fn scale_param(&self) -> &Array {
+        &self.scale
+    }
+    pub fn nq_param(&self) -> &Array {
+        &self.nq
+    }
+    pub fn nk_param(&self) -> &Array {
+        &self.nk
+    }
+    pub fn nq_aligned_param(&self) -> &Array {
+        &self.nq_aligned
+    }
+    pub fn nk_aligned_param(&self) -> &Array {
+        &self.nk_aligned
+    }
+    pub fn ql_rem_param(&self) -> &Array {
+        &self.ql_rem
+    }
+    pub fn kl_rem_param(&self) -> &Array {
+        &self.kl_rem
+    }
+    pub fn ql_off_param(&self) -> &Array {
+        &self.ql_off
+    }
+    pub fn q_strides_arr(&self) -> &Array {
+        &self.q_strides
+    }
+    pub fn k_strides_arr(&self) -> &Array {
+        &self.k_strides
+    }
+    pub fn v_strides_arr(&self) -> &Array {
+        &self.v_strides
+    }
+    pub fn o_strides_arr(&self) -> &Array {
+        &self.o_strides
+    }
 }
 
 /// Returns (batch_stride, head_stride, seq_stride) for a row-major

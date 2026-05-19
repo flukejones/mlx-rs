@@ -34,7 +34,9 @@ pub(crate) fn resolve_index_unchecked(index: i32, len: usize) -> usize {
 
 /// Helper method to convert an optional slice of axes to a Vec covering all axes.
 pub(crate) fn axes_or_default_to_all<'a>(axes: impl IntoOption<&'a [i32]>, ndim: i32) -> Vec<i32> {
-    if let Some(axes) = axes.into_option() { axes.to_vec() } else {
+    if let Some(axes) = axes.into_option() {
+        axes.to_vec()
+    } else {
         let axes: Vec<i32> = (0..ndim).collect();
         axes
     }
@@ -87,9 +89,7 @@ impl VectorArray {
                 "try_into_one: expected 1 array, got {size}"
             )));
         }
-        Array::try_from_op(|res| unsafe {
-            mlx_sys::mlx_vector_array_get(res, self.c_vec, 0)
-        })
+        Array::try_from_op(|res| unsafe { mlx_sys::mlx_vector_array_get(res, self.c_vec, 0) })
     }
 
     /// Drain the vector into a fixed-size array. Returns an error if the
@@ -345,9 +345,7 @@ fn new_mlx_vector_array(arrays: Vec<Array>) -> mlx_vector_array {
     }
 }
 
-fn mlx_vector_array_values(
-    vector_array: mlx_vector_array,
-) -> Result<Vec<Array>, Exception> {
+fn mlx_vector_array_values(vector_array: mlx_vector_array) -> Result<Vec<Array>, Exception> {
     unsafe {
         let size = mlx_sys::mlx_vector_array_size(vector_array);
         (0..size)

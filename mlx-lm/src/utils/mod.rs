@@ -73,7 +73,10 @@ fn index_out_of_bound_exception() -> Exception {
     Exception::custom("index out of bound")
 }
 
-#[allow(non_snake_case, reason = "local bindings mirror attention tensor names (Q, K, V)")]
+#[allow(
+    non_snake_case,
+    reason = "local bindings mirror attention tensor names (Q, K, V)"
+)]
 pub(crate) fn quantized_scaled_dot_product_attention(
     queries: Array,
     mut q_keys: QuantizedKeys,
@@ -201,8 +204,10 @@ impl From<QuantizedValues> for MaybeQuantizedValues {
     }
 }
 
-
-#[allow(non_snake_case, reason = "local bindings mirror attention tensor names (N, T, S)")]
+#[allow(
+    non_snake_case,
+    reason = "local bindings mirror attention tensor names (N, T, S)"
+)]
 pub(crate) fn create_causal_mask(
     N: i32,
     offset: Option<i32>,
@@ -229,7 +234,10 @@ pub(crate) fn create_causal_mask(
     Ok(mask)
 }
 
-#[allow(non_snake_case, reason = "local bindings mirror attention tensor names (N, T, S)")]
+#[allow(
+    non_snake_case,
+    reason = "local bindings mirror attention tensor names (N, T, S)"
+)]
 pub(crate) fn create_attention_mask<C>(
     h: &Array,
     cache: &[Option<C>],

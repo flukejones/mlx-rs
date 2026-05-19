@@ -34,7 +34,11 @@ use std::process::Command;
 fn ensure_mlx_src() -> PathBuf {
     if let Some(dir) = env::var_os("MLX_RS_SRC_DIR") {
         let path = PathBuf::from(dir);
-        assert!(path.is_dir(), "MLX_RS_SRC_DIR={} is not a directory", path.display());
+        assert!(
+            path.is_dir(),
+            "MLX_RS_SRC_DIR={} is not a directory",
+            path.display()
+        );
         return path;
     }
 
@@ -72,7 +76,8 @@ fn workspace_root() -> PathBuf {
                 return dir;
             }
         }
-        assert!(dir.pop(), 
+        assert!(
+            dir.pop(),
             "workspace root not found from {}",
             env::var("CARGO_MANIFEST_DIR").unwrap()
         );
@@ -84,8 +89,7 @@ fn workspace_root() -> PathBuf {
 /// time TOML dependency.
 fn read_workspace_mlx_pin() -> (String, String) {
     let toml = workspace_root().join("Cargo.toml");
-    let body = fs::read_to_string(&toml)
-        .unwrap_or_else(|e| panic!("read {}: {e}", toml.display()));
+    let body = fs::read_to_string(&toml).unwrap_or_else(|e| panic!("read {}: {e}", toml.display()));
     let mut in_section = false;
     let mut version = None::<String>;
     let mut sha = None::<String>;
@@ -118,7 +122,8 @@ fn parse_quoted_value(rest: &str) -> String {
     inner
         .split_once('"')
         .map(|(v, _)| v)
-        .unwrap_or(inner).to_owned()
+        .unwrap_or(inner)
+        .to_owned()
 }
 
 fn fetch_mlx_tarball(sha: &str, cache_root: &Path) -> Result<(), String> {
@@ -211,13 +216,16 @@ fn main() {
 /// `<out>/steel_attention_preamble.metal`. Returns that path.
 fn generate_steel_preamble(mlx_src: &Path, out_dir: &Path) -> PathBuf {
     let script = mlx_src.join("mlx/backend/metal/make_compiled_preamble.sh");
-    assert!(script.is_file(), "make_compiled_preamble.sh missing at {}", script.display());
+    assert!(
+        script.is_file(),
+        "make_compiled_preamble.sh missing at {}",
+        script.display()
+    );
 
     // The script writes <stage>/steel_attention.cpp from steel/attn/.../steel_attention.h.
     let stage = out_dir.join("steel-preamble-stage");
     let _ = fs::remove_dir_all(&stage);
-    fs::create_dir_all(&stage)
-        .unwrap_or_else(|e| panic!("mkdir {}: {e}", stage.display()));
+    fs::create_dir_all(&stage).unwrap_or_else(|e| panic!("mkdir {}: {e}", stage.display()));
 
     let status = Command::new("bash")
         .arg(&script)
@@ -227,20 +235,20 @@ fn generate_steel_preamble(mlx_src: &Path, out_dir: &Path) -> PathBuf {
         .arg(STEEL_SRC_REL)
         .status()
         .unwrap_or_else(|e| panic!("spawn {}: {e}", script.display()));
-    assert!(status.success(), 
+    assert!(
+        status.success(),
         "{} exited with {} (need Xcode CLT + `xcrun metal` toolchain)",
         script.display(),
         status
     );
 
     let cpp = stage.join("steel_attention.cpp");
-    let cpp_body = fs::read_to_string(&cpp)
-        .unwrap_or_else(|e| panic!("read {}: {e}", cpp.display()));
+    let cpp_body =
+        fs::read_to_string(&cpp).unwrap_or_else(|e| panic!("read {}: {e}", cpp.display()));
     let metal = strip_preamble_envelope(&cpp_body);
 
     let out_path = out_dir.join("steel_attention_preamble.metal");
-    fs::write(&out_path, metal)
-        .unwrap_or_else(|e| panic!("write {}: {e}", out_path.display()));
+    fs::write(&out_path, metal).unwrap_or_else(|e| panic!("write {}: {e}", out_path.display()));
     out_path
 }
 
@@ -254,5 +262,7 @@ fn strip_preamble_envelope(cpp: &str) -> &str {
     let close = cpp[start..]
         .rfind(")preamble\"")
         .expect("steel_attention.cpp missing )preamble\" closing");
-    cpp[start..start + close].trim_matches('\n').trim_start_matches('\n')
+    cpp[start..start + close]
+        .trim_matches('\n')
+        .trim_start_matches('\n')
 }

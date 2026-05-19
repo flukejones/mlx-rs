@@ -68,7 +68,7 @@ pub fn derive_module_parameters(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Quantizable, attributes(quantizable))]
 pub fn derive_quantizable_module(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let quantizable_module_impl = quantizable::expand_quantizable(&input)
-        .expect("Quantizable derive: expansion failed");
+    let quantizable_module_impl =
+        quantizable::expand_quantizable(&input).expect("Quantizable derive: expansion failed");
     TokenStream::from(quantizable_module_impl)
 }

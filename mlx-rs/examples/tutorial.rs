@@ -33,7 +33,10 @@ fn scalar_basics() {
     assert!(shape.is_empty());
 }
 
-#[allow(unused_variables, reason = "example code: variables shown for didactic purposes")]
+#[allow(
+    unused_variables,
+    reason = "example code: variables shown for didactic purposes"
+)]
 fn array_basics() {
     // make a multidimensional array.
     let x: Array = Array::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);

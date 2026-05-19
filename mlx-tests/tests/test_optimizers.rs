@@ -479,21 +479,9 @@ fn test_rmsprop() {
     let expected_state_first_b = ones::<f32>(&[1]).unwrap() * 0.01;
     let expected_state_second = ones::<f32>(&[1]).unwrap() * 0.01;
 
-    assert_array_eq!(
-        optim.state["first.a"],
-        expected_state_first_a,
-        ATOL
-    );
-    assert_array_eq!(
-        optim.state["first.b"],
-        expected_state_first_b,
-        ATOL
-    );
-    assert_array_eq!(
-        optim.state["second"],
-        expected_state_second,
-        ATOL
-    );
+    assert_array_eq!(optim.state["first.a"], expected_state_first_a, ATOL);
+    assert_array_eq!(optim.state["first.b"], expected_state_first_b, ATOL);
+    assert_array_eq!(optim.state["second"], expected_state_second, ATOL);
 
     assert_save_and_load(optim, RmsPropBuilder::new(LR).alpha(ALPHA).build().unwrap()).unwrap();
 }

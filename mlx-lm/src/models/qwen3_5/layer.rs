@@ -204,11 +204,11 @@ impl Qwen35Decoder {
         caches: &mut [LayerCache],
         position_ids: Option<&Array>,
     ) -> Result<Array, Exception> {
-        let mut h = if let Some(e) = inputs_embeds { e.clone() } else {
+        let mut h = if let Some(e) = inputs_embeds {
+            e.clone()
+        } else {
             let ids = inputs.ok_or_else(|| {
-                Exception::custom(
-                    "Qwen35Decoder::forward: needs either inputs or inputs_embeds",
-                )
+                Exception::custom("Qwen35Decoder::forward: needs either inputs or inputs_embeds")
             })?;
             self.embed_tokens.forward(ids)?
         };
@@ -257,10 +257,7 @@ impl Qwen35Decoder {
     /// Returns `None` for decode steps (`T == 1`) where the implicit causal
     /// handling inside `fast::scaled_dot_product_attention` already covers
     /// the trivial mask shape.
-    fn build_full_attn_mask(
-        h: &Array,
-        caches: &[LayerCache],
-    ) -> Result<Option<Array>, Exception> {
+    fn build_full_attn_mask(h: &Array, caches: &[LayerCache]) -> Result<Option<Array>, Exception> {
         let shape = h.shape();
         let t = shape[1];
         if t <= 1 {

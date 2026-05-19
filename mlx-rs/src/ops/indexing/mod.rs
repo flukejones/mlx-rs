@@ -326,8 +326,7 @@ pub trait IndexOp<Idx>: TryIndexOp<Idx> {
 
     /// Index the array with the given index.
     fn index(&self, i: Idx) -> Array {
-        self.try_index(i)
-            .expect("IndexOp::index: try_index failed")
+        self.try_index(i).expect("IndexOp::index: try_index failed")
     }
 }
 

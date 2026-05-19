@@ -107,7 +107,7 @@ fn update_slice(
     }
 
     for item in operations.iter().rev() {
-        use ArrayIndexOp::{TakeIndex, Slice, ExpandDims, Ellipsis, TakeArray, TakeArrayRef};
+        use ArrayIndexOp::{Ellipsis, ExpandDims, Slice, TakeArray, TakeArrayRef, TakeIndex};
 
         match item {
             TakeIndex { index } => {
@@ -185,7 +185,7 @@ fn scatter_args<'a>(
     update: &Array,
     stream: impl AsRef<Stream>,
 ) -> Result<ScatterArgs<'a>> {
-    use ArrayIndexOp::{TakeIndex, TakeArray, TakeArrayRef, Slice, ExpandDims, Ellipsis};
+    use ArrayIndexOp::{Ellipsis, ExpandDims, Slice, TakeArray, TakeArrayRef, TakeIndex};
 
     if operations.len() == 1 {
         return match &operations[0] {
@@ -319,7 +319,7 @@ fn scatter_args_nd<'a>(
     update: &Array,
     stream: impl AsRef<Stream>,
 ) -> Result<ScatterArgs<'a>> {
-    use ArrayIndexOp::{TakeIndex, Slice, TakeArray, TakeArrayRef, ExpandDims, Ellipsis};
+    use ArrayIndexOp::{Ellipsis, ExpandDims, Slice, TakeArray, TakeArrayRef, TakeIndex};
 
     // mlx_scatter_args_nd
 

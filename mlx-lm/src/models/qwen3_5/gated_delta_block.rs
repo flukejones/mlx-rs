@@ -6,7 +6,10 @@
 
 // See `mlx_lm::activations` for the rationale on the fn-item-to-fn-pointer
 // coercion required at the `Compile::compile_with_id` call site.
-#![allow(trivial_casts, reason = "fn-item ZST → fn-pointer coercion for shared compile cache")]
+#![allow(
+    trivial_casts,
+    reason = "fn-item ZST → fn-pointer coercion for shared compile cache"
+)]
 
 use std::sync::OnceLock;
 
@@ -361,14 +364,12 @@ impl GatedDeltaNet {
 
         // Apply the gated RMS norm with the per-head `z`. norm_weight
         // is loaded as bf16 (or model dtype); cast once.
-        let weight_f32 = self
-            .norm_weight_f32
-            .get_or_init(|| {
-                self.norm_weight
-                    .value
-                    .as_dtype(Dtype::Float32)
-                    .expect("norm_weight cast to f32 cannot fail")
-            });
+        let weight_f32 = self.norm_weight_f32.get_or_init(|| {
+            self.norm_weight
+                .value
+                .as_dtype(Dtype::Float32)
+                .expect("norm_weight cast to f32 cannot fail")
+        });
         let gated = rms_norm_gated(
             &mut self.precise_swiglu_cache,
             &out,

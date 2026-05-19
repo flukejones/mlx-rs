@@ -71,7 +71,10 @@ where
 {
     // refining_impl_trait is fine here because we have restricted the Args and Output types
     // in the generics.
-    #[allow(refining_impl_trait, reason = "Args and Output are restricted in generics")]
+    #[allow(
+        refining_impl_trait,
+        reason = "Args and Output are restricted in generics"
+    )]
     fn into_grad(
         self,
         argnums: impl IntoOption<&'a [i32]>,
@@ -85,7 +88,10 @@ impl<'a, F> IntoGrad<'a, &[Array], Vec<Array>, Exception> for F
 where
     F: FnMut(&[Array]) -> Result<Vec<Array>> + 'a,
 {
-    #[allow(refining_impl_trait, reason = "Args and Output are restricted in generics")]
+    #[allow(
+        refining_impl_trait,
+        reason = "Args and Output are restricted in generics"
+    )]
     fn into_grad(
         self,
         argnums: impl IntoOption<&'a [i32]>,
@@ -99,7 +105,10 @@ impl<'a, F> IntoGrad<'a, &Array, Array, ()> for F
 where
     F: FnMut(&Array) -> Array + 'a,
 {
-    #[allow(refining_impl_trait, reason = "Args and Output are restricted in generics")]
+    #[allow(
+        refining_impl_trait,
+        reason = "Args and Output are restricted in generics"
+    )]
     fn into_grad(
         mut self,
         argnums: impl IntoOption<&'a [i32]>,
@@ -118,7 +127,10 @@ impl<'a, F> IntoGrad<'a, &Array, Array, Exception> for F
 where
     F: FnMut(&Array) -> Result<Array> + 'a,
 {
-    #[allow(refining_impl_trait, reason = "Args and Output are restricted in generics")]
+    #[allow(
+        refining_impl_trait,
+        reason = "Args and Output are restricted in generics"
+    )]
     fn into_grad(
         mut self,
         argnums: impl IntoOption<&'a [i32]>,
@@ -137,7 +149,10 @@ impl<'a, F> IntoGrad<'a, &[Array], Array, ()> for F
 where
     F: FnMut(&[Array]) -> Array + 'a,
 {
-    #[allow(refining_impl_trait, reason = "Args and Output are restricted in generics")]
+    #[allow(
+        refining_impl_trait,
+        reason = "Args and Output are restricted in generics"
+    )]
     fn into_grad(
         mut self,
         argnums: impl IntoOption<&'a [i32]>,
@@ -145,9 +160,7 @@ where
         let f = move |args: &[Array]| -> Vec<Array> { vec![self(args)] };
         let argnums = argnums.into_option().unwrap_or(&[0]);
         let mut g = build_gradient(f, argnums);
-        move |args: &[Array]| -> Result<Array> {
-            take_one_grad(g(args)?)
-        }
+        move |args: &[Array]| -> Result<Array> { take_one_grad(g(args)?) }
     }
 }
 
@@ -155,7 +168,10 @@ impl<'a, F> IntoGrad<'a, &[Array], Array, Exception> for F
 where
     F: FnMut(&[Array]) -> Result<Array> + 'a,
 {
-    #[allow(refining_impl_trait, reason = "Args and Output are restricted in generics")]
+    #[allow(
+        refining_impl_trait,
+        reason = "Args and Output are restricted in generics"
+    )]
     fn into_grad(
         mut self,
         argnums: impl IntoOption<&'a [i32]>,
@@ -163,9 +179,7 @@ where
         let f = move |args: &[Array]| -> Result<Vec<Array>> { self(args).map(|res| vec![res]) };
         let argnums = argnums.into_option().unwrap_or(&[0]);
         let mut g = build_fallible_gradient(f, argnums);
-        move |args: &[Array]| -> Result<Array> {
-            take_one_grad(g(args)?)
-        }
+        move |args: &[Array]| -> Result<Array> { take_one_grad(g(args)?) }
     }
 }
 
@@ -173,7 +187,10 @@ impl<'a, F> IntoGrad<'a, &Array, Vec<Array>, ()> for F
 where
     F: FnMut(&Array) -> Vec<Array> + 'a,
 {
-    #[allow(refining_impl_trait, reason = "Args and Output are restricted in generics")]
+    #[allow(
+        refining_impl_trait,
+        reason = "Args and Output are restricted in generics"
+    )]
     fn into_grad(
         mut self,
         argnums: impl IntoOption<&'a [i32]>,
@@ -193,7 +210,10 @@ impl<'a, F> IntoGrad<'a, &Array, Vec<Array>, Exception> for F
 where
     F: FnMut(&Array) -> Result<Vec<Array>> + 'a,
 {
-    #[allow(refining_impl_trait, reason = "Args and Output are restricted in generics")]
+    #[allow(
+        refining_impl_trait,
+        reason = "Args and Output are restricted in generics"
+    )]
     fn into_grad(
         mut self,
         argnums: impl IntoOption<&'a [i32]>,

@@ -272,7 +272,10 @@ pub fn initialize_rope(
         .unwrap_or(FloatOrStr::Str("default"));
 
     if rope_type == FloatOrStr::Str("default") || rope_type == FloatOrStr::Str("linear") {
-        let scale = match (rope_type == FloatOrStr::Str("linear"), scaling_config.as_ref()) {
+        let scale = match (
+            rope_type == FloatOrStr::Str("linear"),
+            scaling_config.as_ref(),
+        ) {
             (true, Some(cfg)) => 1.0 / get_numeric_from_config(cfg, "factor")?,
             // "linear" rope_type without a scaling_config is unreachable —
             // rope_type only takes "linear" when scaling_config provided it.
@@ -309,9 +312,13 @@ pub fn initialize_rope(
         )?;
         return Ok(RopeVariant::Llama3(rope));
     } else if rope_type == FloatOrStr::Str("yarn") {
-        return Err(Exception::custom("RoPE type \"yarn\" is not yet implemented"));
+        return Err(Exception::custom(
+            "RoPE type \"yarn\" is not yet implemented",
+        ));
     } else if rope_type == FloatOrStr::Str("longrope") {
-        return Err(Exception::custom("RoPE type \"longrope\" is not yet implemented"));
+        return Err(Exception::custom(
+            "RoPE type \"longrope\" is not yet implemented",
+        ));
     }
 
     Err(Exception::custom(format!(

@@ -584,7 +584,10 @@ mod tests {
     #![allow(clippy::missing_assert_message, reason = "test code")]
     #![allow(clippy::print_stdout, reason = "test code")]
     #![allow(clippy::print_stderr, reason = "test code")]
-    #![allow(trivial_casts, reason = "closure → Arc<dyn Fn> trait object coercion at builder call site")]
+    #![allow(
+        trivial_casts,
+        reason = "closure → Arc<dyn Fn> trait object coercion at builder call site"
+    )]
     use crate::{builder::Builder, ops::maximum_device, random::normal};
 
     use super::*;

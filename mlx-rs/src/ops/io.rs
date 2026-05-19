@@ -63,7 +63,10 @@ impl Array {
     ///
     /// - path: path of file to load
     /// - stream: stream or device to evaluate on
-    #[allow(clippy::type_complexity, reason = "safetensors loader returns nested map of arrays + metadata")]
+    #[allow(
+        clippy::type_complexity,
+        reason = "safetensors loader returns nested map of arrays + metadata"
+    )]
     #[default_device(device = "cpu")]
     pub fn load_safetensors_with_metadata_device(
         path: impl AsRef<Path>,

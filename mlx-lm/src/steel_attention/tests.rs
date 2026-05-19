@@ -18,9 +18,8 @@ use mlx_rs::{Array, Dtype};
 use mlx_rs::ops::{dequantize, quantize};
 
 use crate::steel_attention::{
-    make_steel_attention_kernel, make_steel_quant_attention_kernel,
-    steel_attention_dispatch, steel_quant_attention_dispatch, SteelAttentionInputs,
-    SteelQuantAttentionInputs,
+    make_steel_attention_kernel, make_steel_quant_attention_kernel, steel_attention_dispatch,
+    steel_quant_attention_dispatch, SteelAttentionInputs, SteelQuantAttentionInputs,
 };
 
 fn max_abs(a: &Array, b: &Array) -> Result<f32> {
@@ -39,14 +38,7 @@ fn reference_sdpa(q: &Array, k: &Array, v: &Array, scale: f32) -> Result<Array> 
 }
 
 fn reference_sdpa_causal(q: &Array, k: &Array, v: &Array, scale: f32) -> Result<Array> {
-    scaled_dot_product_attention(
-        q,
-        k,
-        v,
-        scale,
-        ScaledDotProductAttentionMask::Causal,
-        None,
-    )
+    scaled_dot_product_attention(q, k, v, scale, ScaledDotProductAttentionMask::Causal, None)
 }
 
 fn rand_4d(shape: &[i32], dtype: Dtype, seed: u64) -> Result<Array> {

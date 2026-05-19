@@ -47,11 +47,7 @@ impl Array {
     /// // c_data == [5.0, 7.0, 9.0]
     /// ```
     #[default_device]
-    pub fn add_device(
-        &self,
-        other: impl AsRef<Self>,
-        stream: impl AsRef<Stream>,
-    ) -> Result<Self> {
+    pub fn add_device(&self, other: impl AsRef<Self>, stream: impl AsRef<Stream>) -> Result<Self> {
         Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_add(
                 res,
@@ -2443,20 +2439,14 @@ mod tests {
         assert_eq!(radians(&x).unwrap().item::<f32>(), 0.0);
 
         let x = array![90.0];
-        assert_eq!(
-            radians(&x).unwrap().item::<f32>(),
-            PI / 2.0
-        );
+        assert_eq!(radians(&x).unwrap().item::<f32>(), PI / 2.0);
 
         assert_eq!(radians(array!()).unwrap(), array!());
 
         // Integer input type
         let x = array![90];
         assert_eq!(x.dtype(), Dtype::Int32);
-        assert_eq!(
-            radians(&x).unwrap().item::<f32>(),
-            PI / 2.0
-        );
+        assert_eq!(radians(&x).unwrap().item::<f32>(), PI / 2.0);
 
         // Input is irregularly strided
         let x = broadcast_to(&array!(90.0), &[2, 2, 2]).unwrap();

@@ -11,7 +11,9 @@ use mlx_rs::{
 
 /// Argmax at `temp == 0.0`, categorical sampling otherwise.
 pub fn sample(logits: &Array, temp: f32) -> Result<Array, Exception> {
-    if temp == 0.0 { argmax_axis!(logits, -1) } else {
+    if temp == 0.0 {
+        argmax_axis!(logits, -1)
+    } else {
         let logits = logits.multiply(array!(1.0 / temp))?;
         categorical!(logits)
     }

@@ -9,7 +9,10 @@ use crate::{Array, Dtype, Stream};
 use mlx_internal_macros::{default_device, generate_macro};
 
 /// Optimized implementation of `NN.RoPE`.
-#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+)]
 #[generate_macro(customize(root = "$crate::fast"))]
 #[default_device]
 pub fn rope_device<'a>(
@@ -60,7 +63,10 @@ pub fn rope_device<'a>(
 /// - `offset`: An array of position offsets
 /// - `freqs`: Optional precomputed frequencies
 /// - `stream`: Stream to evaluate on
-#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+)]
 #[generate_macro(customize(root = "$crate::fast"))]
 #[default_device]
 pub fn rope_dynamic_device<'a>(

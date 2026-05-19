@@ -39,7 +39,10 @@ generate_builder! {
     }
 }
 
-#[allow(clippy::unnecessary_wraps, reason = "Builder trait requires Result<Self, Self::Error>")]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "Builder trait requires Result<Self, Self::Error>"
+)]
 fn build_sgd(builder: SgdBuilder) -> Result<Sgd, std::convert::Infallible> {
     let lr = builder.lr;
     let momentum = builder.momentum;

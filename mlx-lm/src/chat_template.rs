@@ -111,7 +111,8 @@ impl ChatTemplate {
                 Error::Other(
                     format!("no chat_template at {} or {tokcfg_path:?}", jinja.display()).into(),
                 )
-            })?.to_owned();
+            })?
+            .to_owned();
         Ok(Self { source })
     }
 

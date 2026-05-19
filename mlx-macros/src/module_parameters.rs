@@ -52,10 +52,18 @@ fn impl_module_parameters_for_struct(
     let field_names: Vec<_> = fields.iter().map(|field| &field.ident).collect();
 
     // Returns None if there are no fields
-    let default_all_frozen = if field_names.is_empty() { quote::quote! { None } } else { quote::quote! { Some(true) } };
+    let default_all_frozen = if field_names.is_empty() {
+        quote::quote! { None }
+    } else {
+        quote::quote! { Some(true) }
+    };
 
     // Returns None if there are no fields
-    let default_any_frozen = if field_names.is_empty() { quote::quote! { None } } else { quote::quote! { Some(false) } };
+    let default_any_frozen = if field_names.is_empty() {
+        quote::quote! { None }
+    } else {
+        quote::quote! { Some(false) }
+    };
 
     let (extern_import, root) = match root {
         Some(root) => (quote::quote! {}, quote::quote! { #root }),

@@ -126,9 +126,14 @@ where
 
     type Error = Exception;
 
-    #[allow(non_snake_case, reason = "local bindings mirror ML tensor names (Q, K, V)")]
+    #[allow(
+        non_snake_case,
+        reason = "local bindings mirror ML tensor names (Q, K, V)"
+    )]
     fn forward(&mut self, input: AttentionInput<'_, C>) -> Result<Self::Output, Self::Error> {
-        let AttentionInput { x, mask, mut cache, .. } = input;
+        let AttentionInput {
+            x, mask, mut cache, ..
+        } = input;
 
         let shape = x.shape();
         let B = shape[0];
@@ -483,10 +488,14 @@ where
 }
 
 pub enum GenerateState<'a> {
-    Prefill { prompt_token: &'a Array },
+    Prefill {
+        prompt_token: &'a Array,
+    },
     /// `pending` is the next token to hand out; its predecessor has
     /// already been returned to the caller.
-    Decode { pending: Array },
+    Decode {
+        pending: Array,
+    },
 }
 
 use crate::tri;
@@ -547,12 +556,12 @@ mod tests {
     #![allow(clippy::print_stderr, reason = "test code")]
     use std::{env::home_dir, fs};
 
-    use std::sync::LazyLock;
     use mlx_rs::{
         ops::indexing::{IndexOp, NewAxis},
         transforms::eval,
         Array,
     };
+    use std::sync::LazyLock;
 
     use crate::{
         cache::KVCache,
@@ -572,7 +581,8 @@ mod tests {
             .join("main");
         let commit_hash = fs::read_to_string(&refs_main)
             .unwrap_or_default()
-            .trim().to_owned();
+            .trim()
+            .to_owned();
         std::path::Path::new(model_cache_dir)
             .join("snapshots")
             .join(commit_hash)
@@ -706,12 +716,7 @@ mod tests {
         let eot_token_id = 128009u32;
 
         let mut token_ids = Vec::new();
-        let generate = super::Generate::<KVCache>::new(
-            &mut model,
-            &mut cache,
-            0.0,
-            &prompt_tokens,
-        );
+        let generate = super::Generate::<KVCache>::new(&mut model, &mut cache, 0.0, &prompt_tokens);
         for (token, _ntoks) in generate.zip(0..50) {
             let token = token.unwrap();
             eval([&token]).unwrap();

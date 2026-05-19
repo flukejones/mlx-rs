@@ -11,12 +11,10 @@ use std::sync::OnceLock;
 
 use mlx_rs::builder::Builder;
 use mlx_rs::error::Exception;
-use mlx_rs::macros::{ModuleParameters, Quantizable};
-use mlx_rs::module::{
-    Module, ModuleParamMut, ModuleParamRef, ModuleParameters, Param,
-};
-use mlx_rs::nn::{self, gelu_approximate, RopeInput};
 use mlx_rs::fast;
+use mlx_rs::macros::{ModuleParameters, Quantizable};
+use mlx_rs::module::{Module, ModuleParamMut, ModuleParamRef, ModuleParameters, Param};
+use mlx_rs::nn::{self, gelu_approximate, RopeInput};
 use mlx_rs::ops::clip;
 use mlx_rs::ops::indexing::IndexOp;
 use mlx_rs::ops::{argpartition_axis, expand_dims_axes, unflatten};
@@ -28,10 +26,10 @@ use crate::activations::{
     ResidualAddScaleCache, RouterPostCache,
 };
 use crate::cache::KeyValueCache;
-use crate::nn::ensure_cache_populated;
 use crate::models::gemma4::config::{Gemma4Config, LayerKind};
 use crate::models::gemma4::rope::ProportionalRope;
 use crate::models::gemma4::switch_layers::SwitchGLU;
+use crate::nn::ensure_cache_populated;
 use crate::utils::create_attention_mask;
 use crate::utils::rope::FloatOrString;
 
@@ -136,11 +134,7 @@ impl LayerRope {
     /// per-step decode offset stay on-device so MLX's compile cache
     /// reuses the same kernel across decode steps (Python parity:
     /// `mx.fast.rope(x, offset=mx.array(cache.offset))`).
-    pub fn forward_dynamic(
-        &self,
-        x: &Array,
-        offset: &Array,
-    ) -> Result<Array, Exception> {
+    pub fn forward_dynamic(&self, x: &Array, offset: &Array) -> Result<Array, Exception> {
         match self {
             Self::Plain(r) => fast::rope_dynamic(
                 x.clone(),
@@ -291,16 +285,24 @@ impl Attention {
 
         let scale = 1.0_f32;
 
-        let q_proj = nn::LinearBuilder::new(dim, n_heads * head_dim).bias(false).build()?;
-        let o_proj = nn::LinearBuilder::new(n_heads * head_dim, dim).bias(false).build()?;
+        let q_proj = nn::LinearBuilder::new(dim, n_heads * head_dim)
+            .bias(false)
+            .build()?;
+        let o_proj = nn::LinearBuilder::new(n_heads * head_dim, dim)
+            .bias(false)
+            .build()?;
 
         let (k_proj, v_proj) = if has_kv {
-            let k = nn::LinearBuilder::new(dim, n_kv_heads * head_dim).bias(false).build()?;
+            let k = nn::LinearBuilder::new(dim, n_kv_heads * head_dim)
+                .bias(false)
+                .build()?;
             let v = if use_k_eq_v {
                 None
             } else {
                 Some(MaybeQuantized::Original(
-                    nn::LinearBuilder::new(dim, n_kv_heads * head_dim).bias(false).build()?,
+                    nn::LinearBuilder::new(dim, n_kv_heads * head_dim)
+                        .bias(false)
+                        .build()?,
                 ))
             };
             (Some(MaybeQuantized::Original(k)), v)
@@ -308,9 +310,13 @@ impl Attention {
             (None, None)
         };
 
-        let q_norm = nn::RmsNormBuilder::new(head_dim).eps(args.rms_norm_eps).build()?;
+        let q_norm = nn::RmsNormBuilder::new(head_dim)
+            .eps(args.rms_norm_eps)
+            .build()?;
         let (k_norm, v_norm) = if has_kv {
-            let k = nn::RmsNormBuilder::new(head_dim).eps(args.rms_norm_eps).build()?;
+            let k = nn::RmsNormBuilder::new(head_dim)
+                .eps(args.rms_norm_eps)
+                .build()?;
             let v = RmsNormNoScale::new(args.rms_norm_eps);
             (Some(k), Some(v))
         } else {
@@ -355,12 +361,21 @@ pub struct AttentionOut {
 }
 
 impl Attention {
-    #[allow(non_snake_case, reason = "local bindings mirror ML tensor names (Q, K, V)")]
+    #[allow(
+        non_snake_case,
+        reason = "local bindings mirror ML tensor names (Q, K, V)"
+    )]
     pub fn attend<C: KeyValueCache + Default>(
         &mut self,
         input: AttentionInput<'_, C>,
     ) -> Result<AttentionOut, Exception> {
-        let AttentionInput { x, mask, mut cache, shared_kv, offset } = input;
+        let AttentionInput {
+            x,
+            mask,
+            mut cache,
+            shared_kv,
+            offset,
+        } = input;
         let shape = x.shape();
         let B = shape[0];
         let L = shape[1];
@@ -385,7 +400,9 @@ impl Attention {
             .reshape(&[B, L, self.n_heads, self.head_dim])?;
         let mut queries = self.q_norm.forward(&queries)?;
 
-        let (keys, values) = if let Some(kv) = shared_kv { kv } else {
+        let (keys, values) = if let Some(kv) = shared_kv {
+            kv
+        } else {
             if !self.has_kv {
                 return Err(Exception::custom(format!(
                     "gemma4: layer {} is KV-shared but no shared_kv supplied",
@@ -456,12 +473,20 @@ impl Attention {
 
     pub fn training_mode_set(&mut self, mode: bool) {
         self.q_proj.training_mode(mode);
-        if let Some(k) = self.k_proj.as_mut() { k.training_mode(mode); }
-        if let Some(v) = self.v_proj.as_mut() { v.training_mode(mode); }
+        if let Some(k) = self.k_proj.as_mut() {
+            k.training_mode(mode);
+        }
+        if let Some(v) = self.v_proj.as_mut() {
+            v.training_mode(mode);
+        }
         self.o_proj.training_mode(mode);
         self.q_norm.training_mode(mode);
-        if let Some(k) = self.k_norm.as_mut() { k.training_mode(mode); }
-        if let Some(v) = self.v_norm.as_mut() { v.training_mode(mode); }
+        if let Some(k) = self.k_norm.as_mut() {
+            k.training_mode(mode);
+        }
+        if let Some(v) = self.v_norm.as_mut() {
+            v.training_mode(mode);
+        }
     }
 }
 
@@ -484,8 +509,7 @@ pub struct Mlp {
 impl Mlp {
     pub fn new(args: &Gemma4Config, layer_idx: i32) -> Result<Self, Exception> {
         let first_kv_shared = args.num_hidden_layers - args.num_kv_shared_layers;
-        let is_kv_shared_layer =
-            args.num_kv_shared_layers > 0 && layer_idx >= first_kv_shared;
+        let is_kv_shared_layer = args.num_kv_shared_layers > 0 && layer_idx >= first_kv_shared;
         let use_double_wide = args.use_double_wide_mlp && is_kv_shared_layer;
         let intermediate = if use_double_wide {
             args.intermediate_size * 2
@@ -495,13 +519,19 @@ impl Mlp {
 
         Ok(Self {
             gate_proj: MaybeQuantized::Original(
-                nn::LinearBuilder::new(args.hidden_size, intermediate).bias(false).build()?,
+                nn::LinearBuilder::new(args.hidden_size, intermediate)
+                    .bias(false)
+                    .build()?,
             ),
             down_proj: MaybeQuantized::Original(
-                nn::LinearBuilder::new(intermediate, args.hidden_size).bias(false).build()?,
+                nn::LinearBuilder::new(intermediate, args.hidden_size)
+                    .bias(false)
+                    .build()?,
             ),
             up_proj: MaybeQuantized::Original(
-                nn::LinearBuilder::new(args.hidden_size, intermediate).bias(false).build()?,
+                nn::LinearBuilder::new(args.hidden_size, intermediate)
+                    .bias(false)
+                    .build()?,
             ),
             geglu_cache: GegluCache::default(),
         })
@@ -571,13 +601,20 @@ pub struct Router {
 }
 
 impl Router {
-    pub fn new(hidden_size: i32, num_experts: i32, top_k: i32, eps: f32) -> Result<Self, Exception> {
+    pub fn new(
+        hidden_size: i32,
+        num_experts: i32,
+        top_k: i32,
+        eps: f32,
+    ) -> Result<Self, Exception> {
         Ok(Self {
             eps,
             top_k,
             root_size: (hidden_size as f32).powf(-0.5),
             proj: MaybeQuantized::Original(
-                nn::LinearBuilder::new(hidden_size, num_experts).bias(false).build()?,
+                nn::LinearBuilder::new(hidden_size, num_experts)
+                    .bias(false)
+                    .build()?,
             ),
             scale: Param::new(Array::ones::<f32>(&[hidden_size])?),
             per_expert_scale: Param::new(Array::ones::<f32>(&[num_experts])?),
@@ -644,7 +681,11 @@ pub struct Experts {
 }
 
 impl Experts {
-    pub fn new(hidden_size: i32, moe_intermediate: i32, num_experts: i32) -> Result<Self, Exception> {
+    pub fn new(
+        hidden_size: i32,
+        moe_intermediate: i32,
+        num_experts: i32,
+    ) -> Result<Self, Exception> {
         Ok(Self {
             switch_glu: SwitchGLU::new(hidden_size, moe_intermediate, num_experts, false)?,
         })
@@ -659,7 +700,8 @@ impl Experts {
         // Try the fused down+combine path first (quantised + no-sort
         // only). Falls back internally to the legacy 2-launch path
         // for sort/dense.
-        self.switch_glu.forward_with_combine(x, top_k_indices, top_k_weights)
+        self.switch_glu
+            .forward_with_combine(x, top_k_indices, top_k_weights)
     }
 }
 
@@ -752,11 +794,28 @@ impl DecoderLayer {
                 Exception::custom("gemma4: enable_moe_block=true requires moe_intermediate_size")
             })?;
             (
-                Some(Router::new(args.hidden_size, num_experts, top_k, args.rms_norm_eps)?),
+                Some(Router::new(
+                    args.hidden_size,
+                    num_experts,
+                    top_k,
+                    args.rms_norm_eps,
+                )?),
                 Some(Experts::new(args.hidden_size, moe_int, num_experts)?),
-                Some(nn::RmsNormBuilder::new(args.hidden_size).eps(args.rms_norm_eps).build()?),
-                Some(nn::RmsNormBuilder::new(args.hidden_size).eps(args.rms_norm_eps).build()?),
-                Some(nn::RmsNormBuilder::new(args.hidden_size).eps(args.rms_norm_eps).build()?),
+                Some(
+                    nn::RmsNormBuilder::new(args.hidden_size)
+                        .eps(args.rms_norm_eps)
+                        .build()?,
+                ),
+                Some(
+                    nn::RmsNormBuilder::new(args.hidden_size)
+                        .eps(args.rms_norm_eps)
+                        .build()?,
+                ),
+                Some(
+                    nn::RmsNormBuilder::new(args.hidden_size)
+                        .eps(args.rms_norm_eps)
+                        .build()?,
+                ),
             )
         } else {
             (None, None, None, None, None)
@@ -766,12 +825,20 @@ impl DecoderLayer {
             let pl = args.hidden_size_per_layer_input;
             (
                 Some(MaybeQuantized::Original(
-                    nn::LinearBuilder::new(args.hidden_size, pl).bias(false).build()?,
+                    nn::LinearBuilder::new(args.hidden_size, pl)
+                        .bias(false)
+                        .build()?,
                 )),
                 Some(MaybeQuantized::Original(
-                    nn::LinearBuilder::new(pl, args.hidden_size).bias(false).build()?,
+                    nn::LinearBuilder::new(pl, args.hidden_size)
+                        .bias(false)
+                        .build()?,
                 )),
-                Some(nn::RmsNormBuilder::new(args.hidden_size).eps(args.rms_norm_eps).build()?),
+                Some(
+                    nn::RmsNormBuilder::new(args.hidden_size)
+                        .eps(args.rms_norm_eps)
+                        .build()?,
+                ),
             )
         } else {
             (None, None, None)
@@ -820,14 +887,17 @@ impl DecoderLayer {
         let residual = x.clone();
 
         let h_pre = self.input_layernorm.forward(x)?;
-        let AttentionOut { h, shared_kv: kv_out, offset: off_out } =
-            self.self_attn.attend(AttentionInput {
-                x: &h_pre,
-                mask,
-                cache,
-                shared_kv,
-                offset,
-            })?;
+        let AttentionOut {
+            h,
+            shared_kv: kv_out,
+            offset: off_out,
+        } = self.self_attn.attend(AttentionInput {
+            x: &h_pre,
+            mask,
+            cache,
+            shared_kv,
+            offset,
+        })?;
         let h = self.post_attention_layernorm.forward(&h)?;
         let h = clip_residual(&residual, &h)?;
 
@@ -888,7 +958,11 @@ impl DecoderLayer {
                 &ff_out,
                 self.layer_scalar.as_ref(),
             )?;
-            return Ok(AttentionOut { h, shared_kv: kv_out, offset: off_out });
+            return Ok(AttentionOut {
+                h,
+                shared_kv: kv_out,
+                offset: off_out,
+            });
         }
 
         let mut h = clip_residual(&residual, &ff_out)?;
@@ -911,7 +985,11 @@ impl DecoderLayer {
 
         h = h.multiply(self.layer_scalar.as_ref())?;
 
-        Ok(AttentionOut { h, shared_kv: kv_out, offset: off_out })
+        Ok(AttentionOut {
+            h,
+            shared_kv: kv_out,
+            offset: off_out,
+        })
     }
 }
 
@@ -1164,9 +1242,8 @@ where
 
             let cache_slot = cache.get_mut(i).and_then(|c| c.as_mut());
             let pli_slice = per_layer_inputs.as_ref().map(|v| &v[i]);
-            let out = layers[i].forward_layer::<C>(
-                &h, mask, cache_slot, shared_kv, offset_in, pli_slice,
-            )?;
+            let out = layers[i]
+                .forward_layer::<C>(&h, mask, cache_slot, shared_kv, offset_in, pli_slice)?;
             h = out.h;
             intermediates[i] = Some((out.shared_kv.0, out.shared_kv.1, out.offset));
         }

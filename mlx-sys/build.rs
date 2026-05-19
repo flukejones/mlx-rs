@@ -7,7 +7,6 @@
     reason = "build script: cargo:* directives go to stdout"
 )]
 
-
 use cmake::Config;
 use std::{
     env, fs,
@@ -31,7 +30,11 @@ use std::{
 fn ensure_mlx_src() -> PathBuf {
     if let Some(dir) = env::var_os("MLX_RS_SRC_DIR") {
         let path = PathBuf::from(dir);
-        assert!(path.is_dir(), "MLX_RS_SRC_DIR={} is not a directory", path.display());
+        assert!(
+            path.is_dir(),
+            "MLX_RS_SRC_DIR={} is not a directory",
+            path.display()
+        );
         return path;
     }
 
@@ -69,7 +72,11 @@ fn workspace_root() -> PathBuf {
                 return dir;
             }
         }
-        assert!(dir.pop(), "workspace root not found from {}", env::var("CARGO_MANIFEST_DIR").unwrap());
+        assert!(
+            dir.pop(),
+            "workspace root not found from {}",
+            env::var("CARGO_MANIFEST_DIR").unwrap()
+        );
     }
 }
 
@@ -78,8 +85,7 @@ fn workspace_root() -> PathBuf {
 /// time TOML dependency.
 fn read_workspace_mlx_pin() -> (String, String) {
     let toml = workspace_root().join("Cargo.toml");
-    let body = fs::read_to_string(&toml)
-        .unwrap_or_else(|e| panic!("read {}: {e}", toml.display()));
+    let body = fs::read_to_string(&toml).unwrap_or_else(|e| panic!("read {}: {e}", toml.display()));
     let mut in_section = false;
     let mut version = None::<String>;
     let mut sha = None::<String>;
@@ -112,7 +118,8 @@ fn parse_quoted_value(rest: &str) -> String {
     inner
         .split_once('"')
         .map(|(v, _)| v)
-        .unwrap_or(inner).to_owned()
+        .unwrap_or(inner)
+        .to_owned()
 }
 
 fn fetch_mlx_tarball(sha: &str, cache_root: &Path) -> Result<(), String> {
@@ -207,9 +214,8 @@ fn find_clang_rt_path() -> Option<String> {
     }
 
     let developer_dir = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let toolchain_base = format!(
-        "{developer_dir}/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang"
-    );
+    let toolchain_base =
+        format!("{developer_dir}/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang");
 
     // Find the clang version directory (it varies by Xcode version)
     let clang_dir = fs::read_dir(&toolchain_base).ok()?;
@@ -231,7 +237,10 @@ fn build_and_link_mlx_c() {
     config.very_verbose(true);
     config.define("CMAKE_INSTALL_PREFIX", ".");
     // Skip cmake's git-clone of mlx; reuse the shared cache.
-    config.define("FETCHCONTENT_SOURCE_DIR_MLX", mlx_src.to_string_lossy().as_ref());
+    config.define(
+        "FETCHCONTENT_SOURCE_DIR_MLX",
+        mlx_src.to_string_lossy().as_ref(),
+    );
 
     // Use Xcode's clang to ensure compatibility with the macOS SDK
     config.define("CMAKE_C_COMPILER", "/usr/bin/cc");

@@ -124,7 +124,10 @@ pub fn merge_input_ids_with_image_features(
 ///   axis. Text tokens advance all three axes uniformly; image tokens
 ///   advance independently per axis.
 /// - `rope_delta`: `max(position_ids) + 1 - S`.
-#[allow(clippy::type_complexity, reason = "rope-index tuple matches Python mlx_vlm reference")]
+#[allow(
+    clippy::type_complexity,
+    reason = "rope-index tuple matches Python mlx_vlm reference"
+)]
 pub fn get_rope_index_single_batch(
     input_ids: &[i32],
     image_grid_thw: &[[i32; 3]],

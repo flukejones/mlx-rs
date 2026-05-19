@@ -779,7 +779,7 @@ fn gather_nd<'a>(
     last_array_or_index: usize,
     stream: impl AsRef<Stream>,
 ) -> Result<(usize, Array)> {
-    use ArrayIndexOp::{TakeIndex, Slice, TakeArray, TakeArrayRef, Ellipsis, ExpandDims};
+    use ArrayIndexOp::{Ellipsis, ExpandDims, Slice, TakeArray, TakeArrayRef, TakeIndex};
 
     let mut max_dims = 0;
     let mut slice_count = 0;
@@ -931,7 +931,7 @@ fn get_item<'a>(
     index: impl ArrayIndex<'a>,
     stream: impl AsRef<Stream>,
 ) -> Result<Array> {
-    use ArrayIndexOp::{Ellipsis, TakeIndex, TakeArray, TakeArrayRef, Slice, ExpandDims};
+    use ArrayIndexOp::{Ellipsis, ExpandDims, Slice, TakeArray, TakeArrayRef, TakeIndex};
 
     match index.index_op() {
         Ellipsis => Ok(src.deep_clone()),
@@ -950,7 +950,7 @@ fn get_item_nd(
     operations: &[ArrayIndexOp<'_>],
     stream: impl AsRef<Stream>,
 ) -> Result<Array> {
-    use ArrayIndexOp::{Ellipsis, ExpandDims, Slice, TakeIndex, TakeArray, TakeArrayRef};
+    use ArrayIndexOp::{Ellipsis, ExpandDims, Slice, TakeArray, TakeArrayRef, TakeIndex};
 
     let mut src = Cow::Borrowed(src);
 

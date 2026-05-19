@@ -29,8 +29,8 @@ pub mod rotation;
 pub mod trait_def;
 
 pub use io::{
-    can_trim_prompt_cache, load_prompt_cache, make_prompt_cache, save_prompt_cache, trim_prompt_cache,
-    LoadedCache,
+    can_trim_prompt_cache, load_prompt_cache, make_prompt_cache, save_prompt_cache,
+    trim_prompt_cache, LoadedCache,
 };
 // `kernels::*` is accessible via `crate::cache::kernels::...` directly.
 // Removed the pub(crate) re-export — only one consumer (qwen3_5/text.rs)
@@ -49,7 +49,10 @@ mod tests {
     use std::collections::HashMap;
 
     use mlx_rs::{
-        ops::{concatenate_axis, indexing::{Ellipsis, IndexOp}},
+        ops::{
+            concatenate_axis,
+            indexing::{Ellipsis, IndexOp},
+        },
         transforms::eval,
         Array, Dtype,
     };

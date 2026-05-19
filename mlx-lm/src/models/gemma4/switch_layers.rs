@@ -69,12 +69,7 @@ impl SwitchLinear {
 
     /// Dense `gather_mm`-based apply. `x` carries the per-token leading
     /// dims plus `[..., 1, 1, input_dims]`; `indices.shape = [..., top_k]`.
-    pub fn apply(
-        &self,
-        x: &Array,
-        indices: &Array,
-        sorted: bool,
-    ) -> Result<Array, Exception> {
+    pub fn apply(&self, x: &Array, indices: &Array, sorted: bool) -> Result<Array, Exception> {
         let w = swap_axes(self.weight.as_ref(), -1, -2)?;
         let mut y = gather_mm(x, &w, None, Some(indices), Some(sorted))?;
         if let Some(b) = self.bias.as_ref() {
@@ -137,12 +132,7 @@ impl QuantizedSwitchLinear {
         })
     }
 
-    pub fn apply(
-        &self,
-        x: &Array,
-        indices: &Array,
-        sorted: bool,
-    ) -> Result<Array, Exception> {
+    pub fn apply(&self, x: &Array, indices: &Array, sorted: bool) -> Result<Array, Exception> {
         // gather_qmm(x, w, scales, biases, lhs=None, rhs=indices, transpose=true, ...)
         let mut y = gather_qmm(
             x,
@@ -207,12 +197,18 @@ impl SwitchGLU {
         bias: bool,
     ) -> Result<Self, Exception> {
         Ok(Self {
-            gate_up_proj: MaybeQuantized::Original(
-                SwitchLinear::new(input_dims, 2 * hidden_dims, num_experts, bias)?,
-            ),
-            down_proj: MaybeQuantized::Original(
-                SwitchLinear::new(hidden_dims, input_dims, num_experts, bias)?,
-            ),
+            gate_up_proj: MaybeQuantized::Original(SwitchLinear::new(
+                input_dims,
+                2 * hidden_dims,
+                num_experts,
+                bias,
+            )?),
+            down_proj: MaybeQuantized::Original(SwitchLinear::new(
+                hidden_dims,
+                input_dims,
+                num_experts,
+                bias,
+            )?),
             hidden_dims,
             geglu_cache: GegluCache::default(),
             top_k_arr: OnceLock::new(),

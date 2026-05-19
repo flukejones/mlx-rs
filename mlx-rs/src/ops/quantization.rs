@@ -75,7 +75,10 @@ pub fn quantize_device(
 /// Perform the matrix multiplication with the quantized matrix `w`. The quantization uses one
 /// floating point scale and bias per `group_size` of elements. Each element in `w` takes `bits`
 /// bits and is packed in an unsigned 32 bit integer.
-#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+)]
 #[generate_macro]
 #[default_device]
 pub fn quantized_matmul_device<'a>(
@@ -165,7 +168,10 @@ pub fn dequantize_device<'a>(
 /// - `group_size`: The quantization group size (default: 64)
 /// - `bits`: The number of bits per element (default: 4)
 /// - `sorted_indices`: If true, indicates the indices are sorted (default: false)
-#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+)]
 #[generate_macro]
 #[default_device]
 pub fn gather_qmm_device<'b, 'lhs, 'rhs>(
@@ -237,7 +243,10 @@ pub fn gather_qmm_device<'b, 'lhs, 'rhs>(
 /// - `bits`: The number of bits per element (default depends on mode: 4 for nvfp4, 8 for mxfp8)
 /// - `mode`: Quantization mode - either "nvfp4" or "mxfp8" (default: "nvfp4")
 #[cfg(not(target_os = "macos"))]
-#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+)]
 #[generate_macro]
 #[default_device]
 pub fn qqmm_device<'a>(

@@ -488,9 +488,7 @@ fn main() {
     println!("\x1b[33mRestoring {current_tag}...\x1b[0m");
     checkout_tag(&mlx_c_dir, &current_tag);
 
-    println!(
-        "\n\x1b[33m=== Bindings Diff ({current_tag} -> {target_tag}) ===\x1b[0m"
-    );
+    println!("\n\x1b[33m=== Bindings Diff ({current_tag} -> {target_tag}) ===\x1b[0m");
 
     if current_bindings == target_bindings {
         println!("\n\x1b[32mNo API changes detected!\x1b[0m");

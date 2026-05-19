@@ -270,9 +270,7 @@ pub fn load_model_chat_template_from_file(
 /// payload. These map to jinja variables like `bos_token`, `eos_token`,
 /// `pad_token` referenced by HF chat templates. Nested `AddedToken`
 /// objects are unwrapped via the `"content"` field.
-pub fn load_special_tokens_from_str(
-    content: &str,
-) -> std::io::Result<HashMap<String, String>> {
+pub fn load_special_tokens_from_str(content: &str) -> std::io::Result<HashMap<String, String>> {
     let v: serde_json::Value = serde_json::from_str(content)?;
     let Some(obj) = v.as_object() else {
         return Ok(Default::default());
@@ -501,11 +499,15 @@ where
 
     let template = match chat_template_id {
         Some(chat_template_id) => env.get_template(chat_template_id)?,
-        None => if let Ok(template) = env.get_template(model_id) { template } else {
-            env.add_template_owned(model_id.to_owned(), model_template)?;
-            env.get_template(model_id)
-                .expect("Newly added template must be present")
-        },
+        None => {
+            if let Ok(template) = env.get_template(model_id) {
+                template
+            } else {
+                env.add_template_owned(model_id.to_owned(), model_template)?;
+                env.get_template(model_id)
+                    .expect("Newly added template must be present")
+            }
+        }
     };
 
     // TODO: handle tool

@@ -240,7 +240,9 @@ impl Attention {
         // Matches mlx-vlm Python: `tile(expand_dims(arange(offset, offset+L), 0), (3, 1, 1))`.
         let offset = cache.as_ref().map(|c| c.offset()).unwrap_or(0);
         let owned_pos;
-        let pos: &Array = if let Some(p) = position_ids { p } else {
+        let pos: &Array = if let Some(p) = position_ids {
+            p
+        } else {
             let range = arange::<_, i32>(offset, offset + l, None)?;
             let range = reshape(&range, &[1, l])?;
             owned_pos = broadcast_to(&range, &[b, l])?;
@@ -263,9 +265,8 @@ impl Attention {
         // the kernel's `causal=true` semantics rather than feeding the
         // boolean tensor through. `qL_off = offset` shifts the diagonal
         // for prefill calls that continue past prior decode tokens.
-        let steel_eligible = self.use_steel_prefill
-            && l > 1
-            && STEEL_SUPPORTED_HEAD_DIMS.contains(&self.head_dim);
+        let steel_eligible =
+            self.use_steel_prefill && l > 1 && STEEL_SUPPORTED_HEAD_DIMS.contains(&self.head_dim);
 
         let output = if steel_eligible {
             steel_attention_dispatch(
@@ -494,7 +495,9 @@ mod tests {
 
         let mut a_steel = a_ref;
         a_steel.set_use_steel_prefill(true);
-        let routed = a_steel.forward(&prompt, Some(&mask_4d), None, None).unwrap();
+        let routed = a_steel
+            .forward(&prompt, Some(&mask_4d), None, None)
+            .unwrap();
 
         eval([&baseline, &routed]).unwrap();
         let diff = baseline

@@ -273,10 +273,7 @@ pub struct FusedQsdpaInputs<'a> {
 
 /// Dispatch the fused decode kernel. Returns `[B, H_q, 1, D]` in the
 /// same dtype as `q`.
-pub fn fused_qsdpa_decode(
-    kernel: &MetalKernel,
-    inputs: FusedQsdpaInputs<'_>,
-) -> Result<Array> {
+pub fn fused_qsdpa_decode(kernel: &MetalKernel, inputs: FusedQsdpaInputs<'_>) -> Result<Array> {
     let q_shape = inputs.q.shape();
     if q_shape.len() != 4 {
         return Err(Exception::custom(format!(
@@ -333,7 +330,9 @@ pub fn fused_qsdpa_decode(
 
     // Dummy mask if not provided (kernel reads but `mask_present` gates the load).
     let dummy_mask;
-    let mask_arr: &Array = if let Some(m) = inputs.mask { m } else {
+    let mask_arr: &Array = if let Some(m) = inputs.mask {
+        m
+    } else {
         dummy_mask = Array::zeros::<u8>(&[1])?.as_dtype(Dtype::Bool)?;
         &dummy_mask
     };
@@ -391,7 +390,13 @@ mod tests {
     use mlx_rs::transforms::eval;
 
     fn max_abs(a: &Array, b: &Array) -> f32 {
-        a.subtract(b).unwrap().abs().unwrap().max(None).unwrap().item::<f32>()
+        a.subtract(b)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max(None)
+            .unwrap()
+            .item::<f32>()
     }
 
     /// Reference path: full-precision dequant then standard SDPA math.
@@ -408,9 +413,7 @@ mod tests {
         let n_rep = h_q / h_kv;
         let q_reshape = if n_rep > 1 {
             let s = q_scaled.shape().to_vec();
-            q_scaled
-                .reshape(&[s[0], h_kv, n_rep, s[2], s[3]])
-                .unwrap()
+            q_scaled.reshape(&[s[0], h_kv, n_rep, s[2], s[3]]).unwrap()
         } else {
             q_scaled.expand_dims(2).unwrap()
         };
@@ -440,11 +443,21 @@ mod tests {
         reason = "reference kernel mirrors Metal indexing for debugging clarity"
     )]
     fn kernel_scalar_reference(
-        b: i32, h_q: i32, h_kv: i32, n_k: i32, d: i32,
-        bits: i32, group_size: i32,
-        q: &[f32], scale: f32,
-        k_wq: &[u32], k_scales: &[f32], k_biases: &[f32],
-        v_wq: &[u32], v_scales: &[f32], v_biases: &[f32],
+        b: i32,
+        h_q: i32,
+        h_kv: i32,
+        n_k: i32,
+        d: i32,
+        bits: i32,
+        group_size: i32,
+        q: &[f32],
+        scale: f32,
+        k_wq: &[u32],
+        k_scales: &[f32],
+        k_biases: &[f32],
+        v_wq: &[u32],
+        v_scales: &[f32],
+        v_biases: &[f32],
     ) -> Vec<f32> {
         let pack_factor = (32 / bits) as usize;
         let groups_per = (d / group_size) as usize;
@@ -498,7 +511,9 @@ mod tests {
                     let mut acc = 0.0f32;
                     for k_idx in 0..nk {
                         let wgt = scores[k_idx] * inv_l;
-                        if wgt == 0.0 { continue; }
+                        if wgt == 0.0 {
+                            continue;
+                        }
                         let v_wq_base = (bh_kv * nk + k_idx) * words_per;
                         let v_meta_base = (bh_kv * nk + k_idx) * groups_per;
                         let w = v_wq[v_wq_base + word_idx];
@@ -538,10 +553,21 @@ mod tests {
         // Scalar mirror of the kernel formula (reads packed uint32 bytes).
         eval([&q]).unwrap();
         let scalar_out = kernel_scalar_reference(
-            b, h_q, h_kv, n_k, d, bits, group_size,
-            q.as_slice::<f32>(), scale,
-            k_wq.as_slice::<u32>(), k_scales.as_slice::<f32>(), k_biases.as_slice::<f32>(),
-            v_wq.as_slice::<u32>(), v_scales.as_slice::<f32>(), v_biases.as_slice::<f32>(),
+            b,
+            h_q,
+            h_kv,
+            n_k,
+            d,
+            bits,
+            group_size,
+            q.as_slice::<f32>(),
+            scale,
+            k_wq.as_slice::<u32>(),
+            k_scales.as_slice::<f32>(),
+            k_biases.as_slice::<f32>(),
+            v_wq.as_slice::<u32>(),
+            v_scales.as_slice::<f32>(),
+            v_biases.as_slice::<f32>(),
         );
 
         let kernel = make_fused_qsdpa_kernel().unwrap();
@@ -583,11 +609,16 @@ mod tests {
              | kernel vs mlx-dequant ref: {err_dq:.5}"
         );
         if max_err_scalar > 1e-3 {
-            eprintln!("  worst idx {worst_i}: kernel={} scalar={}",
-                      got_vec[worst_i], scalar_out[worst_i]);
+            eprintln!(
+                "  worst idx {worst_i}: kernel={} scalar={}",
+                got_vec[worst_i], scalar_out[worst_i]
+            );
             // Print first 8 vals
             eprintln!("  first 8 kernel: {:?}", &got_vec[..8.min(got_vec.len())]);
-            eprintln!("  first 8 scalar: {:?}", &scalar_out[..8.min(scalar_out.len())]);
+            eprintln!(
+                "  first 8 scalar: {:?}",
+                &scalar_out[..8.min(scalar_out.len())]
+            );
         }
 
         let tol = 5e-3 * (n_k as f32).sqrt();
@@ -610,8 +641,16 @@ mod tests {
         let (wq, scales, biases) = quantize(&arr, 64, 4).unwrap();
         eval([&wq, &scales, &biases]).unwrap();
         eprintln!("wq:      shape={:?} strides={:?}", wq.shape(), wq.strides());
-        eprintln!("scales:  shape={:?} strides={:?}", scales.shape(), scales.strides());
-        eprintln!("biases:  shape={:?} strides={:?}", biases.shape(), biases.strides());
+        eprintln!(
+            "scales:  shape={:?} strides={:?}",
+            scales.shape(),
+            scales.strides()
+        );
+        eprintln!(
+            "biases:  shape={:?} strides={:?}",
+            biases.shape(),
+            biases.strides()
+        );
     }
 
     /// Verify mlx's affine-quantize layout matches what the kernel
@@ -627,16 +666,20 @@ mod tests {
         let words = wq.as_slice::<u32>();
         let sc = scales.as_slice::<f32>()[0];
         let bi = biases.as_slice::<f32>()[0];
-        eprintln!("wq[0..4]={:?} sc={sc} bi={bi}",
-                  words.iter().map(|w| format!("{w:#010x}")).collect::<Vec<_>>());
+        eprintln!(
+            "wq[0..4]={:?} sc={sc} bi={bi}",
+            words
+                .iter()
+                .map(|w| format!("{w:#010x}"))
+                .collect::<Vec<_>>()
+        );
         // Decode using little-endian-per-uint32 assumption.
         for i in 0..32usize {
             let w = words[i / 8];
             let slot = i % 8;
             let code = (w >> (slot * 4)) & 0xF;
             let val = (code as f32) * sc + bi;
-            eprintln!("  i={i:2}: code={code:2} val={val:7.3} (expected={})",
-                      v[i]);
+            eprintln!("  i={i:2}: code={code:2} val={val:7.3} (expected={})", v[i]);
         }
         // Round-trip via mlx dequantize.
         let dq = dequantize(&wq, &scales, &biases, 32, 4).unwrap();

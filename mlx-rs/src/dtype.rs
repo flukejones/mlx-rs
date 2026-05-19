@@ -120,7 +120,10 @@ impl TypePromotion for Dtype {
         reason = "explicit pairwise promotion table mirroring Python; merging arms would obscure the lookup semantics"
     )]
     fn promote_with(self, other: Self) -> Self {
-        use crate::dtype::Dtype::{Bool, Uint8, Uint16, Uint32, Uint64, Int8, Int16, Int32, Int64, Float32, Float16, Bfloat16, Complex64, Float64};
+        use crate::dtype::Dtype::{
+            Bfloat16, Bool, Complex64, Float16, Float32, Float64, Int16, Int32, Int64, Int8,
+            Uint16, Uint32, Uint64, Uint8,
+        };
         match (self, other) {
             // Boolean promotions
             (Bool, Bool) => Bool,

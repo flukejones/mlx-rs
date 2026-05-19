@@ -270,8 +270,14 @@ fn bench_qwen3_group(
     group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
 
     for (label, prompt) in [
-        (BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32), short),
-        (BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32), long),
+        (
+            BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32),
+            short,
+        ),
+        (
+            BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32),
+            long,
+        ),
     ] {
         let prompt_len = prompt.shape().last().copied().unwrap_or(0) as u64;
         group.throughput(Throughput::Elements(prompt_len));
@@ -364,8 +370,14 @@ fn maybe_bench_llama(c: &mut Criterion, label: &str, repo_id: &str) {
     group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
 
     for (id, prompt) in [
-        (BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32), &short),
-        (BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32), &long),
+        (
+            BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32),
+            &short,
+        ),
+        (
+            BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32),
+            &long,
+        ),
     ] {
         let prompt_len = prompt.shape().last().copied().unwrap_or(0) as u64;
         group.throughput(Throughput::Elements(prompt_len));
@@ -662,8 +674,16 @@ fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
     group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
 
     for (cell_name, id, prompt) in [
-        ("prefill_short", BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32), &short),
-        ("prefill_long", BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32), &long),
+        (
+            "prefill_short",
+            BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32),
+            &short,
+        ),
+        (
+            "prefill_long",
+            BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32),
+            &long,
+        ),
     ] {
         let prompt_len = prompt.shape().last().copied().unwrap_or(0) as u64;
         group.throughput(Throughput::Elements(prompt_len));
@@ -683,8 +703,16 @@ fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
 
     group.throughput(Throughput::Elements(decode_steps as u64));
     for (cell_name, id, prompt) in [
-        ("decode_short", BenchmarkId::new("decode_short", decode_steps), &short),
-        ("decode_long", BenchmarkId::new("decode_long", decode_steps), &long),
+        (
+            "decode_short",
+            BenchmarkId::new("decode_short", decode_steps),
+            &short,
+        ),
+        (
+            "decode_long",
+            BenchmarkId::new("decode_long", decode_steps),
+            &long,
+        ),
     ] {
         let tag = format!("gemma4_{label}/{cell_name}");
         group.bench_function(id, |b| {

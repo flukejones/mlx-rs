@@ -22,14 +22,26 @@ pub struct ProportionalRope {
 }
 
 impl ModuleParameters for ProportionalRope {
-    fn num_parameters(&self) -> usize { 0 }
+    fn num_parameters(&self) -> usize {
+        0
+    }
     fn freeze_parameters(&mut self, _r: bool) {}
     fn unfreeze_parameters(&mut self, _r: bool) {}
-    fn parameters(&self) -> ModuleParamRef<'_> { ModuleParamRef::default() }
-    fn parameters_mut(&mut self) -> ModuleParamMut<'_> { ModuleParamMut::default() }
-    fn trainable_parameters(&self) -> ModuleParamRef<'_> { ModuleParamRef::default() }
-    fn all_frozen(&self) -> Option<bool> { None }
-    fn any_frozen(&self) -> Option<bool> { None }
+    fn parameters(&self) -> ModuleParamRef<'_> {
+        ModuleParamRef::default()
+    }
+    fn parameters_mut(&mut self) -> ModuleParamMut<'_> {
+        ModuleParamMut::default()
+    }
+    fn trainable_parameters(&self) -> ModuleParamRef<'_> {
+        ModuleParamRef::default()
+    }
+    fn all_frozen(&self) -> Option<bool> {
+        None
+    }
+    fn any_frozen(&self) -> Option<bool> {
+        None
+    }
 }
 
 impl ProportionalRope {
@@ -56,7 +68,12 @@ impl ProportionalRope {
         } else {
             rotated_freqs
         };
-        Ok(Self { dims, rotated_dims, traditional, freqs })
+        Ok(Self {
+            dims,
+            rotated_dims,
+            traditional,
+            freqs,
+        })
     }
 }
 

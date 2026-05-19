@@ -99,11 +99,8 @@ impl SafeTensors {
             let mut key: *const ::std::os::raw::c_char = null_mut();
             let mut value: *const ::std::os::raw::c_char = null_mut();
             loop {
-                let status = mlx_sys::mlx_map_string_to_string_iterator_next(
-                    &mut key,
-                    &mut value,
-                    iterator,
-                );
+                let status =
+                    mlx_sys::mlx_map_string_to_string_iterator_next(&mut key, &mut value, iterator);
 
                 match status {
                     SUCCESS => {

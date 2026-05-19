@@ -13,7 +13,10 @@
 
 // See `mlx_lm::activations` for the rationale on the fn-item-to-fn-pointer
 // coercion required at the `Compile::compile_with_id` call site.
-#![allow(trivial_casts, reason = "fn-item ZST → fn-pointer coercion for shared compile cache")]
+#![allow(
+    trivial_casts,
+    reason = "fn-item ZST → fn-pointer coercion for shared compile cache"
+)]
 
 use mlx_rs::{
     error::Exception,
@@ -157,7 +160,10 @@ pub fn step_ops(
 /// Inputs match `gated_delta_ops` in the Python reference. `state` is
 /// optional — `None` initialises a zero state of dtype float32. Returns
 /// `(y, final_state)`.
-#[allow(clippy::too_many_arguments, reason = "GDN op signature mirrors Python mlx_lm.models.gated_delta")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "GDN op signature mirrors Python mlx_lm.models.gated_delta"
+)]
 pub fn gated_delta_update_ops(
     compute_g_cache: &mut ComputeGCache,
     q: &Array,
@@ -188,7 +194,9 @@ pub fn gated_delta_update_ops(
     let g = compute_g(compute_g_cache, a_log, a, dt_bias)?;
 
     let owned_state;
-    let state = if let Some(s) = state { s.clone() } else {
+    let state = if let Some(s) = state {
+        s.clone()
+    } else {
         owned_state = zeros::<f32>(&[batch, hv, dv, dk])?;
         owned_state
     };
@@ -247,7 +255,10 @@ pub fn make_gated_delta_kernel() -> Result<MetalKernel, Exception> {
 /// Metal-kernel fast path for the gated-delta T-step scan. Mirrors
 /// `mlx_lm.models.gated_delta._make_gated_delta_kernel` from the Python
 /// reference, plumbed through `mlx_rs::fast::metal_kernel`.
-#[allow(clippy::too_many_arguments, reason = "GDN op signature mirrors Python mlx_lm.models.gated_delta")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "GDN op signature mirrors Python mlx_lm.models.gated_delta"
+)]
 pub fn gated_delta_update_metal(
     kernel: &MetalKernel,
     compute_g_cache: &mut ComputeGCache,
@@ -283,7 +294,9 @@ pub fn gated_delta_update_metal(
     let beta = sigmoid(b)?;
     let g = compute_g(compute_g_cache, a_log, a, dt_bias)?;
     let owned_state;
-    let state_in: &Array = if let Some(s) = state { s } else {
+    let state_in: &Array = if let Some(s) = state {
+        s
+    } else {
         owned_state = zeros::<f32>(&[batch, hv, dv, dk])?;
         &owned_state
     };
@@ -450,9 +463,10 @@ mod tests {
         let dt_bias = rand(&[hv]);
 
         let mut cache = ComputeGCache::default();
-        let (y, state) =
-            gated_delta_update_ops(&mut cache, &q, &k, &v, &a, &bb, &a_log, &dt_bias, None, None)
-                .unwrap();
+        let (y, state) = gated_delta_update_ops(
+            &mut cache, &q, &k, &v, &a, &bb, &a_log, &dt_bias, None, None,
+        )
+        .unwrap();
         assert_eq!(y.shape(), &[b, t, hv, dv]);
         assert_eq!(state.shape(), &[b, hv, dv, dk]);
     }
@@ -479,9 +493,10 @@ mod tests {
         let dt_bias = Array::from_slice(&[0.0_f32], &[hv]);
 
         let mut cache = ComputeGCache::default();
-        let (y, _state) =
-            gated_delta_update_ops(&mut cache, &q, &k, &v, &a, &bb, &a_log, &dt_bias, None, None)
-                .unwrap();
+        let (y, _state) = gated_delta_update_ops(
+            &mut cache, &q, &k, &v, &a, &bb, &a_log, &dt_bias, None, None,
+        )
+        .unwrap();
         let y_flat = flatten_f32(&y);
         // Manual derivation:
         //   g ≈ 1, beta = 0.5, state starts zero -> kv_mem = 0

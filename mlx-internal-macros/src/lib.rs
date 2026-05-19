@@ -60,7 +60,10 @@ pub fn default_device(attr: TokenStream, item: TokenStream) -> TokenStream {
     let original_fn = input_fn.clone();
 
     // Ensure function name convention
-    assert!(input_fn.sig.ident.to_string().contains("_device"), "Function name must end with '_device'");
+    assert!(
+        input_fn.sig.ident.to_string().contains("_device"),
+        "Function name must end with '_device'"
+    );
     let new_fn_name = format_ident!("{}", &input_fn.sig.ident.to_string().replace("_device", ""));
     input_fn.sig.ident = new_fn_name;
 
@@ -306,8 +309,8 @@ pub fn derive_buildable(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive_builder(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let builder = derive_builder::expand_derive_builder(input)
-        .expect("Builder derive: expansion failed");
+    let builder =
+        derive_builder::expand_derive_builder(input).expect("Builder derive: expansion failed");
     TokenStream::from(builder)
 }
 

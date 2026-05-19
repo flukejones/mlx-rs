@@ -89,7 +89,10 @@ mod tests {
         let b = generate_rotation_matrix(64, 2).unwrap();
         let diff = a.subtract(&b).unwrap();
         let err = max_abs(&diff);
-        assert!(err > 0.1, "different seeds should differ visibly; got {err}");
+        assert!(
+            err > 0.1,
+            "different seeds should differ visibly; got {err}"
+        );
     }
 
     /// Spot-check that the construction produces a finite entry — guards
