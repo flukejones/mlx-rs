@@ -240,7 +240,12 @@ where
     /// Extra jinja variables (`bos_token`, `eos_token`, etc.) merged
     /// into the template context. Required for HF templates that
     /// reference bare `{{ bos_token }}` (gemma 4, llama 3, qwen 3).
-    pub special_tokens: std::collections::HashMap<String, String>,
+    pub special_tokens: HashMap<String, String>,
+    /// Extra template kwargs merged into the jinja context. HF
+    /// templates expose model-specific switches here, e.g. qwen 3 /
+    /// qwen 3.5 / deepseek-r1 read `{{ enable_thinking }}` to gate
+    /// the chain-of-thought scaffold.
+    pub template_kwargs: HashMap<String, serde_json::Value>,
 }
 
 pub fn load_model_chat_template_from_str(content: &str) -> std::io::Result<Option<String>> {
@@ -267,13 +272,13 @@ pub fn load_model_chat_template_from_file(
 /// objects are unwrapped via the `"content"` field.
 pub fn load_special_tokens_from_str(
     content: &str,
-) -> std::io::Result<std::collections::HashMap<String, String>> {
+) -> std::io::Result<HashMap<String, String>> {
     let v: serde_json::Value = serde_json::from_str(content)?;
     let obj = match v.as_object() {
         Some(o) => o,
         None => return Ok(Default::default()),
     };
-    let mut out = std::collections::HashMap::new();
+    let mut out = HashMap::new();
     for (k, val) in obj {
         if !k.ends_with("_token") {
             continue;
@@ -295,7 +300,7 @@ pub fn load_special_tokens_from_str(
 
 pub fn load_special_tokens_from_file(
     file: impl AsRef<Path>,
-) -> std::io::Result<std::collections::HashMap<String, String>> {
+) -> std::io::Result<HashMap<String, String>> {
     let content = read_to_string(file)?;
     load_special_tokens_from_str(&content)
 }
@@ -489,6 +494,7 @@ where
         add_generation_prompt,
         continue_final_message,
         special_tokens,
+        template_kwargs,
     } = args;
 
     let add_generation_prompt = add_generation_prompt.unwrap_or(false);
@@ -517,6 +523,7 @@ where
         Some(add_generation_prompt),
         Some(continue_final_message),
         &special_tokens,
+        &template_kwargs,
     )
 }
 
@@ -527,7 +534,8 @@ fn render_jinja_tempalte<'a, R, T>(
     documents: Option<&'a [Document]>,
     add_generation_prompt: Option<bool>,
     continue_final_message: Option<bool>,
-    special_tokens: &std::collections::HashMap<String, String>,
+    special_tokens: &HashMap<String, String>,
+    template_kwargs: &HashMap<String, serde_json::Value>,
 ) -> Result<Vec<String>, Error>
 where
     R: Serialize + 'a,
@@ -548,7 +556,8 @@ where
             add_generation_prompt => add_generation_prompt,
         };
         let tokens_ctx = minijinja::Value::from_serialize(special_tokens);
-        let ctx = minijinja::context!(..base_ctx, ..tokens_ctx);
+        let kwargs_ctx = minijinja::Value::from_serialize(template_kwargs);
+        let ctx = minijinja::context!(..base_ctx, ..tokens_ctx, ..kwargs_ctx);
         let mut rendered_chat = template.render(ctx)?;
 
         if continue_final_message {
@@ -626,6 +635,7 @@ mod tests {
             add_generation_prompt: None,
             continue_final_message: None,
             special_tokens: Default::default(),
+            template_kwargs: Default::default(),
         };
 
         let mut env = Environment::new();
@@ -663,6 +673,7 @@ mod tests {
             add_generation_prompt: None,
             continue_final_message: None,
             special_tokens: Default::default(),
+            template_kwargs: Default::default(),
         };
 
         let rendered_chat = tokenizer
@@ -698,6 +709,7 @@ mod tests {
             add_generation_prompt: None,
             continue_final_message: None,
             special_tokens: Default::default(),
+            template_kwargs: Default::default(),
         };
 
         let encodings = tokenizer

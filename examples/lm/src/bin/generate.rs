@@ -207,6 +207,7 @@ fn build_prompt(model_dir: &Path, user_message: &str, no_chat_template: bool) ->
         add_generation_prompt: Some(true),
         continue_final_message: None,
         special_tokens,
+        template_kwargs: Default::default(),
     };
     let encodings = tokenizer
         .apply_chat_template_and_encode(template, args)
