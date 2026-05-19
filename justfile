@@ -8,9 +8,11 @@ default:
 # --- one-time setup ---
 
 # Point git at .githooks/ for pre-commit + pre-push. Run once after clone.
+# Ensures the hook scripts are executable then sets `core.hooksPath`.
 install-hooks:
+	chmod +x .githooks/commit-msg .githooks/pre-commit .githooks/pre-push
 	git config core.hooksPath .githooks
-	@echo "git core.hooksPath -> .githooks"
+	@echo "git core.hooksPath -> .githooks (pre-commit + pre-push run cargo clippy --workspace -- -D warnings)"
 
 # --- check / fmt / lint ---
 
@@ -30,12 +32,12 @@ fmt:
 check-fmt:
 	cargo fmt --all -- --check
 
-# Workspace clippy, warnings only.
+# Workspace clippy with -D warnings. Matches the pre-commit / pre-push
+# hook semantics so `just lint` reproduces the gate locally.
 lint:
-	cargo clippy --workspace --all-targets -- -W clippy::all
+	cargo clippy --workspace --all-targets -- -D warnings
 
-# Clippy with -D warnings, scoped to one crate. Used by pre-commit hook.
-# Per-crate scope avoids upstream-main clippy debt (see CLAUDE.md).
+# Same as `lint` but scoped to one crate. Faster for iteration.
 lint-crate crate:
 	cargo clippy -p {{crate}} --all-targets -- -D warnings
 

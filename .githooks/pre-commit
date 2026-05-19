@@ -1,9 +1,8 @@
 #!/bin/sh
 # Pre-commit gate for mlx-rs.
 #
-# Runs clippy with -D warnings on every crate whose source files are
-# staged. Per-crate scope avoids being blocked by upstream-main clippy
-# debt that local branches inherit (see CLAUDE.md, project_upstream_clippy_debt).
+# Always runs `cargo clippy --workspace --all-targets -- -D warnings`.
+# The workspace is at 0 warnings/0 errors; the gate keeps it that way.
 #
 # rustfmt is intentionally commented out: the project is in heavy refactor
 # and a blanket fmt run reformats sibling modules outside the staged set.
@@ -36,26 +35,5 @@ fi
 # 	exit 1
 # fi
 
-# --- clippy per affected crate ---
-# Map staged paths to crate names and dedupe.
-CRATES=$(echo "$STAGED_RUST" | awk -F/ '
-	/^mlx-sys\//             { print "mlx-sys" }
-	/^mlx-rs\//              { print "mlx-rs" }
-	/^mlx-lm\//              { print "mlx-lm" }
-	/^mlx-lm-utils\//        { print "mlx-lm-utils" }
-	/^mlx-macros\//          { print "mlx-macros" }
-	/^mlx-internal-macros\// { print "mlx-internal-macros" }
-	/^mlx-tests\//           { print "mlx-tests" }
-	/^xtask\//               { print "xtask" }
-' | sort -u)
-
-if [ -z "$CRATES" ]; then
-	# Staged Rust lives only in examples/ or similar — skip the workspace
-	# clippy gate since examples have their own detached workspaces.
-	exit 0
-fi
-
-for crate in $CRATES; do
-	echo "+ cargo clippy -p $crate --all-targets -- -D warnings"
-	cargo clippy -p "$crate" --all-targets -- -D warnings
-done
+echo '+ cargo clippy --workspace --all-targets -- -D warnings'
+cargo clippy --workspace --all-targets -- -D warnings
