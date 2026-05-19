@@ -372,6 +372,7 @@ impl KeyValueCache for RotatingKVCache {
             );
         }
 
+        super::trait_def::assert_mask_matches_keys(mask, &k_full);
         scaled_dot_product_attention(
             queries.clone(),
             k_full,

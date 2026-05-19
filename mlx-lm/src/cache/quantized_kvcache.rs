@@ -518,6 +518,7 @@ impl KeyValueCache for QuantizedKVCache {
     ) -> Result<Array, Exception> {
         if !self.use_quantized_matmul {
             let (k_full, v_full) = self.update_and_fetch(keys, values)?;
+            super::trait_def::assert_mask_matches_keys(mask, &k_full);
             return scaled_dot_product_attention(
                 queries.clone(),
                 k_full,

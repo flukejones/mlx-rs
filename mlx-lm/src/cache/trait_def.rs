@@ -18,6 +18,30 @@ pub(super) fn ceil_step(s: i32, step: i32) -> i32 {
     ((s + step - 1) / step) * step
 }
 
+/// `debug_assertions` only: panic with a clear message when the mask's
+/// key axis does not match the cache-concatenated K seq len.
+///
+/// Catches the canonical bug of building a `[L, L]` causal mask without
+/// `cache.offset()`: turn 1 (offset 0) silently passes, turn 2 fails
+/// deep inside SDPA with a cryptic `broadcast_shapes` exception.
+#[inline]
+pub(super) fn assert_mask_matches_keys(mask: Option<&Array>, k_full: &Array) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let Some(mask) = mask else { return };
+    let m_shape = mask.shape();
+    let k_shape = k_full.shape();
+    let m_last = m_shape.last().copied().unwrap_or(0);
+    let k_last = k_shape[k_shape.len() - 2];
+    debug_assert!(
+        m_last == k_last,
+        "mask key axis ({m_last}) does not match cache-concatenated K seq len ({k_last}); \
+         likely missing cache.offset() in mask construction. \
+         mask shape {m_shape:?}, k_full shape {k_shape:?}",
+    );
+}
+
 // TODO: somehow move quantized methods to a separate trait?
 pub trait KeyValueCache {
     fn is_quantized(&self) -> bool {
@@ -85,6 +109,7 @@ pub trait KeyValueCache {
         mask: Option<&Array>,
     ) -> Result<Array, Exception> {
         let (k_full, v_full) = self.update_and_fetch(keys, values)?;
+        assert_mask_matches_keys(mask, &k_full);
         scaled_dot_product_attention(
             queries.clone(),
             k_full,
