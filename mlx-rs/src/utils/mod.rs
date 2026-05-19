@@ -94,17 +94,43 @@ impl VectorArray {
 
     /// Drain the vector into a fixed-size array. Returns an error if the
     /// underlying mlx vector length does not equal `N`.
+    ///
+    /// Allocation-free on the happy path: each element is read directly
+    /// into the stack-allocated array slot, no intermediate `Vec`.
     pub(crate) fn try_into_array<const N: usize>(self) -> Result<[Array; N], Exception> {
+        use std::mem::MaybeUninit;
+
         let size = unsafe { mlx_sys::mlx_vector_array_size(self.c_vec) };
         if size != N {
             return Err(Exception::custom(format!(
                 "try_into_array: expected {N} arrays, got {size}"
             )));
         }
-        let vec: Vec<Array> = self.try_into_values()?;
-        vec.try_into().map_err(|_| {
-            Exception::custom("try_into_array: Vec<Array> length mismatched const N")
-        })
+
+        // SAFETY: An array of `MaybeUninit<T>` is itself valid uninitialised.
+        let mut out: [MaybeUninit<Array>; N] = unsafe { MaybeUninit::uninit().assume_init() };
+
+        for (i, slot) in out.iter_mut().enumerate() {
+            match Array::try_from_op(|res| unsafe {
+                mlx_sys::mlx_vector_array_get(res, self.c_vec, i)
+            }) {
+                Ok(arr) => {
+                    slot.write(arr);
+                }
+                Err(e) => {
+                    // Drop the elements we successfully initialised.
+                    for j in 0..i {
+                        // SAFETY: indices [0..i) were just written above.
+                        unsafe { out[j].assume_init_drop() };
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        // SAFETY: every slot was written exactly once in the loop above.
+        // `[MaybeUninit<T>; N]` and `[T; N]` have identical layout.
+        Ok(out.map(|slot| unsafe { slot.assume_init() }))
     }
 }
 
