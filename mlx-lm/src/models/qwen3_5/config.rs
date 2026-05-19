@@ -400,6 +400,29 @@ mod tests {
         assert!(cfg.effective_quantization().is_some());
     }
 
+    /// Qwen3.6-27B reuses the qwen3_5 schema with extra unknown fields
+    /// (`output_gate_type`, `mtp_*`, `mamba_ssm_dtype`). Verifies serde
+    /// ignores them and the known dims land on the right slots.
+    #[test]
+    fn parses_qwen3_6_27b_config() {
+        let json = include_str!("../../../tests/fixtures/qwen3_6_27b/config.json");
+        let cfg: ModelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.text_config.num_hidden_layers, 64);
+        assert_eq!(cfg.text_config.hidden_size, 5120);
+        assert_eq!(cfg.text_config.intermediate_size, 17408);
+        assert_eq!(cfg.text_config.num_attention_heads, 24);
+        assert_eq!(cfg.text_config.num_key_value_heads, 4);
+        assert_eq!(cfg.text_config.head_dim, 256);
+        assert_eq!(cfg.text_config.linear_num_value_heads, 48);
+        assert_eq!(cfg.text_config.linear_num_key_heads, 16);
+        assert_eq!(cfg.text_config.layer_types.len(), 64);
+        assert!(cfg.text_config.attn_output_gate);
+        assert!(!cfg.text_config.tie_word_embeddings);
+        let q = cfg.effective_quantization().unwrap();
+        assert_eq!(q.bits, 4);
+        assert_eq!(q.group_size, 64);
+    }
+
     #[test]
     fn eos_resolves_chat_token() {
         let single = EosTokenId::Single(248044);
