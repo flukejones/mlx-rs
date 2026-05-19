@@ -22,6 +22,7 @@ generate_builder! {
     }
 }
 
+#[allow(clippy::unnecessary_wraps, reason = "Builder trait requires Result<Self, Self::Error>")]
 fn build_test_struct(
     builder: TestStructBuilder,
 ) -> Result<TestStruct, std::convert::Infallible> {

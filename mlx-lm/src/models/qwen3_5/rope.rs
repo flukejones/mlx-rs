@@ -72,7 +72,7 @@ impl MultimodalRope {
         let scaled = indices.multiply(Array::from_f32(scale))?;
         let inv_freq = Array::from_f32(base).power(&scaled)?.reciprocal()?;
 
-        let axis_index = build_axis_index(mrope_section)?;
+        let axis_index = build_axis_index(mrope_section);
 
         Ok(Self {
             rotary_dim,
@@ -162,7 +162,7 @@ impl MultimodalRope {
 ///
 /// Returns a `[rotary_dim/2]` array where each entry is one of `{0, 1, 2}`
 /// indicating which of the three axes the matching feature reads from.
-fn build_axis_index(mrope_section: &[i32]) -> Result<Array, Exception> {
+fn build_axis_index(mrope_section: &[i32]) -> Array {
     let h_len = mrope_section[1];
     let w_len = mrope_section[2];
     let half: i32 = mrope_section.iter().sum();
@@ -179,7 +179,7 @@ fn build_axis_index(mrope_section: &[i32]) -> Result<Array, Exception> {
             idx[pos] = 2;
         }
     }
-    Ok(Array::from_slice(&idx, &[half]))
+    Array::from_slice(&idx, &[half])
 }
 
 /// Apply `cos`/`sin` to `q`/`k` matching `apply_multimodal_rotary_pos_emb`.
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn axis_index_for_chandra() {
-        let idx = build_axis_index(&[11, 11, 10]).unwrap();
+        let idx = build_axis_index(&[11, 11, 10]);
         assert_eq!(idx.shape(), &[32]);
         let flat: Vec<i32> = idx.as_slice::<i32>().to_vec();
         // 11 t (i%3==0), 11 h (i%3==1, i<33), 10 w (i%3==2, i<30)

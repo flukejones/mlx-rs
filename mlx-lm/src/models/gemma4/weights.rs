@@ -98,9 +98,9 @@ fn list_shards(model_dir: &Path) -> Result<Vec<String>, Error> {
 
 /// Sanitise one (key, tensor) pair. Returns a vec because a single
 /// `experts.gate_up_proj` entry expands into two `switch_glu` entries.
-fn sanitize_entry(key: &str, value: Array) -> Result<Vec<(String, Array)>, Error> {
+fn sanitize_entry(key: &str, value: Array) -> Vec<(String, Array)> {
     if should_drop(key) {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     let key = rewrite_outer_key(key);
 
@@ -110,33 +110,33 @@ fn sanitize_entry(key: &str, value: Array) -> Result<Vec<(String, Array)>, Error
     // `gate_up_proj` for the fused gather_qmm path.
     for suffix in [".weight", ".scales", ".biases"] {
         if let Some(base) = key.strip_suffix(&format!(".experts.gate_proj{suffix}")) {
-            return Ok(vec![(
+            return vec![(
                 format!("{base}.switch_glu.gate_proj{suffix}"),
                 value,
-            )]);
+            )];
         }
         if let Some(base) = key.strip_suffix(&format!(".experts.up_proj{suffix}")) {
-            return Ok(vec![(
+            return vec![(
                 format!("{base}.switch_glu.up_proj{suffix}"),
                 value,
-            )]);
+            )];
         }
         if let Some(base) = key.strip_suffix(&format!(".experts.down_proj{suffix}")) {
-            return Ok(vec![(
+            return vec![(
                 format!("{base}.switch_glu.down_proj{suffix}"),
                 value,
-            )]);
+            )];
         }
     }
     // Dense checkpoint ships fused gate_up_proj. Keep it fused.
     if let Some(base) = key.strip_suffix(".experts.gate_up_proj") {
-        return Ok(vec![(
+        return vec![(
             format!("{base}.switch_glu.gate_up_proj.weight"),
             value,
-        )]);
+        )];
     }
 
-    Ok(vec![(key, value)])
+    vec![(key, value)]
 }
 
 /// Load every shard, sanitise per-entry, then rewrite quantised
@@ -152,7 +152,7 @@ pub fn load_sanitized_gemma4_weights(
         let path = model_dir.join(shard);
         let loaded = Array::load_safetensors(&path).map_err(Error::LoadWeights)?;
         for (k, v) in loaded {
-            for (san_k, san_v) in sanitize_entry(&k, v)? {
+            for (san_k, san_v) in sanitize_entry(&k, v) {
                 raw.insert(san_k, san_v);
             }
         }

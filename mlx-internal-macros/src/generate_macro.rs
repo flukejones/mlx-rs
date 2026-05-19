@@ -92,7 +92,7 @@ pub fn expand_generate_macro(
         &parsed_args,
         &default_generics,
         &dtype_generics,
-    )?;
+    );
 
     let output = quote! {
         #item
@@ -175,7 +175,7 @@ fn generate_macro(
     args: &[Arg],
     default_generics: &proc_macro2::TokenStream,
     dtype_generics: &Option<proc_macro2::TokenStream>,
-) -> Result<proc_macro2::TokenStream, syn::Error> {
+) -> proc_macro2::TokenStream {
     let mut trimmed_fn_ident_str = fn_ident.to_string();
     if trimmed_fn_ident_str.ends_with("_device") {
         trimmed_fn_ident_str = trimmed_fn_ident_str.trim_end_matches("_device").to_owned();
@@ -198,7 +198,7 @@ fn generate_macro(
         "Macro generated for the function [`{doc_mod_path}::{trimmed_fn_ident}`]. See the function documentation for more details."
     );
 
-    let generated = quote! {
+    quote! {
         #[doc = #macro_docs]
         #[macro_export]
         macro_rules! #trimmed_fn_ident {
@@ -206,9 +206,7 @@ fn generate_macro(
                 #macro_variants
             )*
         }
-    };
-
-    Ok(generated)
+    }
 }
 
 fn generate_macro_variants(
