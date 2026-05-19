@@ -7,5 +7,7 @@
 #![allow(unsafe_op_in_unsafe_fn, reason = "bindgen-generated C bindings")]
 #![allow(unused_qualifications, reason = "bindgen-generated C bindings")]
 #![allow(trivial_casts, reason = "bindgen-generated C bindings")]
+#![allow(clippy::use_self, reason = "bindgen-generated C bindings")]
+#![allow(clippy::derive_partial_eq_without_eq, reason = "bindgen-generated C bindings")]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));

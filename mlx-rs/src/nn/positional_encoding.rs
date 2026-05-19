@@ -419,9 +419,9 @@ where
     fn training_mode(&mut self, _mode: bool) {}
 }
 
-#[allow(clippy::excessive_precision, reason = "test reference values from Python; precision kept for parity")]
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::excessive_precision, reason = "test reference values from Python; precision kept for parity")]
     #![allow(clippy::unwrap_used, reason = "test code")]
     #![allow(clippy::missing_assert_message, reason = "test code")]
     #![allow(clippy::print_stdout, reason = "test code")]

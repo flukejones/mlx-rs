@@ -309,9 +309,9 @@ pub fn initialize_rope(
         )?;
         return Ok(RopeVariant::Llama3(rope));
     } else if rope_type == FloatOrStr::Str("yarn") {
-        todo!()
+        return Err(Exception::custom("RoPE type \"yarn\" is not yet implemented"));
     } else if rope_type == FloatOrStr::Str("longrope") {
-        todo!()
+        return Err(Exception::custom("RoPE type \"longrope\" is not yet implemented"));
     }
 
     Err(Exception::custom(format!(

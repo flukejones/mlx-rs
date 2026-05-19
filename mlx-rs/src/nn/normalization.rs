@@ -385,10 +385,9 @@ impl GroupNorm {
 
         let x = x.reshape(&[batch, self.group_count, -1, group_size])?;
 
-        let new_shape: Vec<_> = [batch]
-            .into_iter()
+        let new_shape: Vec<_> = std::iter::once(batch)
             .chain(rest.iter().copied())
-            .chain([dims])
+            .chain(std::iter::once(dims))
             .collect();
         x.transpose_axes(&[0, 2, 1, 3])?.reshape(&new_shape[..])
     }
@@ -404,10 +403,9 @@ impl GroupNorm {
         // Normalize
         let x = instance_norm(&x, &[1], &self.eps)?;
 
-        let new_shape: Vec<_> = [batch]
-            .into_iter()
+        let new_shape: Vec<_> = std::iter::once(batch)
             .chain(rest.iter().copied())
-            .chain([dims])
+            .chain(std::iter::once(dims))
             .collect();
         x.reshape(&new_shape[..])
     }

@@ -875,8 +875,8 @@ impl MarginRankingLoss {
 }
 
 #[cfg(test)]
-#[allow(clippy::approx_constant, reason = "test float literals close to known constants by design")]
 mod tests {
+    #![allow(clippy::approx_constant, reason = "test float literals close to known constants by design")]
     #![allow(clippy::unwrap_used, reason = "test code")]
     #![allow(clippy::missing_assert_message, reason = "test code")]
     #![allow(clippy::print_stdout, reason = "test code")]
