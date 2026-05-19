@@ -3,12 +3,10 @@ name = "lm"
 edition = "2021"
 version = "0.0.1"
 
-[workspace]
-
 [dependencies]
-mlx-rs = { path = "../../mlx-rs" }
-mlx-lm = { path = "../../mlx-lm" }
-mlx-lm-utils = { path = "../../mlx-lm-utils" }
+mlx-rs.workspace = true
+mlx-lm.workspace = true
+mlx-lm-utils.workspace = true
 
 anyhow = "1"
 ctrlc = "3"

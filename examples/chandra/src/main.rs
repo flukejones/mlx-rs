@@ -15,7 +15,7 @@ pub type Result<T, E = BoxError> = std::result::Result<T, E>;
 #[macro_export]
 macro_rules! err {
     ($($arg:tt)*) => {
-        crate::BoxError::from(format!($($arg)*))
+        $crate::BoxError::from(format!($($arg)*))
     };
 }
 use image::DynamicImage;

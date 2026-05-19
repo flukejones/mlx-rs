@@ -7,7 +7,7 @@
 //!
 //! Wraps the same `mlx_sys` raw bindings mlx-rs doesn't yet expose.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use mlx_lm::models::gemma4::{
@@ -53,7 +53,7 @@ fn clear_cache() {
     mlx_rs::memory::clear_cache();
 }
 
-fn encode_prompt(model_dir: &PathBuf, prompt: &str) -> Res<Array> {
+fn encode_prompt(model_dir: &Path, prompt: &str) -> Res<Array> {
     let tok = Tokenizer::from_file(model_dir.join("tokenizer.json"))
         .map_err(|e| format!("{e:?}"))?;
     let enc = tok.encode(prompt, true).map_err(|e| format!("{e:?}"))?;

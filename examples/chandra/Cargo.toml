@@ -3,15 +3,13 @@ name = "chandra"
 edition = "2021"
 version = "0.0.1"
 
-[workspace]
-
 [[bin]]
 name = "chandra"
 path = "src/main.rs"
 
 [dependencies]
-mlx-rs = { path = "../../mlx-rs" }
-mlx-lm = { path = "../../mlx-lm" }
+mlx-rs.workspace = true
+mlx-lm.workspace = true
 
 argh = "0.1"
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
