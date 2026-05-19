@@ -56,7 +56,7 @@ pub fn expand_generate_macro(
     };
 
     let (default_generics, dtype_generics) =
-        handle_generic_args(&item.sig.generics, &customize.default_dtype);
+        handle_generic_args(&item.sig.generics, customize.default_dtype.as_ref());
 
     let args = item
         .sig
@@ -91,7 +91,7 @@ pub fn expand_generate_macro(
         fn_ident,
         &parsed_args,
         &default_generics,
-        &dtype_generics,
+        dtype_generics.as_ref(),
     );
 
     let output = quote! {
@@ -109,7 +109,7 @@ pub fn expand_generate_macro(
 /// 2. With the last argument set to `$dtype`
 fn handle_generic_args(
     generic_args: &syn::Generics,
-    default_dtype: &Option<syn::Path>,
+    default_dtype: Option<&syn::Path>,
 ) -> (proc_macro2::TokenStream, Option<proc_macro2::TokenStream>) {
     // Count number of generic type arguments
     let count = generic_args
@@ -174,7 +174,7 @@ fn generate_macro(
     fn_ident: &Ident,
     args: &[Arg],
     default_generics: &proc_macro2::TokenStream,
-    dtype_generics: &Option<proc_macro2::TokenStream>,
+    dtype_generics: Option<&proc_macro2::TokenStream>,
 ) -> proc_macro2::TokenStream {
     let mut trimmed_fn_ident_str = fn_ident.to_string();
     if trimmed_fn_ident_str.ends_with("_device") {
@@ -215,7 +215,7 @@ fn generate_macro_variants(
     trimmed_fn_ident: &Ident,
     args: &[Arg],
     default_generics: &proc_macro2::TokenStream,
-    dtype_generics: &Option<proc_macro2::TokenStream>,
+    dtype_generics: Option<&proc_macro2::TokenStream>,
     macro_variants: &mut Vec<proc_macro2::TokenStream>,
 ) {
     let args_ident = args.iter().map(|arg| &arg.ident).collect::<Vec<_>>();
@@ -240,7 +240,9 @@ fn generate_macro_variants(
     for perms in 0..optional_indices.len() + 1 {
         // Select `perms` number of optional arguments
         for selected_indice in optional_indices.iter().permutations(perms) {
-            selected_indice.iter().for_each(|&&i| selected[i] = true);
+            for &&i in &selected_indice {
+                selected[i] = true;
+            }
 
             generate_macro_variants_for_selected_args(
                 fn_mod_path,
@@ -255,7 +257,9 @@ fn generate_macro_variants(
             );
 
             // Clear the selected flag for the next iteration
-            selected_indice.iter().for_each(|&&i| selected[i] = false);
+            for &&i in &selected_indice {
+                selected[i] = false;
+            }
         }
     }
 }
@@ -269,7 +273,7 @@ fn generate_macro_variants_for_selected_args(
     args_type: &[ArgType],
     selected: &[bool],
     default_generics: &proc_macro2::TokenStream,
-    dtype_generics: &Option<proc_macro2::TokenStream>,
+    dtype_generics: Option<&proc_macro2::TokenStream>,
     macro_variants: &mut Vec<proc_macro2::TokenStream>,
 ) {
     let macro_args: Vec<proc_macro2::TokenStream> = args_ident
@@ -317,7 +321,7 @@ fn generate_macro_variants_for_selected_args(
 
     macro_variants.push(variant_body);
 
-    if let Some(dtype_generics) = &dtype_generics {
+    if let Some(dtype_generics) = dtype_generics {
         let variant_body = quote! {
             (
                 #(#macro_args,)*

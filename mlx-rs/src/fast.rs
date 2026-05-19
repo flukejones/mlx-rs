@@ -467,7 +467,13 @@ impl std::fmt::Debug for MetalKernel {
     }
 }
 
+// SAFETY: `MetalKernel` holds a `mlx_fast_metal_kernel` handle whose
+// refcount is atomic on the mlx-c side; sending the handle between
+// threads only moves the pointer.
 unsafe impl Send for MetalKernel {}
+// SAFETY: The kernel object is immutable after construction (template
+// args + body baked at build time), so concurrent `&MetalKernel`
+// access from multiple threads only triggers atomic reads.
 unsafe impl Sync for MetalKernel {}
 
 impl MetalKernel {

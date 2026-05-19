@@ -71,6 +71,10 @@ impl Drop for Array {
     }
 }
 
+// SAFETY: `Array` owns a `*mut mlx_array_` whose refcount is managed
+// atomically by mlx-c. The handle can be moved between threads; only
+// shared (`&Array`) access from multiple threads would be unsound,
+// which is why we deliberately do NOT implement `Sync`.
 unsafe impl Send for Array {}
 
 impl PartialEq for Array {

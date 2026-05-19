@@ -219,15 +219,15 @@ where
     }
 
     fn freeze_parameters(&mut self, recursive: bool) {
-        self.iter_mut().for_each(|module| {
+        for module in self.iter_mut() {
             module.freeze_parameters(recursive);
-        });
+        }
     }
 
     fn unfreeze_parameters(&mut self, recursive: bool) {
-        self.iter_mut().for_each(|module| {
+        for module in self.iter_mut() {
             module.unfreeze_parameters(recursive);
-        });
+        }
     }
 
     fn all_frozen(&self) -> Option<bool> {
