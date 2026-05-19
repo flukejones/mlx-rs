@@ -101,7 +101,7 @@ pub fn quantized_matmul_device<'a>(
             biases
                 .into()
                 .map(|a| a.as_ptr())
-                .unwrap_or(mlx_sys::mlx_array_new()),
+                .unwrap_or_else(|| mlx_sys::mlx_array_new()),
             transpose,
             group_size,
             bits,
@@ -137,7 +137,7 @@ pub fn dequantize_device<'a>(
             biases
                 .into()
                 .map(|a| a.as_ptr())
-                .unwrap_or(mlx_sys::mlx_array_new()),
+                .unwrap_or_else(|| mlx_sys::mlx_array_new()),
             group_size,
             bits,
             DEFAULT_MODE.as_ptr(),
@@ -190,15 +190,15 @@ pub fn gather_qmm_device<'b, 'lhs, 'rhs>(
         let biases_ptr = biases
             .into()
             .map(|a| a.as_ptr())
-            .unwrap_or(mlx_sys::mlx_array_new());
+            .unwrap_or_else(|| mlx_sys::mlx_array_new());
         let lhs_ptr = lhs_indices
             .into()
             .map(|i| i.as_ptr())
-            .unwrap_or(mlx_sys::mlx_array_new());
+            .unwrap_or_else(|| mlx_sys::mlx_array_new());
         let rhs_ptr = rhs_indices
             .into()
             .map(|i| i.as_ptr())
-            .unwrap_or(mlx_sys::mlx_array_new());
+            .unwrap_or_else(|| mlx_sys::mlx_array_new());
 
         <Array as Guarded>::try_from_op(|res| {
             mlx_sys::mlx_gather_qmm(
@@ -270,7 +270,7 @@ pub fn qqmm_device<'a>(
             w_scales
                 .into()
                 .map(|a| a.as_ptr())
-                .unwrap_or(mlx_sys::mlx_array_new()),
+                .unwrap_or_else(|| mlx_sys::mlx_array_new()),
             group_size,
             bits,
             mode_cstr.as_ptr(),

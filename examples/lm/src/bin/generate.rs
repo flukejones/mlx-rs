@@ -274,7 +274,7 @@ fn run_qwen3_5(model_dir: &Path, prompt_tokens: Array, temp: f32, max_tokens: us
             break;
         }
         ids.push(id);
-        if ids.len() % 8 == 0 {
+        if ids.len().is_multiple_of(8) {
             flush_chunk(&ids, &mut last_decoded_len, &tokenizer);
         }
     }
@@ -334,7 +334,7 @@ where
             break;
         }
         ids.push(id);
-        if ids.len() % 8 == 0 {
+        if ids.len().is_multiple_of(8) {
             flush_chunk(&ids, &mut last_decoded_len, &tokenizer);
         }
     }

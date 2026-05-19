@@ -461,7 +461,7 @@ fn main() {
 
     let current_tag = get_current_tag(&mlx_c_dir);
     let latest_tag = get_latest_tag(&mlx_c_dir);
-    let target_tag = target_tag.unwrap_or(latest_tag.clone());
+    let target_tag = target_tag.unwrap_or_else(|| latest_tag.clone());
 
     println!("Current version: \x1b[32m{current_tag}\x1b[0m");
     println!("Latest version:  \x1b[32m{latest_tag}\x1b[0m");

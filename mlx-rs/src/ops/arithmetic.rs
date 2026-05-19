@@ -1421,15 +1421,15 @@ pub fn block_masked_mm_device<'mo, 'lhs, 'rhs>(
         let mask_out_ptr = mask_out
             .into()
             .map(|m| m.as_ptr())
-            .unwrap_or(mlx_sys::mlx_array_new());
+            .unwrap_or_else(|| mlx_sys::mlx_array_new());
         let mask_lhs_ptr = mask_lhs
             .into()
             .map(|m| m.as_ptr())
-            .unwrap_or(mlx_sys::mlx_array_new());
+            .unwrap_or_else(|| mlx_sys::mlx_array_new());
         let mask_rhs_ptr = mask_rhs
             .into()
             .map(|m| m.as_ptr())
-            .unwrap_or(mlx_sys::mlx_array_new());
+            .unwrap_or_else(|| mlx_sys::mlx_array_new());
 
         Array::try_from_op(|res| {
             mlx_sys::mlx_block_masked_mm(
@@ -1606,11 +1606,11 @@ pub fn gather_mm_device<'lhs, 'rhs>(
         let lhs_ptr = lhs_indices
             .into()
             .map(|i| i.as_ptr())
-            .unwrap_or(mlx_sys::mlx_array_new());
+            .unwrap_or_else(|| mlx_sys::mlx_array_new());
         let rhs_ptr = rhs_indices
             .into()
             .map(|i| i.as_ptr())
-            .unwrap_or(mlx_sys::mlx_array_new());
+            .unwrap_or_else(|| mlx_sys::mlx_array_new());
 
         Array::try_from_op(|res| {
             mlx_sys::mlx_gather_mm(

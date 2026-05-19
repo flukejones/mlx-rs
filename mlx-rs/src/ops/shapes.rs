@@ -202,7 +202,7 @@ pub fn as_strided_device<'a>(
     #[optional] stream: impl AsRef<Stream>,
 ) -> Result<Array> {
     let a = a.as_ref();
-    let shape = shape.into_option().unwrap_or(a.shape());
+    let shape = shape.into_option().unwrap_or_else(|| a.shape());
     let resolved_strides = resolve_strides(shape, strides.into_option());
     let offset = offset.into().unwrap_or(0);
 

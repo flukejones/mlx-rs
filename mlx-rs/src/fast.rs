@@ -39,7 +39,7 @@ pub fn rope_device<'a>(
             offset,
             freqs
                 .map(|a| a.as_ptr())
-                .unwrap_or(mlx_sys::mlx_array_new()),
+                .unwrap_or_else(|| mlx_sys::mlx_array_new()),
             stream.as_ref().as_ptr(),
         )
     })
@@ -90,7 +90,7 @@ pub fn rope_dynamic_device<'a>(
             offset.as_ref().as_ptr(),
             freqs
                 .map(|a| a.as_ptr())
-                .unwrap_or(mlx_sys::mlx_array_new()),
+                .unwrap_or_else(|| mlx_sys::mlx_array_new()),
             stream.as_ref().as_ptr(),
         )
     })
@@ -169,7 +169,7 @@ pub fn scaled_dot_product_attention_device<'a>(
             sinks
                 .into()
                 .map(|a| a.as_ptr())
-                .unwrap_or(mlx_sys::mlx_array_new()),
+                .unwrap_or_else(|| mlx_sys::mlx_array_new()),
             stream.as_ref().as_ptr(),
         )
     })
@@ -201,7 +201,7 @@ pub fn rms_norm_device<'a>(
             weight
                 .into()
                 .map(|a| a.as_ptr())
-                .unwrap_or(mlx_sys::mlx_array_new()),
+                .unwrap_or_else(|| mlx_sys::mlx_array_new()),
             eps,
             stream.as_ref().as_ptr(),
         )
@@ -237,10 +237,10 @@ pub fn layer_norm_device<'a>(
             weight
                 .into()
                 .map(|a| a.as_ptr())
-                .unwrap_or(mlx_sys::mlx_array_new()),
+                .unwrap_or_else(|| mlx_sys::mlx_array_new()),
             bias.into()
                 .map(|a| a.as_ptr())
-                .unwrap_or(mlx_sys::mlx_array_new()),
+                .unwrap_or_else(|| mlx_sys::mlx_array_new()),
             eps,
             stream.as_ref().as_ptr(),
         )

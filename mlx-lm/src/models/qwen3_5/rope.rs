@@ -283,7 +283,6 @@ mod tests {
         // 11 t (i%3==0), 11 h (i%3==1, i<33), 10 w (i%3==2, i<30)
         for i in 0..32 {
             let expected = match (i % 3, i) {
-                (0, _) => 0,
                 (1, i) if i < 33 => 1,
                 (2, i) if i < 30 => 2,
                 _ => 0,

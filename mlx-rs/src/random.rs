@@ -386,7 +386,7 @@ pub fn randint_device<'a, E: Into<Array>, T: ArrayElement>(
 ) -> Result<Array> {
     let lb: Array = lower.into();
     let ub: Array = upper.into();
-    let shape = shape.into_option().unwrap_or(lb.shape());
+    let shape = shape.into_option().unwrap_or_else(|| lb.shape());
     let key = resolve(key)?;
 
     Array::try_from_op(|res| unsafe {
@@ -435,7 +435,7 @@ pub fn bernoulli_device<'a>(
     let default_array = Array::from_f32(0.5);
     let p = p.into().unwrap_or(&default_array);
 
-    let shape = shape.into_option().unwrap_or(p.shape());
+    let shape = shape.into_option().unwrap_or_else(|| p.shape());
     let key = resolve(key)?;
 
     Array::try_from_op(|res| unsafe {
@@ -476,7 +476,7 @@ pub fn truncated_normal_device<'a, E: Into<Array>, T: ArrayElement>(
 ) -> Result<Array> {
     let lb: Array = lower.into();
     let ub: Array = upper.into();
-    let shape = shape.into_option().unwrap_or(lb.shape());
+    let shape = shape.into_option().unwrap_or_else(|| lb.shape());
     let key = resolve(key)?;
 
     Array::try_from_op(|res| unsafe {

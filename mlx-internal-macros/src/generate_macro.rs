@@ -224,10 +224,7 @@ fn generate_macro_variants(
     let mut selected = Vec::with_capacity(args.len());
     for (idx, arg) in args.iter().enumerate() {
         match arg.arg_type {
-            ArgType::Positional => {
-                selected.push(true);
-            }
-            ArgType::Named => {
+            ArgType::Positional | ArgType::Named => {
                 selected.push(true);
             }
             ArgType::NamedOptional => {
@@ -284,8 +281,9 @@ fn generate_macro_variants_for_selected_args(
             true => {
                 let token = match arg_type {
                     ArgType::Positional => quote! { $#ident:expr },
-                    ArgType::Named => quote! { #ident=$#ident:expr },
-                    ArgType::NamedOptional => quote! { #ident=$#ident:expr },
+                    ArgType::Named | ArgType::NamedOptional => {
+                        quote! { #ident=$#ident:expr }
+                    }
                 };
                 Some(token)
             }
