@@ -512,8 +512,8 @@ const QWEN3_5_SHORT_PROMPT: &[i32] = &[
     248045, 846, 198, 9419, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271,
 ];
 
-fn maybe_bench_qwen3_5(c: &mut Criterion, label: &str, repo_id: &str) {
-    if bench_only_skip(&format!("qwen3_5_decode_{label}")) {
+fn maybe_bench_qwen3_5(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
+    if bench_only_skip(&format!("{family}_decode_{label}")) {
         return;
     }
     let Some(dir) = ensure_model(repo_id) else {
@@ -523,14 +523,14 @@ fn maybe_bench_qwen3_5(c: &mut Criterion, label: &str, repo_id: &str) {
     let cfg = match Qwen3_5Config::from_file(dir.join("config.json")) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("skipping qwen3_5 {label}: config parse failed: {e:?}");
+            eprintln!("skipping {family} {label}: config parse failed: {e:?}");
             return;
         }
     };
     let (mut model, _) = match load_language_model(&cfg, &dir) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("skipping qwen3_5 {label}: load failed: {e:?}");
+            eprintln!("skipping {family} {label}: load failed: {e:?}");
             return;
         }
     };
@@ -563,7 +563,7 @@ fn maybe_bench_qwen3_5(c: &mut Criterion, label: &str, repo_id: &str) {
     }
 
     let decode_steps = DECODE_TOKENS - 1;
-    let mut group = c.benchmark_group(format!("qwen3_5_decode_{label}"));
+    let mut group = c.benchmark_group(format!("{family}_decode_{label}"));
     group.throughput(Throughput::Elements(decode_steps as u64));
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
@@ -750,8 +750,10 @@ fn bench_decode(c: &mut Criterion) {
     maybe_bench_llama(c, "small_q4", "mlx-community/Llama-3.2-1B-Instruct-4bit");
 
     // Qwen3.5 hybrid SSM + attention.
-    maybe_bench_qwen3_5(c, "4b_q8", "mlx-community/Qwen3.5-4B-MLX-8bit");
-    maybe_bench_qwen3_5(c, "9b_q8", "mlx-community/Qwen3.5-9B-8bit");
+    maybe_bench_qwen3_5(c, "qwen3_5", "4b_q8", "mlx-community/Qwen3.5-4B-MLX-8bit");
+    maybe_bench_qwen3_5(c, "qwen3_5", "9b_q8", "mlx-community/Qwen3.5-9B-8bit");
+    maybe_bench_qwen3_5(c, "qwen3_6", "27b_q4", "mlx-community/Qwen3.6-27B-4bit");
+    maybe_bench_qwen3_5(c, "qwen3_6", "27b_q8", "mlx-community/Qwen3.6-27B-8bit");
 
     // Gemma 4 (dense + MoE; per-layer-input gating).
     maybe_bench_gemma4(c, "e2b_it_q8", "mlx-community/gemma-4-e2b-it-8bit");
