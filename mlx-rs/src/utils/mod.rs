@@ -77,6 +77,21 @@ impl VectorArray {
                 .collect::<Result<T, Exception>>()
         }
     }
+
+    /// Drain the vector into a fixed-size array. Returns an error if the
+    /// underlying mlx vector length does not equal `N`.
+    pub(crate) fn try_into_array<const N: usize>(self) -> Result<[Array; N], Exception> {
+        let size = unsafe { mlx_sys::mlx_vector_array_size(self.c_vec) };
+        if size != N {
+            return Err(Exception::custom(format!(
+                "try_into_array: expected {N} arrays, got {size}"
+            )));
+        }
+        let vec: Vec<Array> = self.try_into_values()?;
+        vec.try_into().map_err(|_| {
+            Exception::custom("try_into_array: Vec<Array> length mismatched const N")
+        })
+    }
 }
 
 impl Drop for VectorArray {

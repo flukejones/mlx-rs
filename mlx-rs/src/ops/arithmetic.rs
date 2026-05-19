@@ -6,7 +6,6 @@ use crate::utils::guard::Guarded;
 use crate::utils::{IntoOption, ScalarOrArray, VectorArray};
 use crate::Stream;
 use mlx_internal_macros::{default_device, generate_macro};
-use smallvec::SmallVec;
 
 impl Array {
     /// Element-wise absolute value.
@@ -948,11 +947,7 @@ pub fn divmod_device(
         mlx_sys::mlx_divmod(res, a_ptr, b_ptr, stream.as_ref().as_ptr())
     })?;
 
-    let vals: SmallVec<[_; 2]> = vec.try_into_values()?;
-    let mut iter = vals.into_iter();
-    let quotient = iter.next().unwrap();
-    let remainder = iter.next().unwrap();
-
+    let [quotient, remainder] = vec.try_into_array::<2>()?;
     Ok((quotient, remainder))
 }
 

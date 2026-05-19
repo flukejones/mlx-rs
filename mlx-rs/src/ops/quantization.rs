@@ -68,19 +68,8 @@ pub fn quantize_device(
         )
     })?;
 
-    let arrays: Vec<Array> = result.try_into_values()?;
-    if arrays.len() != 3 {
-        return Err(crate::error::Exception::custom(format!(
-            "Expected 3 arrays from quantize, got {}",
-            arrays.len()
-        )));
-    }
-    let mut iter = arrays.into_iter();
-    Ok((
-        iter.next().unwrap(),
-        iter.next().unwrap(),
-        iter.next().unwrap(),
-    ))
+    let [a, b, c] = result.try_into_array::<3>()?;
+    Ok((a, b, c))
 }
 
 /// Perform the matrix multiplication with the quantized matrix `w`. The quantization uses one
