@@ -5,6 +5,9 @@
 //!  - `compile_warm`: closure built once, invoked many times — isolates
 //!    construction cost from per-invocation cost.
 
+#![allow(clippy::unwrap_used, reason = "bench harness")]
+#![allow(clippy::print_stdout, reason = "bench output")]
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use mlx_rs::{
     error::Exception,

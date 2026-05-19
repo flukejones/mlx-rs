@@ -1,3 +1,12 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "build script: panic-on-error is idiomatic"
+)]
+#![allow(
+    clippy::print_stdout,
+    reason = "build script: cargo:* directives go to stdout"
+)]
+
 extern crate cmake;
 
 use cmake::Config;

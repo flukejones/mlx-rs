@@ -1,3 +1,6 @@
+#![allow(clippy::print_stdout, reason = "xtask: CLI tool, stdout is the output")]
+#![allow(clippy::unwrap_used, reason = "xtask: panic-on-error is idiomatic")]
+
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};

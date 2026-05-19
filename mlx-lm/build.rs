@@ -4,6 +4,15 @@
 //! source uses `include_str!(env!(...))` to embed the preamble in
 //! `KERNEL_HEADER` for `mlx_rs::fast::metal_kernel` to compile against.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "build script: panic-on-error is idiomatic"
+)]
+#![allow(
+    clippy::print_stdout,
+    reason = "build script: cargo:* directives go to stdout"
+)]
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};

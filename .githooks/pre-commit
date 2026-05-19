@@ -1,0 +1,61 @@
+#!/bin/sh
+# Pre-commit gate for mlx-rs.
+#
+# Runs clippy with -D warnings on every crate whose source files are
+# staged. Per-crate scope avoids being blocked by upstream-main clippy
+# debt that local branches inherit (see CLAUDE.md, project_upstream_clippy_debt).
+#
+# rustfmt is intentionally commented out: the project is in heavy refactor
+# and a blanket fmt run reformats sibling modules outside the staged set.
+# Re-enable when churn settles.
+
+set -e
+
+STAGED_RUST=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs')
+
+if [ -z "$STAGED_RUST" ]; then
+	exit 0
+fi
+
+# --- rustfmt (disabled while refactor churn is high) ---
+# PRE_TMP=$(mktemp)
+# git diff --name-only -- '*.rs' | sort > "$PRE_TMP"
+#
+# echo "$STAGED_RUST" | xargs rustfmt
+# echo "$STAGED_RUST" | xargs git add
+#
+# POST_TMP=$(mktemp)
+# git diff --name-only -- '*.rs' | sort > "$POST_TMP"
+# NEW_DIRTY=$(comm -13 "$PRE_TMP" "$POST_TMP")
+# rm -f "$PRE_TMP" "$POST_TMP"
+#
+# if [ -n "$NEW_DIRTY" ]; then
+# 	echo "pre-commit: rustfmt touched files outside the staged set:" >&2
+# 	echo "$NEW_DIRTY" | sed 's/^/  /' >&2
+# 	echo "pre-commit: stage them and recommit." >&2
+# 	exit 1
+# fi
+
+# --- clippy per affected crate ---
+# Map staged paths to crate names and dedupe.
+CRATES=$(echo "$STAGED_RUST" | awk -F/ '
+	/^mlx-sys\//             { print "mlx-sys" }
+	/^mlx-rs\//              { print "mlx-rs" }
+	/^mlx-lm\//              { print "mlx-lm" }
+	/^mlx-lm-utils\//        { print "mlx-lm-utils" }
+	/^mlx-macros\//          { print "mlx-macros" }
+	/^mlx-internal-macros\// { print "mlx-internal-macros" }
+	/^mlx-tests\//           { print "mlx-tests" }
+	/^xtask\//               { print "xtask" }
+' | sort -u)
+
+if [ -z "$CRATES" ]; then
+	# Staged Rust lives only in examples/ or similar — skip the workspace
+	# clippy gate since examples have their own detached workspaces.
+	exit 0
+fi
+
+for crate in $CRATES; do
+	echo "+ cargo clippy -p $crate --all-targets -- -D warnings"
+	cargo clippy -p "$crate" --all-targets -- -D warnings
+done

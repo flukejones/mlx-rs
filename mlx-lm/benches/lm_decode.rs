@@ -8,6 +8,9 @@
 //! Each variant is benched at a short (13-token) and long (1024-token)
 //! prompt, decoding `DECODE_TOKENS` tokens. The long-prompt case stresses
 //! the KV cache and the attention path.
+
+#![allow(clippy::unwrap_used, reason = "bench harness")]
+#![allow(clippy::print_stdout, reason = "bench output")]
 //!
 //! Checkpoints are pulled lazily on first use via the `hf` CLI into the
 //! cache directory printed at bench start. Cells skip silently if `hf` is

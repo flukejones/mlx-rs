@@ -1,0 +1,13 @@
+#!/bin/sh
+# Pre-push gate: full workspace clippy + fmt --check.
+#
+# fmt --check is currently commented out — re-enable once the refactor
+# churn settles (see CLAUDE.md pre-commit note).
+
+set -e
+
+echo '+ cargo clippy --workspace --all-targets -- -D warnings'
+cargo clippy --workspace --all-targets -- -D warnings
+
+# echo '+ cargo fmt --all -- --check'
+# cargo fmt --all -- --check

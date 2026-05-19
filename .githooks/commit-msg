@@ -1,0 +1,40 @@
+#!/bin/sh
+set -e
+
+MSG_FILE="$1"
+SUBJECT=$(sed -n '1p' "$MSG_FILE")
+
+case "$SUBJECT" in
+	"Merge "*) exit 0 ;;
+	"Revert "*) exit 0 ;;
+	"fixup! "*) exit 0 ;;
+	"squash! "*) exit 0 ;;
+esac
+
+if ! printf '%s' "$SUBJECT" | grep -Eq '^(feat|fix|docs|style|refactor|test|chore|perf|bench)(\([a-z0-9_./-]+\))?!?: .+'; then
+	echo "commit-msg: subject must match <type>(<scope>): <subject>" >&2
+	echo "commit-msg: types: feat|fix|docs|style|refactor|test|chore|perf|bench" >&2
+	echo "commit-msg: got: $SUBJECT" >&2
+	exit 1
+fi
+
+SUBJECT_LEN=$(printf '%s' "$SUBJECT" | wc -c | tr -d ' ')
+if [ "$SUBJECT_LEN" -gt 72 ]; then
+	echo "commit-msg: subject is $SUBJECT_LEN chars; max 72 (target 50)" >&2
+	echo "commit-msg: got: $SUBJECT" >&2
+	exit 1
+fi
+
+case "$SUBJECT" in
+	*.) echo "commit-msg: subject must not end with a period" >&2; echo "commit-msg: got: $SUBJECT" >&2; exit 1 ;;
+esac
+
+if grep -qi '^Co-Authored-By:' "$MSG_FILE"; then
+	echo "commit-msg: Co-Authored-By trailers are prohibited" >&2
+	exit 1
+fi
+
+if grep -qi 'Generated with .*Claude Code' "$MSG_FILE"; then
+	echo "commit-msg: marketing trailers are prohibited" >&2
+	exit 1
+fi
