@@ -416,6 +416,10 @@ fn depthwise_conv1d(conv_dim: i32, kernel_size: i32) -> Result<nn::Conv1d, Excep
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use mlx_rs::{random::uniform, transforms::eval};
 
@@ -497,7 +501,7 @@ mod tests {
             .collect();
         let x = uniform::<_, f32>(0.0, 1.0, &[1, 4, cfg.hidden_size], None).unwrap();
         let mut out = x;
-        for blk in blocks.iter_mut() {
+        for blk in &mut blocks {
             out = blk.forward(&out, None, None).unwrap();
         }
         eval([&out]).unwrap();

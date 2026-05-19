@@ -541,6 +541,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use std::{env::home_dir, fs};
 
     use lazy_static::lazy_static;
@@ -568,8 +572,7 @@ mod tests {
             .join("main");
         let commit_hash = fs::read_to_string(&refs_main)
             .unwrap_or_default()
-            .trim()
-            .to_string();
+            .trim().to_owned();
         std::path::Path::new(model_cache_dir)
             .join("snapshots")
             .join(commit_hash)
@@ -628,8 +631,8 @@ mod tests {
 
         // Print some safetensor keys
         let weights_path = std::path::Path::new(model_dir).join("model.safetensors");
-        let loaded = mlx_rs::Array::load_safetensors(&weights_path).unwrap();
-        let mut weight_keys: Vec<_> = loaded.keys().map(|k| k.to_string()).collect();
+        let loaded = Array::load_safetensors(&weights_path).unwrap();
+        let mut weight_keys: Vec<_> = loaded.keys().cloned().collect();
         weight_keys.sort();
         println!("=== Safetensor weight keys (first 20) ===");
         for key in weight_keys.iter().take(20) {
@@ -717,7 +720,7 @@ mod tests {
             let token = token.unwrap();
             eval([&token]).unwrap();
             let token_id = token.item::<u32>();
-            print!("[{}]", token_id);
+            print!("[{token_id}]");
             if token_id == eos_token_id || token_id == eot_token_id {
                 break;
             }

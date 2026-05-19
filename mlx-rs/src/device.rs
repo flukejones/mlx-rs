@@ -29,24 +29,24 @@ impl PartialEq for Device {
 
 impl Device {
     /// Create a new [`Device`]
-    pub fn new(device_type: DeviceType, index: i32) -> Device {
+    pub fn new(device_type: DeviceType, index: i32) -> Self {
         let c_device = unsafe { mlx_sys::mlx_device_new_type(device_type.into(), index) };
-        Device { c_device }
+        Self { c_device }
     }
 
     /// Try to get the default device.
     pub fn try_default() -> Result<Self> {
-        Device::try_from_op(|res| unsafe { mlx_sys::mlx_get_default_device(res) })
+        Self::try_from_op(|res| unsafe { mlx_sys::mlx_get_default_device(res) })
     }
 
     /// Create a default CPU device.
-    pub fn cpu() -> Device {
-        Device::new(DeviceType::Cpu, 0)
+    pub fn cpu() -> Self {
+        Self::new(DeviceType::Cpu, 0)
     }
 
     /// Create a default GPU device.
-    pub fn gpu() -> Device {
-        Device::new(DeviceType::Gpu, 0)
+    pub fn gpu() -> Self {
+        Self::new(DeviceType::Gpu, 0)
     }
 
     /// Get the device index
@@ -69,7 +69,7 @@ impl Device {
     /// ```
     ///
     /// By default, this is `gpu()`.
-    pub fn set_default(device: &Device) {
+    pub fn set_default(device: &Self) {
         unsafe { mlx_sys::mlx_set_default_device(device.c_device) };
     }
 
@@ -117,6 +117,9 @@ impl std::fmt::Display for Device {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
 
     #[test]

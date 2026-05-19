@@ -97,7 +97,7 @@ impl OptimizerState for State<AdafactorState> {
         I: IntoIterator<Item = (K, Array)>,
         K: Ord + AsRef<str> + Into<Rc<str>>,
     {
-        let mut state = State::new();
+        let mut state = Self::new();
         let iter = input
             .into_iter()
             .sorted_by(|a, b| a.0.as_ref().cmp(b.0.as_ref()));

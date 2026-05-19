@@ -86,7 +86,7 @@ pub fn quantize_device(
 /// Perform the matrix multiplication with the quantized matrix `w`. The quantization uses one
 /// floating point scale and bias per `group_size` of elements. Each element in `w` takes `bits`
 /// bits and is packed in an unsigned 32 bit integer.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
 #[generate_macro]
 #[default_device]
 pub fn quantized_matmul_device<'a>(
@@ -176,7 +176,7 @@ pub fn dequantize_device<'a>(
 /// - `group_size`: The quantization group size (default: 64)
 /// - `bits`: The number of bits per element (default: 4)
 /// - `sorted_indices`: If true, indicates the indices are sorted (default: false)
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
 #[generate_macro]
 #[default_device]
 pub fn gather_qmm_device<'b, 'lhs, 'rhs>(
@@ -248,7 +248,7 @@ pub fn gather_qmm_device<'b, 'lhs, 'rhs>(
 /// - `bits`: The number of bits per element (default depends on mode: 4 for nvfp4, 8 for mxfp8)
 /// - `mode`: Quantization mode - either "nvfp4" or "mxfp8" (default: "nvfp4")
 #[cfg(not(target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
 #[generate_macro]
 #[default_device]
 pub fn qqmm_device<'a>(
@@ -294,6 +294,10 @@ pub fn qqmm_device<'a>(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::{
         ops::{dequantize, expand_dims, quantize, quantized_matmul},
         random, Array,
@@ -305,7 +309,7 @@ mod tests {
         let x2 = expand_dims(Array::arange::<_, f32>(0, 512, None).unwrap(), 0).unwrap();
         let x = x1 * x2;
 
-        for i in [2, 4, 8].iter() {
+        for i in &[2, 4, 8] {
             let el_per_int = 32 / i;
             let (x_q, scales, biases) = quantize(&x, 128, *i).unwrap();
             assert_eq!(x_q.shape(), [128, 512 / el_per_int]);
@@ -342,7 +346,7 @@ mod tests {
 
         assert_eq!(y_q.shape(), y_hat.shape());
         let max_diff = ((&y_q - &y_hat).abs().unwrap().max(None).unwrap()).item::<f32>();
-        assert!(max_diff < 1e-3, "max_diff: {}", max_diff);
+        assert!(max_diff < 1e-3, "max_diff: {max_diff}");
     }
 
     // Test adapted from Python test `test_quantized.py/test_gather_qmm`

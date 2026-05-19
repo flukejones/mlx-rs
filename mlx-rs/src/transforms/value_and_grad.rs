@@ -56,7 +56,7 @@ where
 {
     // refining_impl_trait is fine here because we have restricted the Args and Output types
     // in the generics.
-    #[allow(refining_impl_trait)]
+    #[allow(refining_impl_trait, reason = "Args and Output are restricted in generics")]
     fn into_value_and_grad(
         self,
         argnums: impl IntoOption<&'a [i32]>,
@@ -70,7 +70,7 @@ impl<'a, F> IntoValueAndGrad<'a, Exception> for F
 where
     F: FnMut(&[Array]) -> Result<Vec<Array>> + 'a,
 {
-    #[allow(refining_impl_trait)]
+    #[allow(refining_impl_trait, reason = "Args and Output are restricted in generics")]
     fn into_value_and_grad(
         self,
         argnums: impl IntoOption<&'a [i32]>,
@@ -110,6 +110,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
 
     use crate::{array, transforms::value_and_grad, Array};
 
@@ -158,6 +162,6 @@ mod tests {
 
         // Check that the error is not just "mlx_closure returned a non-zero value"
         let err = result.unwrap_err();
-        assert!(!err.what().contains("non-zero value"))
+        assert!(!err.what().contains("non-zero value"));
     }
 }

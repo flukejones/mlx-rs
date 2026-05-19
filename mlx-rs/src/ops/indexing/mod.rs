@@ -348,12 +348,12 @@ pub trait TryIndexMutOp<Idx, Val> {
 pub trait IndexMutOp<Idx, Val>: TryIndexMutOp<Idx, Val> {
     /// Index the array with the given index and set the value.
     fn index_mut_device(&mut self, i: Idx, val: Val, stream: impl AsRef<Stream>) {
-        self.try_index_mut_device(i, val, stream).unwrap()
+        self.try_index_mut_device(i, val, stream).unwrap();
     }
 
     /// Index the array with the given index and set the value.
     fn index_mut(&mut self, i: Idx, val: Val) {
-        self.try_index_mut(i, val).unwrap()
+        self.try_index_mut(i, val).unwrap();
     }
 }
 
@@ -385,11 +385,11 @@ impl Array {
     #[default_device]
     pub fn take_axis_device(
         &self,
-        indices: impl AsRef<Array>,
+        indices: impl AsRef<Self>,
         axis: i32,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_take_axis(
                 res,
                 self.as_ptr(),
@@ -408,10 +408,10 @@ impl Array {
     #[default_device]
     pub fn take_device(
         &self,
-        indices: impl AsRef<Array>,
+        indices: impl AsRef<Self>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_take(
                 res,
                 self.as_ptr(),
@@ -432,16 +432,16 @@ impl Array {
     #[default_device]
     pub fn take_along_axis_device(
         &self,
-        indices: impl AsRef<Array>,
+        indices: impl AsRef<Self>,
         axis: impl Into<Option<i32>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         let (input, axis) = match axis.into() {
             None => (Cow::Owned(self.reshape_device(&[-1], &stream)?), 0),
             Some(ax) => (Cow::Borrowed(self), ax),
         };
 
-        Array::try_from_op(|res| unsafe {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_take_along_axis(
                 res,
                 input.as_ptr(),
@@ -464,15 +464,15 @@ impl Array {
     #[default_device]
     pub fn put_along_axis_device(
         &self,
-        indices: impl AsRef<Array>,
-        values: impl AsRef<Array>,
+        indices: impl AsRef<Self>,
+        values: impl AsRef<Self>,
         axis: impl Into<Option<i32>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         match axis.into() {
             None => {
                 let input = self.reshape_device(&[-1], &stream)?;
-                let array = Array::try_from_op(|res| unsafe {
+                let array = Self::try_from_op(|res| unsafe {
                     mlx_sys::mlx_put_along_axis(
                         res,
                         input.as_ptr(),
@@ -485,7 +485,7 @@ impl Array {
                 let array = array.reshape_device(self.shape(), &stream)?;
                 Ok(array)
             }
-            Some(ax) => Array::try_from_op(|res| unsafe {
+            Some(ax) => Self::try_from_op(|res| unsafe {
                 mlx_sys::mlx_put_along_axis(
                     res,
                     self.as_ptr(),
@@ -927,9 +927,7 @@ fn expand_ellipsis_operations<'a>(
         return Cow::Borrowed(operations);
     }
 
-    if ellipsis_count > 1 {
-        panic!("Indexing with multiple ellipsis is not supported");
-    }
+    assert!(ellipsis_count <= 1, "Indexing with multiple ellipsis is not supported");
 
     let ellipsis_pos = operations
         .iter()
@@ -951,6 +949,10 @@ fn expand_ellipsis_operations<'a>(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use crate::{array, ops::reshape, Array};
 

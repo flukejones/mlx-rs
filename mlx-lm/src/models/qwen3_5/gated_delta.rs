@@ -184,12 +184,9 @@ pub fn gated_delta_update_ops(
     let g = compute_g(compute_g_cache, a_log, a, dt_bias)?;
 
     let owned_state;
-    let state = match state {
-        Some(s) => s.clone(),
-        None => {
-            owned_state = zeros::<f32>(&[batch, hv, dv, dk])?;
-            owned_state
-        }
+    let state = if let Some(s) = state { s.clone() } else {
+        owned_state = zeros::<f32>(&[batch, hv, dv, dk])?;
+        owned_state
     };
 
     if hv % hk != 0 {
@@ -282,12 +279,9 @@ pub fn gated_delta_update_metal(
     let beta = sigmoid(b)?;
     let g = compute_g(compute_g_cache, a_log, a, dt_bias)?;
     let owned_state;
-    let state_in: &Array = match state {
-        Some(s) => s,
-        None => {
-            owned_state = zeros::<f32>(&[batch, hv, dv, dk])?;
-            &owned_state
-        }
+    let state_in: &Array = if let Some(s) = state { s } else {
+        owned_state = zeros::<f32>(&[batch, hv, dv, dk])?;
+        &owned_state
     };
 
     let input_dtype = q.dtype();
@@ -399,8 +393,7 @@ fn slice_t(x: &Array, t: i32) -> Result<Array, Exception> {
     let shape = y.shape();
     if shape[1] != 1 {
         return Err(Exception::custom(format!(
-            "slice_t: expected axis 1 to be size 1 after take_axis, got shape {:?}",
-            shape
+            "slice_t: expected axis 1 to be size 1 after take_axis, got shape {shape:?}"
         )));
     }
     let new_shape: Vec<i32> = shape
@@ -413,6 +406,10 @@ fn slice_t(x: &Array, t: i32) -> Result<Array, Exception> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use mlx_rs::{random::uniform, transforms::eval};
 

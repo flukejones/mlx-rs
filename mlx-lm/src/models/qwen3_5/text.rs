@@ -240,14 +240,11 @@ impl Attention {
         // Matches mlx-vlm Python: `tile(expand_dims(arange(offset, offset+L), 0), (3, 1, 1))`.
         let offset = cache.as_ref().map(|c| c.offset()).unwrap_or(0);
         let owned_pos;
-        let pos: &Array = match position_ids {
-            Some(p) => p,
-            None => {
-                let range = arange::<_, i32>(offset, offset + l, None)?;
-                let range = reshape(&range, &[1, l])?;
-                owned_pos = broadcast_to(&range, &[b, l])?;
-                &owned_pos
-            }
+        let pos: &Array = if let Some(p) = position_ids { p } else {
+            let range = arange::<_, i32>(offset, offset + l, None)?;
+            let range = reshape(&range, &[1, l])?;
+            owned_pos = broadcast_to(&range, &[b, l])?;
+            &owned_pos
         };
 
         let (cos, sin) = self.rope.cos_sin(pos)?;
@@ -346,6 +343,10 @@ pub fn full_attention_mask(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use mlx_rs::{random::uniform, transforms::eval};
 
@@ -380,7 +381,7 @@ mod tests {
     #[test]
     fn unsupported_rope_type_rejected() {
         let mut cfg = synthetic_text_config();
-        cfg.rope_parameters.rope_type = "yarn".to_string();
+        cfg.rope_parameters.rope_type = "yarn".to_owned();
         let err = Attention::new(&cfg).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("rope_type"), "unexpected error: {msg}");

@@ -1,3 +1,8 @@
+#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::missing_assert_message, reason = "test code")]
+#![allow(clippy::print_stdout, reason = "test code")]
+#![allow(clippy::print_stderr, reason = "test code")]
+
 use mlx_internal_macros::*;
 use mlx_rs::builder::{Buildable, Builder};
 
@@ -19,7 +24,7 @@ generate_builder! {
 
 fn build_test_struct(
     builder: TestStructBuilder,
-) -> std::result::Result<TestStruct, std::convert::Infallible> {
+) -> Result<TestStruct, std::convert::Infallible> {
     Ok(TestStruct {
         opt_field_1: builder.opt_field_1,
         opt_field_2: builder.opt_field_2,

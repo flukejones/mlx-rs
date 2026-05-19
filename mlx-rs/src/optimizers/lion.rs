@@ -77,7 +77,7 @@ impl Optimizer for Lion {
 
     fn update_single(
         &mut self,
-        key: &std::rc::Rc<str>,
+        key: &Rc<str>,
         gradient: &Array,
         parameter: &mut Array,
     ) -> Result<(), crate::error::Exception> {

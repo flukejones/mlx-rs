@@ -111,8 +111,7 @@ impl ChatTemplate {
                 Error::Other(
                     format!("no chat_template at {} or {tokcfg_path:?}", jinja.display()).into(),
                 )
-            })?
-            .to_string();
+            })?.to_owned();
         Ok(Self { source })
     }
 
@@ -150,6 +149,10 @@ impl ChatTemplate {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
 
     /// A simple template that just emits `role: content` per message.

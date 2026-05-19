@@ -71,10 +71,10 @@ fn build_adamw(builder: AdamWBuilder) -> Result<AdamW, Infallible> {
 
 impl AdamW {
     /// Default value for `betas`.
-    pub const DEFAULT_BETAS: (f32, f32) = super::Adam::DEFAULT_BETAS;
+    pub const DEFAULT_BETAS: (f32, f32) = Adam::DEFAULT_BETAS;
 
     /// Default value for `eps`.
-    pub const DEFAULT_EPS: f32 = super::Adam::DEFAULT_EPS;
+    pub const DEFAULT_EPS: f32 = Adam::DEFAULT_EPS;
 
     /// Default value for `weight_decay`.
     pub const DEFAULT_WEIGHT_DECAY: f32 = 0.01;
@@ -93,7 +93,7 @@ impl Optimizer for AdamW {
 
     fn update_single(
         &mut self,
-        key: &std::rc::Rc<str>,
+        key: &Rc<str>,
         gradient: &Array,
         parameter: &mut Array,
     ) -> Result<(), crate::error::Exception> {
@@ -104,7 +104,7 @@ impl Optimizer for AdamW {
         let one_minus_lr_wd = array!(1.0) - (&self.lr * &self.weight_decay);
         let decayed_parameter = &*parameter * &one_minus_lr_wd;
 
-        let (new_parameter, new_states) = super::adam_apply_single(
+        let (new_parameter, new_states) = adam_apply_single(
             &self.lr,
             betas,
             &self.eps,

@@ -42,6 +42,10 @@ pub use trait_def::KeyValueCache;
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use std::collections::HashMap;
 
     use mlx_rs::{
@@ -524,7 +528,7 @@ mod tests {
         let mut caches = make_prompt_cache(3, None);
         assert!(!can_trim_prompt_cache(&caches[..0]));
         assert!(can_trim_prompt_cache(&caches));
-        for c in caches.iter_mut() {
+        for c in &mut caches {
             c.update_and_fetch(token_block(5, 0.0), token_block(5, 0.0))
                 .unwrap();
         }

@@ -66,24 +66,24 @@ generate_test_cases! {
 impl Dtype {
     /// Returns `true` if the data type is complex.
     pub fn is_complex(&self) -> bool {
-        matches!(self, Dtype::Complex64)
+        matches!(self, Self::Complex64)
     }
 
     /// Returns `true` if the data type is floating point.
     pub fn is_float(&self) -> bool {
-        matches!(self, Dtype::Float16 | Dtype::Float32 | Dtype::Bfloat16)
+        matches!(self, Self::Float16 | Self::Float32 | Self::Bfloat16)
     }
 
     /// Returns `true` if the data type is one of `f16`, `f32`, `bfloat16`, or `complex64`.
     pub fn is_inexact(&self) -> bool {
         matches!(
             self,
-            Dtype::Float16 | Dtype::Float32 | Dtype::Complex64 | Dtype::Bfloat16
+            Self::Float16 | Self::Float32 | Self::Complex64 | Self::Bfloat16
         )
     }
 
     /// Returns the promotion type of two data types.
-    pub fn from_promoting_types(a: Dtype, b: Dtype) -> Self {
+    pub fn from_promoting_types(a: Self, b: Self) -> Self {
         a.promote_with(b)
     }
 
@@ -91,10 +91,10 @@ impl Dtype {
     /// float point
     pub fn finfo_min(&self) -> Result<f64, InexactDtypeError> {
         match self {
-            Dtype::Float16 => Ok(f16::MIN.to_f64_const()),
-            Dtype::Float32 => Ok(f32::MIN as f64),
-            Dtype::Complex64 => Ok(f32::MIN as f64),
-            Dtype::Bfloat16 => Ok(bf16::MIN.to_f64_const()),
+            Self::Float16 => Ok(f16::MIN.to_f64_const()),
+            Self::Float32 => Ok(f32::MIN as f64),
+            Self::Complex64 => Ok(f32::MIN as f64),
+            Self::Bfloat16 => Ok(bf16::MIN.to_f64_const()),
             _ => Err(InexactDtypeError(*self)),
         }
     }
@@ -103,10 +103,10 @@ impl Dtype {
     /// float point
     pub fn finfo_max(&self) -> Result<f64, InexactDtypeError> {
         match self {
-            Dtype::Float16 => Ok(f16::MAX.to_f64_const()),
-            Dtype::Float32 => Ok(f32::MAX as f64),
-            Dtype::Complex64 => Ok(f32::MAX as f64),
-            Dtype::Bfloat16 => Ok(bf16::MAX.to_f64_const()),
+            Self::Float16 => Ok(f16::MAX.to_f64_const()),
+            Self::Float32 => Ok(f32::MAX as f64),
+            Self::Complex64 => Ok(f32::MAX as f64),
+            Self::Bfloat16 => Ok(bf16::MAX.to_f64_const()),
             _ => Err(InexactDtypeError(*self)),
         }
     }
@@ -118,7 +118,7 @@ pub(crate) trait TypePromotion {
 
 impl TypePromotion for Dtype {
     fn promote_with(self, other: Self) -> Self {
-        use crate::dtype::Dtype::*;
+        use crate::dtype::Dtype::{Bool, Uint8, Uint16, Uint32, Uint64, Int8, Int16, Int32, Int64, Float32, Float16, Bfloat16, Complex64, Float64};
         match (self, other) {
             // Boolean promotions
             (Bool, Bool) => Bool,

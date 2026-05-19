@@ -50,7 +50,7 @@ pub fn load_sharded<M: ModuleParametersExt>(model: &mut M, model_dir: &Path) -> 
 
     let quantised_prefixes: HashSet<String> = raw
         .keys()
-        .filter_map(|k| k.strip_suffix(".scales").map(|p| p.to_string()))
+        .filter_map(|k| k.strip_suffix(".scales").map(|p| p.to_owned()))
         .collect();
 
     let mut filled: HashSet<String> = HashSet::new();

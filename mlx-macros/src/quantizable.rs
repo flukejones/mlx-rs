@@ -28,8 +28,8 @@ pub(crate) fn expand_quantizable(
 }
 
 fn expand_quantizable_module_for_struct(
-    ident: &syn::Ident,
-    generics: &syn::Generics,
+    ident: &Ident,
+    generics: &Generics,
     data: &syn::DataStruct,
     root: Option<syn::Path>,
 ) -> Result<proc_macro2::TokenStream, syn::Error> {

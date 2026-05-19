@@ -22,8 +22,8 @@ impl Array {
     /// // data == [1, 2, 3, 4, 5]
     /// ```
     #[default_device]
-    pub fn abs_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn abs_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_abs(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -50,10 +50,10 @@ impl Array {
     #[default_device]
     pub fn add_device(
         &self,
-        other: impl AsRef<Array>,
+        other: impl AsRef<Self>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_add(
                 res,
                 self.as_ptr(),
@@ -85,10 +85,10 @@ impl Array {
     #[default_device]
     pub fn subtract_device(
         &self,
-        other: impl AsRef<Array>,
+        other: impl AsRef<Self>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_subtract(
                 res,
                 self.as_ptr(),
@@ -113,8 +113,8 @@ impl Array {
     /// // b_data == [-1.0, -2.0, -3.0]
     /// ```
     #[default_device]
-    pub fn negative_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn negative_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_negative(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -137,10 +137,10 @@ impl Array {
     #[default_device]
     pub fn multiply_device(
         &self,
-        other: impl AsRef<Array>,
+        other: impl AsRef<Self>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_multiply(
                 res,
                 self.as_ptr(),
@@ -166,7 +166,7 @@ impl Array {
         pos_inf: impl IntoOption<f32>,
         neg_inf: impl IntoOption<f32>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         let pos_inf = pos_inf.into_option();
         let neg_inf = neg_inf.into_option();
 
@@ -179,7 +179,7 @@ impl Array {
             has_value: neg_inf.is_some(),
         };
 
-        Array::try_from_op(|res| unsafe {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_nan_to_num(
                 res,
                 self.as_ptr(),
@@ -213,10 +213,10 @@ impl Array {
     #[default_device]
     pub fn divide_device(
         &self,
-        other: impl AsRef<Array>,
+        other: impl AsRef<Self>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_divide(
                 res,
                 self.as_ptr(),
@@ -248,10 +248,10 @@ impl Array {
     #[default_device]
     pub fn power_device(
         &self,
-        other: impl AsRef<Array>,
+        other: impl AsRef<Self>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_power(
                 res,
                 self.as_ptr(),
@@ -283,10 +283,10 @@ impl Array {
     #[default_device]
     pub fn remainder_device(
         &self,
-        other: impl AsRef<Array>,
+        other: impl AsRef<Self>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_remainder(
                 res,
                 self.as_ptr(),
@@ -309,8 +309,8 @@ impl Array {
     /// // b_data == [1.0, 2.0, 3.0]
     /// ```
     #[default_device]
-    pub fn sqrt_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn sqrt_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_sqrt(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -328,8 +328,8 @@ impl Array {
     /// // b_data == [1.0, 0.54030234, -0.41614687]
     /// ```
     #[default_device]
-    pub fn cos_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn cos_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_cos(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -349,8 +349,8 @@ impl Array {
     /// // b_data == [1.0, 2.7182817, 7.389056]
     /// ```
     #[default_device]
-    pub fn exp_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn exp_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_exp(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -368,8 +368,8 @@ impl Array {
     /// // b_data == [0.0, 1.0, 2.0]
     /// ```
     #[default_device]
-    pub fn floor_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn floor_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_floor(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -400,10 +400,10 @@ impl Array {
     #[default_device]
     pub fn floor_divide_device(
         &self,
-        other: impl AsRef<Array>,
+        other: impl AsRef<Self>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_floor_divide(
                 res,
                 self.as_ptr(),
@@ -418,8 +418,8 @@ impl Array {
     /// # Params
     /// - stream: stream or device to evaluate on
     #[default_device]
-    pub fn is_nan_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn is_nan_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_isnan(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -429,8 +429,8 @@ impl Array {
     /// # Params
     /// - stream: stream or device to evaluate on
     #[default_device]
-    pub fn is_inf_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn is_inf_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_isinf(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -440,8 +440,8 @@ impl Array {
     /// # Params
     /// - stream: stream or device to evaluate on
     #[default_device]
-    pub fn is_finite_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn is_finite_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_isfinite(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -451,8 +451,8 @@ impl Array {
     /// # Params
     /// - stream: stream or device to evaluate on
     #[default_device]
-    pub fn is_neg_inf_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn is_neg_inf_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_isneginf(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -462,8 +462,8 @@ impl Array {
     /// # Params
     /// - stream: stream or device to evaluate on
     #[default_device]
-    pub fn is_pos_inf_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn is_pos_inf_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_isposinf(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -481,8 +481,8 @@ impl Array {
     /// // b_data == [0.0, 0.6931472, 1.0986123]
     /// ```
     #[default_device]
-    pub fn log_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn log_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_log(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -500,8 +500,8 @@ impl Array {
     /// // b_data == [0.0, 1.0, 2.0, 3.0]
     /// ```
     #[default_device]
-    pub fn log2_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn log2_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_log2(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -519,8 +519,8 @@ impl Array {
     /// // b_data == [0.0, 1.0, 2.0]
     /// ```
     #[default_device]
-    pub fn log10_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn log10_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_log10(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -538,8 +538,8 @@ impl Array {
     /// // b_data == [0.6931472, 1.0986123, 1.3862944]
     /// ```
     #[default_device]
-    pub fn log1p_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn log1p_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_log1p(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -576,10 +576,10 @@ impl Array {
     #[default_device]
     pub fn matmul_device(
         &self,
-        other: impl AsRef<Array>,
+        other: impl AsRef<Self>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_matmul(
                 res,
                 self.as_ptr(),
@@ -602,8 +602,8 @@ impl Array {
     /// // b_data == [1.0, 0.5, 0.25]
     /// ```
     #[default_device]
-    pub fn reciprocal_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn reciprocal_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_reciprocal(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -618,8 +618,8 @@ impl Array {
         &self,
         decimals: impl Into<Option<i32>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_round(
                 res,
                 self.as_ptr(),
@@ -631,40 +631,40 @@ impl Array {
 
     /// Element-wise reciprocal and square root.
     #[default_device]
-    pub fn rsqrt_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn rsqrt_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_rsqrt(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
 
     /// Element-wise sine.
     #[default_device]
-    pub fn sin_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn sin_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_sin(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
 
     /// Element-wise square.
     #[default_device]
-    pub fn square_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn square_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_square(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
 
     /// Element-wise real part from a complex array.
     #[default_device]
-    pub fn real_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn real_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_real(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
 
     /// Element-wise imag part from a complex array.
     #[default_device]
-    pub fn imag_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn imag_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_imag(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -1633,6 +1633,10 @@ pub fn gather_mm_device<'lhs, 'rhs>(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use std::f32::consts::PI;
 
     use super::*;
@@ -2328,10 +2332,10 @@ mod tests {
         let x = array![0.0];
         assert_eq!(sin(&x).unwrap().item::<f32>(), 0.0);
 
-        let x = array![std::f32::consts::PI / 2.0];
+        let x = array![PI / 2.0];
         assert_float_eq! {
             sin(&x).unwrap().item::<f32>(),
-            (std::f32::consts::PI / 2.0f32).sin(),
+            (PI / 2.0f32).sin(),
             abs <= 1e-5
         };
 
@@ -2371,10 +2375,10 @@ mod tests {
             abs <= 1e-5
         };
 
-        let x = array![std::f32::consts::PI / 2.0];
+        let x = array![PI / 2.0];
         assert_float_eq! {
             cos(&x).unwrap().item::<f32>(),
-            (std::f32::consts::PI / 2.0f32).cos(),
+            (PI / 2.0f32).cos(),
             abs <= 1e-5
         };
 
@@ -2410,7 +2414,7 @@ mod tests {
         let x = array![0.0];
         assert_eq!(degrees(&x).unwrap().item::<f32>(), 0.0);
 
-        let x = array![std::f32::consts::PI / 2.0];
+        let x = array![PI / 2.0];
         assert_eq!(degrees(&x).unwrap().item::<f32>(), 90.0);
 
         assert_eq!(degrees(array!()).unwrap(), array!());
@@ -2421,7 +2425,7 @@ mod tests {
         assert_eq!(degrees(&x).unwrap().item::<f32>(), 0.0);
 
         // Input is irregularly strided
-        let x = broadcast_to(&array!(std::f32::consts::PI / 2.0), &[2, 2, 2]).unwrap();
+        let x = broadcast_to(&array!(PI / 2.0), &[2, 2, 2]).unwrap();
         let res = degrees(&x).unwrap();
         let expected = Array::full::<f32>(&[2, 2, 2], array!(90.0)).unwrap();
         assert!(all_close(&res, &expected, None, None, None)
@@ -2446,7 +2450,7 @@ mod tests {
         let x = array![90.0];
         assert_eq!(
             radians(&x).unwrap().item::<f32>(),
-            std::f32::consts::PI / 2.0
+            PI / 2.0
         );
 
         assert_eq!(radians(array!()).unwrap(), array!());
@@ -2456,13 +2460,13 @@ mod tests {
         assert_eq!(x.dtype(), Dtype::Int32);
         assert_eq!(
             radians(&x).unwrap().item::<f32>(),
-            std::f32::consts::PI / 2.0
+            PI / 2.0
         );
 
         // Input is irregularly strided
         let x = broadcast_to(&array!(90.0), &[2, 2, 2]).unwrap();
         let res = radians(&x).unwrap();
-        let expected = Array::full::<f32>(&[2, 2, 2], array!(std::f32::consts::PI / 2.0)).unwrap();
+        let expected = Array::full::<f32>(&[2, 2, 2], array!(PI / 2.0)).unwrap();
         assert!(all_close(&res, &expected, None, None, None)
             .unwrap()
             .item::<bool>());
@@ -3070,11 +3074,7 @@ mod tests {
                 let c2 = segmented_mm(&a, &b, &segments).unwrap();
                 assert!(
                     c1.all_close(&c2, 1e-4, 1e-4, None).unwrap().item::<bool>(),
-                    "segmented_mm failed for shape ({}, {}, {}) with segments {:?}",
-                    m,
-                    n,
-                    k,
-                    s
+                    "segmented_mm failed for shape ({m}, {n}, {k}) with segments {s:?}"
                 );
 
                 // Test a.T @ b (transposed a)
@@ -3085,10 +3085,7 @@ mod tests {
                 let c2 = segmented_mm(&a_t, &b, &segments).unwrap();
                 assert!(
                     c1.all_close(&c2, 1e-4, 1e-4, None).unwrap().item::<bool>(),
-                    "segmented_mm with transposed a failed for shape ({}, {}, {})",
-                    m,
-                    n,
-                    k
+                    "segmented_mm with transposed a failed for shape ({m}, {n}, {k})"
                 );
 
                 // Test a @ b.T (transposed b)
@@ -3099,10 +3096,7 @@ mod tests {
                 let c2 = segmented_mm(&a, &b_t, &segments).unwrap();
                 assert!(
                     c1.all_close(&c2, 1e-4, 1e-4, None).unwrap().item::<bool>(),
-                    "segmented_mm with transposed b failed for shape ({}, {}, {})",
-                    m,
-                    n,
-                    k
+                    "segmented_mm with transposed b failed for shape ({m}, {n}, {k})"
                 );
 
                 // Test a.T @ b.T (both transposed)
@@ -3114,10 +3108,7 @@ mod tests {
                 let c2 = segmented_mm(&a_t, &b_t, &segments).unwrap();
                 assert!(
                     c1.all_close(&c2, 1e-4, 1e-4, None).unwrap().item::<bool>(),
-                    "segmented_mm with both transposed failed for shape ({}, {}, {})",
-                    m,
-                    n,
-                    k
+                    "segmented_mm with both transposed failed for shape ({m}, {n}, {k})"
                 );
             }
         }
@@ -3227,7 +3218,7 @@ mod tests {
 
         let a = random::normal::<f32>(&[100, 1, 100], None, None, None).unwrap();
         let b = random::normal::<f32>(&[8, 100, 100], None, None, None).unwrap();
-        let rhs = sort(&random::randint::<_, i32>(0, 8, &[100], None).unwrap()).unwrap();
+        let rhs = sort(random::randint::<_, i32>(0, 8, &[100], None).unwrap()).unwrap();
 
         let c1 = gather_mm_ref(&a, &b, &rhs);
         let c2 = gather_mm(&a, &b, None::<&Array>, &rhs, true).unwrap();

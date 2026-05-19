@@ -218,7 +218,7 @@ where
     type Error = Exception;
     type Output = Array;
 
-    #[allow(non_snake_case)]
+    #[allow(non_snake_case, reason = "local bindings mirror ML tensor names (Q, K, V)")]
     fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
         let input = input.into();
         let queries = self.query_proj.forward(input.queries)?;

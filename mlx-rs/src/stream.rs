@@ -47,27 +47,27 @@ pub struct StreamOrDevice {
 
 impl StreamOrDevice {
     /// Create a new [`StreamOrDevice`] with a [`Stream`].
-    pub fn new(stream: Stream) -> StreamOrDevice {
-        StreamOrDevice { stream }
+    pub fn new(stream: Stream) -> Self {
+        Self { stream }
     }
 
     /// Create a new [`StreamOrDevice`] with a [`Device`].
-    pub fn new_with_device(device: &Device) -> StreamOrDevice {
-        StreamOrDevice {
+    pub fn new_with_device(device: &Device) -> Self {
+        Self {
             stream: Stream::new_with_device(device),
         }
     }
 
     /// Current default CPU stream.
-    pub fn cpu() -> StreamOrDevice {
-        StreamOrDevice {
+    pub fn cpu() -> Self {
+        Self {
             stream: Stream::cpu(),
         }
     }
 
     /// Current default GPU stream.
-    pub fn gpu() -> StreamOrDevice {
-        StreamOrDevice {
+    pub fn gpu() -> Self {
+        Self {
             stream: Stream::gpu(),
         }
     }
@@ -110,15 +110,15 @@ pub struct Stream {
     pub(crate) c_stream: mlx_sys::mlx_stream,
 }
 
-impl AsRef<Stream> for Stream {
-    fn as_ref(&self) -> &Stream {
+impl AsRef<Self> for Stream {
+    fn as_ref(&self) -> &Self {
         self
     }
 }
 
 impl Clone for Stream {
     fn clone(&self) -> Self {
-        Stream::try_from_op(|res| unsafe { mlx_sys::mlx_stream_set(res, self.c_stream) })
+        Self::try_from_op(|res| unsafe { mlx_sys::mlx_stream_set(res, self.c_stream) })
             .expect("Failed to clone stream")
     }
 }
@@ -133,17 +133,17 @@ impl Stream {
     /// Create a new stream on the default cpu device, or return the task local
     /// default stream if present.
     pub fn task_local_or_cpu() -> Self {
-        task_local_default_stream().unwrap_or_else(Stream::cpu)
+        task_local_default_stream().unwrap_or_else(Self::cpu)
     }
 
     /// Create a new stream on the default gpu device, or return the task local
     /// default stream if present.
     pub fn task_local_or_gpu() -> Self {
-        task_local_default_stream().unwrap_or_else(Stream::gpu)
+        task_local_default_stream().unwrap_or_else(Self::gpu)
     }
 
     /// Create a new stream on the default device. Panics if fails.
-    pub fn new() -> Stream {
+    pub fn new() -> Self {
         unsafe {
             let mut dev = mlx_sys::mlx_device_new();
             // SAFETY: mlx_get_default_device internally never throws an error
@@ -154,20 +154,20 @@ impl Stream {
             mlx_sys::mlx_get_default_stream(&mut c_stream as *mut _, dev);
 
             mlx_sys::mlx_device_free(dev);
-            Stream { c_stream }
+            Self { c_stream }
         }
     }
 
     /// Try to get the default stream on the given device.
-    pub fn try_default_on_device(device: &Device) -> Result<Stream> {
-        Stream::try_from_op(|res| unsafe { mlx_sys::mlx_get_default_stream(res, device.c_device) })
+    pub fn try_default_on_device(device: &Device) -> Result<Self> {
+        Self::try_from_op(|res| unsafe { mlx_sys::mlx_get_default_stream(res, device.c_device) })
     }
 
     /// Create a new stream on the given device
-    pub fn new_with_device(device: &Device) -> Stream {
+    pub fn new_with_device(device: &Device) -> Self {
         unsafe {
             let c_stream = mlx_sys::mlx_stream_new_device(device.c_device);
-            Stream { c_stream }
+            Self { c_stream }
         }
     }
 
@@ -180,7 +180,7 @@ impl Stream {
     pub fn cpu() -> Self {
         unsafe {
             let c_stream = mlx_sys::mlx_default_cpu_stream_new();
-            Stream { c_stream }
+            Self { c_stream }
         }
     }
 
@@ -188,7 +188,7 @@ impl Stream {
     pub fn gpu() -> Self {
         unsafe {
             let c_stream = mlx_sys::mlx_default_gpu_stream_new();
-            Stream { c_stream }
+            Self { c_stream }
         }
     }
 
@@ -231,7 +231,7 @@ impl Drop for Stream {
 
 impl Default for Stream {
     fn default() -> Self {
-        Stream::new()
+        Self::new()
     }
 }
 
@@ -255,6 +255,9 @@ impl PartialEq for Stream {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
 
     #[test]

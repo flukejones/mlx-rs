@@ -267,6 +267,10 @@ pub fn gather_qmm_combine(inputs: GatherQmmCombineInputs<'_>) -> Result<Array> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use mlx_rs::ops::{expand_dims_axes, gather_qmm, quantize, sum_axes};
     use mlx_rs::random::uniform;

@@ -1,3 +1,7 @@
+#![allow(clippy::missing_assert_message, reason = "test code")]
+#![allow(clippy::print_stdout, reason = "test code")]
+#![allow(clippy::print_stderr, reason = "test code")]
+
 use mlx_rs::{
     error::Exception,
     macros::{ModuleParameters, Quantizable},
@@ -23,6 +27,6 @@ impl Module<&Array> for QuantizableExample {
     }
 
     fn training_mode(&mut self, mode: bool) {
-        self.ql.training_mode(mode)
+        self.ql.training_mode(mode);
     }
 }

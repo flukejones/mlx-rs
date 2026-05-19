@@ -204,16 +204,13 @@ impl Qwen35Decoder {
         caches: &mut [LayerCache],
         position_ids: Option<&Array>,
     ) -> Result<Array, Exception> {
-        let mut h = match inputs_embeds {
-            Some(e) => e.clone(),
-            None => {
-                let ids = inputs.ok_or_else(|| {
-                    Exception::custom(
-                        "Qwen35Decoder::forward: needs either inputs or inputs_embeds",
-                    )
-                })?;
-                self.embed_tokens.forward(ids)?
-            }
+        let mut h = if let Some(e) = inputs_embeds { e.clone() } else {
+            let ids = inputs.ok_or_else(|| {
+                Exception::custom(
+                    "Qwen35Decoder::forward: needs either inputs or inputs_embeds",
+                )
+            })?;
+            self.embed_tokens.forward(ids)?
         };
 
         if caches.len() != self.layers.len() {
@@ -384,6 +381,10 @@ impl LanguageModel {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use crate::models::qwen3_5::cache::make_caches;
     use mlx_rs::{random::uniform, transforms::eval, Array};

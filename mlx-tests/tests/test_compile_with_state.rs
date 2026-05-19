@@ -1,5 +1,10 @@
 //! Tests for compilation of modules and optimizers.
 
+#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::missing_assert_message, reason = "test code")]
+#![allow(clippy::print_stdout, reason = "test code")]
+#![allow(clippy::print_stderr, reason = "test code")]
+
 mod common;
 
 use common::LinearFunctionModel;

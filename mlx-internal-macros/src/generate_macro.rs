@@ -33,7 +33,7 @@ fn remove_attribute(attrs: &mut Vec<syn::Attribute>, targets: &[&str]) {
 
 /// Remove "$" prefix from the string
 fn remove_prefix_from_str(s: &str) -> String {
-    s.trim_start_matches("$").to_string()
+    s.trim_start_matches('$').to_owned()
 }
 
 pub fn expand_generate_macro(
@@ -125,10 +125,7 @@ fn handle_generic_args(
     // All generics arguments except for the last one will be inferred
     let infer_tokens = vec![quote! { _ }; count - 1];
 
-    let default_generics = match default_dtype {
-        Some(path) => quote! { ::<#(#infer_tokens,)* #path> },
-        None => quote! { ::<#(#infer_tokens,)* f32> },
-    };
+    let default_generics = if let Some(path) = default_dtype { quote! { ::<#(#infer_tokens,)* #path> } } else { quote! { ::<#(#infer_tokens,)* f32> } };
     let dtype_generics = quote! { ::<#(#infer_tokens,)* $dtype> };
 
     (default_generics, Some(dtype_generics))
@@ -155,9 +152,7 @@ fn parse_args(args: Vec<&mut syn::PatType>) -> Vec<Arg> {
                 let arg_type = arg_type(&arg.attrs);
 
                 let is_positional = matches!(arg_type, ArgType::Positional);
-                if is_prev_optional && is_positional {
-                    panic!("positional argument cannot follow an optional argument");
-                }
+                assert!(!(is_prev_optional && is_positional), "positional argument cannot follow an optional argument");
                 is_prev_optional = matches!(arg_type, ArgType::NamedOptional);
 
                 parsed.push(Arg {
@@ -183,7 +178,7 @@ fn generate_macro(
 ) -> Result<proc_macro2::TokenStream, syn::Error> {
     let mut trimmed_fn_ident_str = fn_ident.to_string();
     if trimmed_fn_ident_str.ends_with("_device") {
-        trimmed_fn_ident_str = trimmed_fn_ident_str.trim_end_matches("_device").to_string();
+        trimmed_fn_ident_str = trimmed_fn_ident_str.trim_end_matches("_device").to_owned();
     }
     let trimmed_fn_ident = Ident::new(&trimmed_fn_ident_str, fn_ident.span());
 
@@ -267,7 +262,7 @@ fn generate_macro_variants(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "codegen helper threads macro parsing context")]
 fn generate_macro_variants_for_selected_args(
     fn_mod_path: &proc_macro2::TokenStream,
     fn_ident: &Ident,

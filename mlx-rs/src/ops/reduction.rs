@@ -29,8 +29,8 @@ impl Array {
         axes: &[i32],
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_all_axes(
                 res,
                 self.as_ptr(),
@@ -49,8 +49,8 @@ impl Array {
         axis: i32,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_all_axis(
                 res,
                 self.as_ptr(),
@@ -67,8 +67,8 @@ impl Array {
         &self,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_all(
                 res,
                 self.as_ptr(),
@@ -100,8 +100,8 @@ impl Array {
         axes: &[i32],
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_prod_axes(
                 res,
                 self.as_ptr(),
@@ -120,8 +120,8 @@ impl Array {
         axis: i32,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_prod_axis(
                 res,
                 self.as_ptr(),
@@ -138,8 +138,8 @@ impl Array {
         &self,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_prod(
                 res,
                 self.as_ptr(),
@@ -171,8 +171,8 @@ impl Array {
         axes: &[i32],
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_max_axes(
                 res,
                 self.as_ptr(),
@@ -191,8 +191,8 @@ impl Array {
         axis: i32,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_max_axis(
                 res,
                 self.as_ptr(),
@@ -209,8 +209,8 @@ impl Array {
         &self,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_max(
                 res,
                 self.as_ptr(),
@@ -242,8 +242,8 @@ impl Array {
         axes: &[i32],
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_sum_axes(
                 res,
                 self.as_ptr(),
@@ -262,8 +262,8 @@ impl Array {
         axis: i32,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_sum_axis(
                 res,
                 self.as_ptr(),
@@ -280,8 +280,8 @@ impl Array {
         &self,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_sum(
                 res,
                 self.as_ptr(),
@@ -313,9 +313,9 @@ impl Array {
         axes: &[i32],
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         let axes = axes_or_default_to_all(axes, self.ndim() as i32);
-        Array::try_from_op(|res| unsafe {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_mean_axes(
                 res,
                 self.as_ptr(),
@@ -334,8 +334,8 @@ impl Array {
         axis: i32,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_mean_axis(
                 res,
                 self.as_ptr(),
@@ -352,8 +352,8 @@ impl Array {
         &self,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_mean(
                 res,
                 self.as_ptr(),
@@ -385,8 +385,8 @@ impl Array {
         axes: &[i32],
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_min_axes(
                 res,
                 self.as_ptr(),
@@ -405,8 +405,8 @@ impl Array {
         axis: i32,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_min_axis(
                 res,
                 self.as_ptr(),
@@ -423,8 +423,8 @@ impl Array {
         &self,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_min(
                 res,
                 self.as_ptr(),
@@ -448,8 +448,8 @@ impl Array {
         keep_dims: impl Into<Option<bool>>,
         ddof: impl Into<Option<i32>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_var_axes(
                 res,
                 self.as_ptr(),
@@ -470,8 +470,8 @@ impl Array {
         keep_dims: impl Into<Option<bool>>,
         ddof: impl Into<Option<i32>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_var_axis(
                 res,
                 self.as_ptr(),
@@ -490,8 +490,8 @@ impl Array {
         keep_dims: impl Into<Option<bool>>,
         ddof: impl Into<Option<i32>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_var(
                 res,
                 self.as_ptr(),
@@ -514,8 +514,8 @@ impl Array {
         axes: &[i32],
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_median(
                 res,
                 self.as_ptr(),
@@ -534,7 +534,7 @@ impl Array {
         axis: i32,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         self.median_axes_device(&[axis], keep_dims, stream)
     }
 
@@ -544,7 +544,7 @@ impl Array {
         &self,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         let axes: Vec<i32> = (0..self.ndim() as i32).collect();
         self.median_axes_device(&axes, keep_dims, stream)
     }
@@ -563,8 +563,8 @@ impl Array {
         axes: &[i32],
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_logsumexp_axes(
                 res,
                 self.as_ptr(),
@@ -583,8 +583,8 @@ impl Array {
         axis: i32,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_logsumexp_axis(
                 res,
                 self.as_ptr(),
@@ -601,8 +601,8 @@ impl Array {
         &self,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_logsumexp(
                 res,
                 self.as_ptr(),
@@ -1017,6 +1017,10 @@ pub fn logsumexp_device(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use pretty_assertions::assert_eq;
 
@@ -1060,7 +1064,7 @@ mod tests {
         assert_eq!(result.as_slice::<i32>(), &[3, 6]);
 
         let result = x.prod_axis(1, None).unwrap();
-        assert_eq!(result.as_slice::<i32>(), &[2, 9])
+        assert_eq!(result.as_slice::<i32>(), &[2, 9]);
     }
 
     #[test]

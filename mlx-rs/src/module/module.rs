@@ -71,12 +71,12 @@ pub trait ModuleParameters {
     /// Update the module parameters.
     fn update(&mut self, parameters: ModuleParam) {
         let flattened_parameters = parameters.flatten();
-        update_parameters(self, flattened_parameters)
+        update_parameters(self, flattened_parameters);
     }
 
     /// Update the module parameters from a flattened representation.
     fn update_flattened(&mut self, flattened_parameters: FlattenedModuleParam) {
-        update_parameters(self, flattened_parameters)
+        update_parameters(self, flattened_parameters);
     }
 
     /// Freeze all parameters in the module.
@@ -232,7 +232,7 @@ where
 
     fn all_frozen(&self) -> Option<bool> {
         let mut result = None;
-        for module in self.iter() {
+        for module in self {
             match module.all_frozen() {
                 Some(true) => result = Some(true),
                 Some(false) => return Some(false),
@@ -244,7 +244,7 @@ where
 
     fn any_frozen(&self) -> Option<bool> {
         let mut result = None;
-        for module in self.iter() {
+        for module in self {
             match module.any_frozen() {
                 Some(true) => return Some(true),
                 Some(false) => result = Some(false),

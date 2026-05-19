@@ -8,6 +8,11 @@
 //! These tests are all `#[ignore]`-gated; they require the chandra-ocr-2
 //! q8 checkpoint on disk and the npz/json fixtures alongside this file.
 
+#![allow(clippy::print_stderr, reason = "test output")]
+#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::missing_assert_message, reason = "test code")]
+#![allow(clippy::print_stdout, reason = "test code")]
+
 use std::path::{Path, PathBuf};
 
 use mlx_lm::models::qwen3_5::{
@@ -38,7 +43,7 @@ fn read_npz_last_logits(path: &Path) -> Vec<f32> {
     let mut zip = zip::ZipArchive::new(f).expect("open zip");
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).unwrap();
-        let name = entry.name().to_string();
+        let name = entry.name().to_owned();
         if !name.contains("last_logits") {
             continue;
         }
@@ -72,7 +77,7 @@ fn read_npz_field(path: &Path, field: &str) -> Vec<f32> {
     let mut zip = zip::ZipArchive::new(f).expect("open zip");
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).unwrap();
-        let name = entry.name().to_string();
+        let name = entry.name().to_owned();
         if !name.contains(field) {
             continue;
         }
@@ -122,8 +127,8 @@ fn dump_input_layernorm_weight_stats() {
     let w = &model.model.layers[0].input_layernorm.weight.value;
     let v = flatten_f32(w);
     let mean: f64 = v.iter().map(|&x| x as f64).sum::<f64>() / v.len() as f64;
-    let max = v.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let min = v.iter().cloned().fold(f32::INFINITY, f32::min);
+    let max = v.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let min = v.iter().copied().fold(f32::INFINITY, f32::min);
     eprintln!(
         "rust input_layernorm.weight first10={:?} mean={mean:.6} min={min} max={max}",
         &v[..10]

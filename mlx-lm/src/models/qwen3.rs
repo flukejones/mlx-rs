@@ -553,6 +553,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use mlx_rs::{
         module::Module,
         ops::indexing::{IndexOp, NewAxis},
@@ -570,7 +574,7 @@ mod tests {
     #[test]
     #[ignore = "requires local model files"]
     fn test_load_qwen3_model() {
-        let _model = super::load_qwen3_model(CACHED_TEST_MODEL_DIR).unwrap();
+        let _model = load_qwen3_model(CACHED_TEST_MODEL_DIR).unwrap();
     }
 
     const CACHED_QUANT_TEST_MODEL_DIR: &str = "../cache/Qwen3-1.7B-MLX-8bit";
@@ -582,7 +586,7 @@ mod tests {
     #[test]
     #[ignore = "requires local quantised model files"]
     fn quantized_qwen3_model_loads_and_forwards() {
-        let mut model = super::load_qwen3_model(CACHED_QUANT_TEST_MODEL_DIR).unwrap();
+        let mut model = load_qwen3_model(CACHED_QUANT_TEST_MODEL_DIR).unwrap();
         let prompt = Array::from_slice(&[1i32, 2, 3, 4], &[1, 4]);
         let mut cache: Vec<Option<KVCache>> = Vec::new();
         let input = super::ModelInput {

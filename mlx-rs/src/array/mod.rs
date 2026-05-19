@@ -26,7 +26,7 @@ pub use element::ArrayElement;
 // Not using Complex64 because `num_complex::Complex64` is actually Complex<f64>
 
 /// Type alias for `num_complex::Complex<f32>`.
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types, reason = "matches f32/f64 numeric-type naming convention")]
 pub type complex64 = Complex<f32>;
 
 /// An n-dimensional array.
@@ -93,7 +93,7 @@ impl Array {
     ///
     /// The caller must ensure the reference count of the array is properly incremented with
     /// `mlx_sys::mlx_retain`.
-    pub unsafe fn from_ptr(c_array: mlx_array) -> Array {
+    pub unsafe fn from_ptr(c_array: mlx_array) -> Self {
         Self { c_array }
     }
 
@@ -103,33 +103,33 @@ impl Array {
     }
 
     /// New array from a bool scalar.
-    pub fn from_bool(val: bool) -> Array {
+    pub fn from_bool(val: bool) -> Self {
         let c_array = unsafe { mlx_sys::mlx_array_new_bool(val) };
-        Array { c_array }
+        Self { c_array }
     }
 
     /// New array from an int scalar.
-    pub fn from_int(val: i32) -> Array {
+    pub fn from_int(val: i32) -> Self {
         let c_array = unsafe { mlx_sys::mlx_array_new_int(val) };
-        Array { c_array }
+        Self { c_array }
     }
 
     /// New array from a f32 scalar.
-    pub fn from_f32(val: f32) -> Array {
+    pub fn from_f32(val: f32) -> Self {
         let c_array = unsafe { mlx_sys::mlx_array_new_float32(val) };
-        Array { c_array }
+        Self { c_array }
     }
 
     /// New array from a f64 scalar.
-    pub fn from_f64(val: f64) -> Array {
+    pub fn from_f64(val: f64) -> Self {
         let c_array = unsafe { mlx_sys::mlx_array_new_float64(val) };
-        Array { c_array }
+        Self { c_array }
     }
 
     /// New array from a complex scalar.
-    pub fn from_complex(val: complex64) -> Array {
+    pub fn from_complex(val: complex64) -> Self {
         let c_array = unsafe { mlx_sys::mlx_array_new_complex(val.re, val.im) };
-        Array { c_array }
+        Self { c_array }
     }
 
     /// New array from existing buffer.
@@ -151,7 +151,7 @@ impl Array {
         // Validate data size and shape
         assert_eq!(data.len(), shape.iter().product::<i32>() as usize);
 
-        unsafe { Self::from_raw_data(data.as_ptr() as *const c_void, shape, T::DTYPE) }
+        unsafe { Self::from_raw_data(data.as_ptr().cast::<c_void>(), shape, T::DTYPE) }
     }
 
     /// New array from a slice of f64.
@@ -162,7 +162,7 @@ impl Array {
         // Validate data size and shape
         assert_eq!(data.len(), shape.iter().product::<i32>() as usize);
 
-        unsafe { Self::from_raw_data(data.as_ptr() as *const c_void, shape, Dtype::Float64) }
+        unsafe { Self::from_raw_data(data.as_ptr().cast::<c_void>(), shape, Dtype::Float64) }
     }
 
     /// Create a new array from raw data buffer.
@@ -182,7 +182,7 @@ impl Array {
         };
 
         let c_array = mlx_sys::mlx_array_new_data(data, shape.as_ptr(), dim, dtype.into());
-        Array { c_array }
+        Self { c_array }
     }
 
     /// New array from an iterator.
@@ -336,7 +336,7 @@ impl Array {
         // Though `mlx_array_item_<dtype>` returns a status code, it doesn't
         // return any non-success status code even if the dtype doesn't match.
         if self.dtype() != T::DTYPE {
-            let new_array = Array::try_from_op(|res| unsafe {
+            let new_array = Self::try_from_op(|res| unsafe {
                 mlx_sys::mlx_astype(
                     res,
                     self.as_ptr(),
@@ -445,35 +445,35 @@ impl Array {
             let dtype = self.dtype();
             let shape = self.shape();
             let data = match dtype {
-                Dtype::Bool => mlx_sys::mlx_array_data_bool(self.as_ptr()) as *const c_void,
-                Dtype::Uint8 => mlx_sys::mlx_array_data_uint8(self.as_ptr()) as *const c_void,
-                Dtype::Uint16 => mlx_sys::mlx_array_data_uint16(self.as_ptr()) as *const c_void,
-                Dtype::Uint32 => mlx_sys::mlx_array_data_uint32(self.as_ptr()) as *const c_void,
-                Dtype::Uint64 => mlx_sys::mlx_array_data_uint64(self.as_ptr()) as *const c_void,
-                Dtype::Int8 => mlx_sys::mlx_array_data_int8(self.as_ptr()) as *const c_void,
-                Dtype::Int16 => mlx_sys::mlx_array_data_int16(self.as_ptr()) as *const c_void,
-                Dtype::Int32 => mlx_sys::mlx_array_data_int32(self.as_ptr()) as *const c_void,
-                Dtype::Int64 => mlx_sys::mlx_array_data_int64(self.as_ptr()) as *const c_void,
-                Dtype::Float16 => mlx_sys::mlx_array_data_float16(self.as_ptr()) as *const c_void,
-                Dtype::Float32 => mlx_sys::mlx_array_data_float32(self.as_ptr()) as *const c_void,
-                Dtype::Float64 => mlx_sys::mlx_array_data_float64(self.as_ptr()) as *const c_void,
-                Dtype::Bfloat16 => mlx_sys::mlx_array_data_bfloat16(self.as_ptr()) as *const c_void,
+                Dtype::Bool => mlx_sys::mlx_array_data_bool(self.as_ptr()).cast::<c_void>(),
+                Dtype::Uint8 => mlx_sys::mlx_array_data_uint8(self.as_ptr()).cast::<c_void>(),
+                Dtype::Uint16 => mlx_sys::mlx_array_data_uint16(self.as_ptr()).cast::<c_void>(),
+                Dtype::Uint32 => mlx_sys::mlx_array_data_uint32(self.as_ptr()).cast::<c_void>(),
+                Dtype::Uint64 => mlx_sys::mlx_array_data_uint64(self.as_ptr()).cast::<c_void>(),
+                Dtype::Int8 => mlx_sys::mlx_array_data_int8(self.as_ptr()).cast::<c_void>(),
+                Dtype::Int16 => mlx_sys::mlx_array_data_int16(self.as_ptr()).cast::<c_void>(),
+                Dtype::Int32 => mlx_sys::mlx_array_data_int32(self.as_ptr()).cast::<c_void>(),
+                Dtype::Int64 => mlx_sys::mlx_array_data_int64(self.as_ptr()).cast::<c_void>(),
+                Dtype::Float16 => mlx_sys::mlx_array_data_float16(self.as_ptr()).cast::<c_void>(),
+                Dtype::Float32 => mlx_sys::mlx_array_data_float32(self.as_ptr()).cast::<c_void>(),
+                Dtype::Float64 => mlx_sys::mlx_array_data_float64(self.as_ptr()).cast::<c_void>(),
+                Dtype::Bfloat16 => mlx_sys::mlx_array_data_bfloat16(self.as_ptr()).cast::<c_void>(),
                 Dtype::Complex64 => {
-                    mlx_sys::mlx_array_data_complex64(self.as_ptr()) as *const c_void
+                    mlx_sys::mlx_array_data_complex64(self.as_ptr()).cast::<c_void>()
                 }
             };
 
             let new_c_array =
                 mlx_sys::mlx_array_new_data(data, shape.as_ptr(), shape.len() as i32, dtype.into());
 
-            Array::from_ptr(new_c_array)
+            Self::from_ptr(new_c_array)
         }
     }
 }
 
 impl Clone for Array {
     fn clone(&self) -> Self {
-        Array::try_from_op(|res| unsafe { mlx_sys::mlx_array_set(res, self.as_ptr()) })
+        Self::try_from_op(|res| unsafe { mlx_sys::mlx_array_set(res, self.as_ptr()) })
             // Exception may be thrown when calling `new` in cpp.
             .expect("Failed to clone array")
     }
@@ -481,7 +481,7 @@ impl Clone for Array {
 
 impl Sum for Array {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Array::from_int(0), |acc, x| acc.add(&x).unwrap())
+        iter.fold(Self::from_int(0), |acc, x| acc.add(&x).unwrap())
     }
 }
 
@@ -501,39 +501,39 @@ pub fn stop_gradient_device(
 
 impl From<bool> for Array {
     fn from(value: bool) -> Self {
-        Array::from_bool(value)
+        Self::from_bool(value)
     }
 }
 
 impl From<i32> for Array {
     fn from(value: i32) -> Self {
-        Array::from_int(value)
+        Self::from_int(value)
     }
 }
 
 impl From<f32> for Array {
     fn from(value: f32) -> Self {
-        Array::from_f32(value)
+        Self::from_f32(value)
     }
 }
 
 impl From<complex64> for Array {
     fn from(value: complex64) -> Self {
-        Array::from_complex(value)
+        Self::from_complex(value)
     }
 }
 
 impl<T> From<T> for Array
 where
-    Array: FromNested<T>,
+    Self: FromNested<T>,
 {
     fn from(value: T) -> Self {
-        Array::from_nested(value)
+        Self::from_nested(value)
     }
 }
 
-impl AsRef<Array> for Array {
-    fn as_ref(&self) -> &Array {
+impl AsRef<Self> for Array {
+    fn as_ref(&self) -> &Self {
         self
     }
 }
@@ -551,25 +551,25 @@ where
 
 impl FromScalar<bool> for Array {
     fn from_scalar(val: bool) -> Array {
-        Array::from_bool(val)
+        Self::from_bool(val)
     }
 }
 
 impl FromScalar<i32> for Array {
     fn from_scalar(val: i32) -> Array {
-        Array::from_int(val)
+        Self::from_int(val)
     }
 }
 
 impl FromScalar<f32> for Array {
     fn from_scalar(val: f32) -> Array {
-        Array::from_f32(val)
+        Self::from_f32(val)
     }
 }
 
 impl FromScalar<complex64> for Array {
     fn from_scalar(val: complex64) -> Array {
-        Array::from_complex(val)
+        Self::from_complex(val)
     }
 }
 
@@ -588,19 +588,19 @@ pub trait FromNested<T> {
 
 impl<T: FromSliceElement> FromNested<&[T]> for Array {
     fn from_nested(data: &[T]) -> Self {
-        Array::from_slice(data, &[data.len() as i32])
+        Self::from_slice(data, &[data.len() as i32])
     }
 }
 
 impl<T: FromSliceElement, const N: usize> FromNested<[T; N]> for Array {
     fn from_nested(data: [T; N]) -> Self {
-        Array::from_slice(&data, &[N as i32])
+        Self::from_slice(&data, &[N as i32])
     }
 }
 
 impl<T: FromSliceElement, const N: usize> FromNested<&[T; N]> for Array {
     fn from_nested(data: &[T; N]) -> Self {
-        Array::from_slice(data, &[N as i32])
+        Self::from_slice(data, &[N as i32])
     }
 }
 
@@ -619,7 +619,7 @@ impl<T: FromSliceElement + Copy> FromNested<&[&[T]]> for Array {
             .flat_map(|x| x.iter())
             .copied()
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -638,7 +638,7 @@ impl<T: FromSliceElement + Copy, const N: usize> FromNested<[&[T]; N]> for Array
             .flat_map(|x| x.iter())
             .copied()
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -649,7 +649,7 @@ impl<T: FromSliceElement + Copy, const N: usize> FromNested<&[[T; N]]> for Array
             .iter()
             .flat_map(|x| x.iter().copied())
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -660,7 +660,7 @@ impl<T: FromSliceElement + Copy, const N: usize> FromNested<&[&[T; N]]> for Arra
             .iter()
             .flat_map(|x| x.iter().copied())
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -671,7 +671,7 @@ impl<T: FromSliceElement + Copy, const N: usize, const M: usize> FromNested<[[T;
             .iter()
             .flat_map(|x| x.iter().copied())
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -684,7 +684,7 @@ impl<T: FromSliceElement + Copy, const N: usize, const M: usize> FromNested<&[[T
             .iter()
             .flat_map(|x| x.iter().copied())
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -697,7 +697,7 @@ impl<T: FromSliceElement + Copy, const N: usize, const M: usize> FromNested<&[&[
             .iter()
             .flat_map(|x| x.iter().copied())
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -722,7 +722,7 @@ impl<T: FromSliceElement + Copy> FromNested<&[&[&[T]]]> for Array {
             .iter()
             .flat_map(|x| x.iter().flat_map(|y| y.iter().copied()))
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -747,7 +747,7 @@ impl<T: FromSliceElement + Copy, const N: usize> FromNested<[&[&[T]]; N]> for Ar
             .iter()
             .flat_map(|x| x.iter().flat_map(|y| y.iter().copied()))
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -765,7 +765,7 @@ impl<T: FromSliceElement + Copy, const N: usize> FromNested<&[[&[T]; N]]> for Ar
             .iter()
             .flat_map(|x| x.iter().flat_map(|y| y.iter().copied()))
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -783,7 +783,7 @@ impl<T: FromSliceElement + Copy, const N: usize> FromNested<&[&[[T; N]]]> for Ar
             .iter()
             .flat_map(|x| x.iter().flat_map(|y| y.iter().copied()))
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -803,7 +803,7 @@ impl<T: FromSliceElement + Copy, const N: usize, const M: usize> FromNested<[[&[
             .iter()
             .flat_map(|x| x.iter().flat_map(|y| y.iter().copied()))
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -823,7 +823,7 @@ impl<T: FromSliceElement + Copy, const N: usize, const M: usize> FromNested<&[[&
             .iter()
             .flat_map(|x| x.iter().flat_map(|y| y.iter().copied()))
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -843,7 +843,7 @@ impl<T: FromSliceElement + Copy, const N: usize, const M: usize> FromNested<&[&[
             .iter()
             .flat_map(|x| x.iter().flat_map(|y| y.iter().copied()))
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -856,7 +856,7 @@ impl<T: FromSliceElement + Copy, const N: usize, const M: usize, const O: usize>
             .iter()
             .flat_map(|x| x.iter().flat_map(|y| y.iter().copied()))
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -869,7 +869,7 @@ impl<T: FromSliceElement + Copy, const N: usize, const M: usize, const O: usize>
             .iter()
             .flat_map(|x| x.iter().flat_map(|y| y.iter().copied()))
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -882,7 +882,7 @@ impl<T: FromSliceElement + Copy, const N: usize, const M: usize, const O: usize>
             .iter()
             .flat_map(|x| x.iter().flat_map(|y| y.iter().copied()))
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -895,7 +895,7 @@ impl<T: FromSliceElement + Copy, const N: usize, const M: usize, const O: usize>
             .iter()
             .flat_map(|x| x.iter().flat_map(|y| y.iter().copied()))
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
@@ -908,12 +908,16 @@ impl<T: FromSliceElement + Copy, const N: usize, const M: usize, const O: usize>
             .iter()
             .flat_map(|x| x.iter().flat_map(|y| y.iter().copied()))
             .collect::<Vec<T>>();
-        Array::from_slice(&data, &shape)
+        Self::from_slice(&data, &shape)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
 
     #[test]

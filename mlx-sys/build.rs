@@ -7,7 +7,6 @@
     reason = "build script: cargo:* directives go to stdout"
 )]
 
-extern crate cmake;
 
 use cmake::Config;
 use std::{
@@ -32,9 +31,7 @@ use std::{
 fn ensure_mlx_src() -> PathBuf {
     if let Some(dir) = env::var_os("MLX_RS_SRC_DIR") {
         let path = PathBuf::from(dir);
-        if !path.is_dir() {
-            panic!("MLX_RS_SRC_DIR={} is not a directory", path.display());
-        }
+        assert!(path.is_dir(), "MLX_RS_SRC_DIR={} is not a directory", path.display());
         return path;
     }
 
@@ -72,9 +69,7 @@ fn workspace_root() -> PathBuf {
                 return dir;
             }
         }
-        if !dir.pop() {
-            panic!("workspace root not found from {}", env::var("CARGO_MANIFEST_DIR").unwrap());
-        }
+        assert!(dir.pop(), "workspace root not found from {}", env::var("CARGO_MANIFEST_DIR").unwrap());
     }
 }
 
@@ -117,8 +112,7 @@ fn parse_quoted_value(rest: &str) -> String {
     inner
         .split_once('"')
         .map(|(v, _)| v)
-        .unwrap_or(inner)
-        .to_string()
+        .unwrap_or(inner).to_owned()
 }
 
 fn fetch_mlx_tarball(sha: &str, cache_root: &Path) -> Result<(), String> {
@@ -212,14 +206,13 @@ fn find_clang_rt_path() -> Option<String> {
         return None;
     }
 
-    let developer_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let developer_dir = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let toolchain_base = format!(
-        "{}/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang",
-        developer_dir
+        "{developer_dir}/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang"
     );
 
     // Find the clang version directory (it varies by Xcode version)
-    let clang_dir = std::fs::read_dir(&toolchain_base).ok()?;
+    let clang_dir = fs::read_dir(&toolchain_base).ok()?;
     for entry in clang_dir.flatten() {
         let darwin_path = entry.path().join("lib/darwin");
         let clang_rt_lib = darwin_path.join("libclang_rt.osx.a");
@@ -292,7 +285,7 @@ fn build_and_link_mlx_c() {
     // This is needed on macOS 26+ where the bundled LLVM runtime may be outdated
     // See: https://github.com/conda-forge/llvmdev-feedstock/issues/244
     if let Some(clang_rt_path) = find_clang_rt_path() {
-        println!("cargo:rustc-link-search={}", clang_rt_path);
+        println!("cargo:rustc-link-search={clang_rt_path}");
         println!("cargo:rustc-link-lib=static=clang_rt.osx");
     }
 }

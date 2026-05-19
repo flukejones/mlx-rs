@@ -30,20 +30,17 @@ pub(crate) trait Guarded: Sized {
 
         let mut guard = Self::Guard::default();
         let status = f(guard.as_mut_raw_ptr());
-        match status {
-            SUCCESS => {
-                guard.set_init_success(true);
-                guard.try_into_guarded()
-            }
-            _ => {
-                // Err(crate::error::get_and_clear_last_mlx_error()
-                // .expect("MLX operation failed but no error was set"))
-                let what = crate::error::get_and_clear_last_mlx_error()
-                    .expect("MLX operation failed but no error was set")
-                    .what;
-                let location = std::panic::Location::caller();
-                Err(Exception { what, location })
-            }
+        if status == SUCCESS {
+            guard.set_init_success(true);
+            guard.try_into_guarded()
+        } else {
+            // Err(crate::error::get_and_clear_last_mlx_error()
+            // .expect("MLX operation failed but no error was set"))
+            let what = crate::error::get_and_clear_last_mlx_error()
+                .expect("MLX operation failed but no error was set")
+                .what;
+            let location = std::panic::Location::caller();
+            Err(Exception { what, location })
         }
     }
 }
@@ -312,7 +309,7 @@ impl Guarded for crate::DeviceType {
 }
 
 impl Guard<crate::DeviceType> for mlx_sys::mlx_device_type {
-    type MutRawPtr = *mut mlx_sys::mlx_device_type;
+    type MutRawPtr = *mut Self;
 
     fn as_mut_raw_ptr(&mut self) -> Self::MutRawPtr {
         self
@@ -325,7 +322,7 @@ impl Guard<crate::DeviceType> for mlx_sys::mlx_device_type {
             mlx_sys::mlx_device_type__MLX_CPU => Ok(crate::DeviceType::Cpu),
             mlx_sys::mlx_device_type__MLX_GPU => Ok(crate::DeviceType::Gpu),
             _ => Err(Exception {
-                what: "Unknown device type".to_string(),
+                what: "Unknown device type".to_owned(),
                 location: std::panic::Location::caller(),
             }),
         }
@@ -595,7 +592,7 @@ impl Guarded for f16 {
 }
 
 impl Guard<f16> for float16_t {
-    type MutRawPtr = *mut float16_t;
+    type MutRawPtr = *mut Self;
 
     fn as_mut_raw_ptr(&mut self) -> Self::MutRawPtr {
         self
@@ -613,7 +610,7 @@ impl Guarded for bf16 {
 }
 
 impl Guard<bf16> for bfloat16_t {
-    type MutRawPtr = *mut bfloat16_t;
+    type MutRawPtr = *mut Self;
 
     fn as_mut_raw_ptr(&mut self) -> Self::MutRawPtr {
         self
@@ -631,7 +628,7 @@ impl Guarded for complex64 {
 }
 
 impl Guard<complex64> for __BindgenComplex<f32> {
-    type MutRawPtr = *mut __BindgenComplex<f32>;
+    type MutRawPtr = *mut Self;
 
     fn as_mut_raw_ptr(&mut self) -> Self::MutRawPtr {
         self

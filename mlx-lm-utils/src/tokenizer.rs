@@ -254,7 +254,7 @@ pub fn load_model_chat_template_from_str(content: &str) -> std::io::Result<Optio
             value
                 .get("chat_template")
                 .and_then(|value| value.as_str())
-                .map(ToString::to_string)
+                .map(str::to_owned)
         })
         .map_err(Into::into)
 }
@@ -289,7 +289,7 @@ pub fn load_special_tokens_from_str(
             }
             serde_json::Value::Object(inner) => {
                 if let Some(s) = inner.get("content").and_then(|c| c.as_str()) {
-                    out.insert(k.clone(), s.to_string());
+                    out.insert(k.clone(), s.to_owned());
                 }
             }
             _ => {}
@@ -502,13 +502,10 @@ where
 
     let template = match chat_template_id {
         Some(chat_template_id) => env.get_template(chat_template_id)?,
-        None => match env.get_template(model_id) {
-            Ok(template) => template,
-            Err(_) => {
-                env.add_template_owned(model_id.to_owned(), model_template)?;
-                env.get_template(model_id)
-                    .expect("Newly added template must be present")
-            }
+        None => if let Ok(template) = env.get_template(model_id) { template } else {
+            env.add_template_owned(model_id.to_owned(), model_template)?;
+            env.get_template(model_id)
+                .expect("Newly added template must be present")
         },
     };
 
@@ -571,7 +568,9 @@ where
                 return Err(Error::FinalMsgNotInChat);
             }
 
-            let final_msg_loc = rendered_chat.rfind(&final_message_str.trim()).unwrap();
+            let final_msg_loc = rendered_chat
+                .rfind(final_message_str.trim())
+                .expect("rfind guaranteed by the contains check above");
             let final_msg_len = final_message_str.trim_start().len();
             rendered_chat = if rendered_chat[final_msg_loc..final_msg_loc + final_msg_len]
                 == final_message_str
@@ -591,6 +590,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use minijinja::Environment;
     use std::path::PathBuf;
 
@@ -622,7 +625,7 @@ mod tests {
         let model_chat_template = load_model_chat_template_from_file(file).unwrap().unwrap();
         assert!(!model_chat_template.is_empty());
 
-        let model_id = "mlx-community/Qwen3-4B-bf16".to_string();
+        let model_id = "mlx-community/Qwen3-4B-bf16".to_owned();
         let conversations = vec![Conversation {
             role: Role::User,
             content: "hello",
@@ -642,7 +645,7 @@ mod tests {
         env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
 
         let rendered_chat = apply_chat_template(&mut env, model_chat_template, args).unwrap();
-        println!("{:?}", rendered_chat);
+        println!("{rendered_chat:?}");
     }
 
     #[test]
@@ -651,7 +654,7 @@ mod tests {
         let tokenizer_file = fixtures_dir().join("tokenizer.json");
         let tokenizer_config_file = fixtures_dir().join("tokenizer_config.json");
 
-        let model_id = "mlx-community/Qwen3-4B-bf16".to_string();
+        let model_id = "mlx-community/Qwen3-4B-bf16".to_owned();
 
         let conversations = vec![Conversation {
             role: Role::User,
@@ -679,7 +682,7 @@ mod tests {
         let rendered_chat = tokenizer
             .apply_chat_template(model_chat_template, args)
             .unwrap();
-        println!("{:?}", rendered_chat);
+        println!("{rendered_chat:?}");
     }
 
     #[test]
@@ -688,7 +691,7 @@ mod tests {
         let tokenizer_file = fixtures_dir().join("tokenizer.json");
         let tokenizer_config_file = fixtures_dir().join("tokenizer_config.json");
 
-        let model_id = "mlx-community/Qwen3-4B-bf16".to_string();
+        let model_id = "mlx-community/Qwen3-4B-bf16".to_owned();
 
         let conversations = vec![Conversation {
             role: Role::User,

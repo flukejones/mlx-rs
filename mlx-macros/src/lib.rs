@@ -1,4 +1,3 @@
-extern crate proc_macro;
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput};
 
@@ -46,7 +45,8 @@ mod util;
 #[proc_macro_derive(ModuleParameters, attributes(module, param))]
 pub fn derive_module_parameters(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let module_param_impl = module_parameters::expand_module_parameters(&input).unwrap();
+    let module_param_impl = module_parameters::expand_module_parameters(&input)
+        .expect("ModuleParameters derive: expansion failed");
     TokenStream::from(module_param_impl)
 }
 
@@ -63,6 +63,7 @@ pub fn derive_module_parameters(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Quantizable, attributes(quantizable))]
 pub fn derive_quantizable_module(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let quantizable_module_impl = quantizable::expand_quantizable(&input).unwrap();
+    let quantizable_module_impl = quantizable::expand_quantizable(&input)
+        .expect("Quantizable derive: expansion failed");
     TokenStream::from(quantizable_module_impl)
 }

@@ -28,34 +28,31 @@ impl Array {
         reverse: impl Into<Option<bool>>,
         inclusive: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         let stream = stream.as_ref();
 
-        match axis.into() {
-            Some(axis) => Array::try_from_op(|res| unsafe {
+        if let Some(axis) = axis.into() { Self::try_from_op(|res| unsafe {
+            mlx_sys::mlx_cummax(
+                res,
+                self.as_ptr(),
+                axis,
+                reverse.into().unwrap_or(false),
+                inclusive.into().unwrap_or(true),
+                stream.as_ptr(),
+            )
+        }) } else {
+            let shape = &[-1];
+            let flat = self.reshape_device(shape, stream)?;
+            Self::try_from_op(|res| unsafe {
                 mlx_sys::mlx_cummax(
                     res,
-                    self.as_ptr(),
-                    axis,
+                    flat.as_ptr(),
+                    0,
                     reverse.into().unwrap_or(false),
                     inclusive.into().unwrap_or(true),
                     stream.as_ptr(),
                 )
-            }),
-            None => {
-                let shape = &[-1];
-                let flat = self.reshape_device(shape, stream)?;
-                Array::try_from_op(|res| unsafe {
-                    mlx_sys::mlx_cummax(
-                        res,
-                        flat.as_ptr(),
-                        0,
-                        reverse.into().unwrap_or(false),
-                        inclusive.into().unwrap_or(true),
-                        stream.as_ptr(),
-                    )
-                })
-            }
+            })
         }
     }
 
@@ -83,34 +80,31 @@ impl Array {
         reverse: impl Into<Option<bool>>,
         inclusive: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         let stream = stream.as_ref();
 
-        match axis.into() {
-            Some(axis) => Array::try_from_op(|res| unsafe {
+        if let Some(axis) = axis.into() { Self::try_from_op(|res| unsafe {
+            mlx_sys::mlx_cummin(
+                res,
+                self.as_ptr(),
+                axis,
+                reverse.into().unwrap_or(false),
+                inclusive.into().unwrap_or(true),
+                stream.as_ptr(),
+            )
+        }) } else {
+            let shape = &[-1];
+            let flat = self.reshape_device(shape, stream)?;
+            Self::try_from_op(|res| unsafe {
                 mlx_sys::mlx_cummin(
                     res,
-                    self.as_ptr(),
-                    axis,
+                    flat.as_ptr(),
+                    0,
                     reverse.into().unwrap_or(false),
                     inclusive.into().unwrap_or(true),
                     stream.as_ptr(),
                 )
-            }),
-            None => {
-                let shape = &[-1];
-                let flat = self.reshape_device(shape, stream)?;
-                Array::try_from_op(|res| unsafe {
-                    mlx_sys::mlx_cummin(
-                        res,
-                        flat.as_ptr(),
-                        0,
-                        reverse.into().unwrap_or(false),
-                        inclusive.into().unwrap_or(true),
-                        stream.as_ptr(),
-                    )
-                })
-            }
+            })
         }
     }
 
@@ -138,34 +132,31 @@ impl Array {
         reverse: impl Into<Option<bool>>,
         inclusive: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         let stream = stream.as_ref();
 
-        match axis.into() {
-            Some(axis) => Array::try_from_op(|res| unsafe {
+        if let Some(axis) = axis.into() { Self::try_from_op(|res| unsafe {
+            mlx_sys::mlx_cumprod(
+                res,
+                self.as_ptr(),
+                axis,
+                reverse.into().unwrap_or(false),
+                inclusive.into().unwrap_or(true),
+                stream.as_ptr(),
+            )
+        }) } else {
+            let shape = &[-1];
+            let flat = self.reshape_device(shape, stream)?;
+            Self::try_from_op(|res| unsafe {
                 mlx_sys::mlx_cumprod(
                     res,
-                    self.as_ptr(),
-                    axis,
+                    flat.as_ptr(),
+                    0,
                     reverse.into().unwrap_or(false),
                     inclusive.into().unwrap_or(true),
                     stream.as_ptr(),
                 )
-            }),
-            None => {
-                let shape = &[-1];
-                let flat = self.reshape_device(shape, stream)?;
-                Array::try_from_op(|res| unsafe {
-                    mlx_sys::mlx_cumprod(
-                        res,
-                        flat.as_ptr(),
-                        0,
-                        reverse.into().unwrap_or(false),
-                        inclusive.into().unwrap_or(true),
-                        stream.as_ptr(),
-                    )
-                })
-            }
+            })
         }
     }
 
@@ -193,34 +184,31 @@ impl Array {
         reverse: impl Into<Option<bool>>,
         inclusive: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         let stream = stream.as_ref();
 
-        match axis.into() {
-            Some(axis) => Array::try_from_op(|res| unsafe {
+        if let Some(axis) = axis.into() { Self::try_from_op(|res| unsafe {
+            mlx_sys::mlx_cumsum(
+                res,
+                self.as_ptr(),
+                axis,
+                reverse.into().unwrap_or(false),
+                inclusive.into().unwrap_or(true),
+                stream.as_ptr(),
+            )
+        }) } else {
+            let shape = &[-1];
+            let flat = self.reshape_device(shape, stream)?;
+            Self::try_from_op(|res| unsafe {
                 mlx_sys::mlx_cumsum(
                     res,
-                    self.as_ptr(),
-                    axis,
+                    flat.as_ptr(),
+                    0,
                     reverse.into().unwrap_or(false),
                     inclusive.into().unwrap_or(true),
                     stream.as_ptr(),
                 )
-            }),
-            None => {
-                let shape = &[-1];
-                let flat = self.reshape_device(shape, stream)?;
-                Array::try_from_op(|res| unsafe {
-                    mlx_sys::mlx_cumsum(
-                        res,
-                        flat.as_ptr(),
-                        0,
-                        reverse.into().unwrap_or(false),
-                        inclusive.into().unwrap_or(true),
-                        stream.as_ptr(),
-                    )
-                })
-            }
+            })
         }
     }
 }
@@ -279,6 +267,10 @@ pub fn cumsum_device(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use pretty_assertions::assert_eq;
 

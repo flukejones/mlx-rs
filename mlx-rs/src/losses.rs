@@ -45,9 +45,9 @@ impl LossReduction {
     /// Reduces the loss according to the reduction type.
     pub fn reduce(&self, loss: Array) -> Result<Array, Exception> {
         match self {
-            LossReduction::None => Ok(loss),
-            LossReduction::Sum => Ok(loss.sum(None)?),
-            LossReduction::Mean => Ok(loss.mean(None)?),
+            Self::None => Ok(loss),
+            Self::Sum => Ok(loss.sum(None)?),
+            Self::Mean => Ok(loss.mean(None)?),
         }
     }
 }
@@ -875,7 +875,7 @@ impl MarginRankingLoss {
 }
 
 #[cfg(test)]
-#[allow(clippy::approx_constant)]
+#[allow(clippy::approx_constant, reason = "test float literals close to known constants by design")]
 mod tests {
     use crate::{array, assert_array_eq, builder::Builder, ops::is_nan};
     use float_eq::assert_float_eq;

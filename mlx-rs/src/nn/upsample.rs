@@ -52,7 +52,7 @@ impl Upsample {
     /// Create a new `Upsample` module
     pub fn new(scale_factor: impl Into<SingleOrVec<f32>>, mode: UpsampleMode) -> Self {
         let scale_factor = scale_factor.into();
-        Upsample { scale_factor, mode }
+        Self { scale_factor, mode }
     }
 
     fn forward_inner(&self, x: &Array, scale: &[f32]) -> Result<Array, Exception> {
@@ -96,7 +96,7 @@ impl Module<&Array> for Upsample {
     fn training_mode(&mut self, _mode: bool) {}
 }
 
-#[allow(non_snake_case)]
+#[allow(non_snake_case, reason = "local bindings mirror ML tensor names (N, C, H, W)")]
 fn upsample_nearest(x: &Array, scale: &[f32]) -> Result<Array, Exception> {
     let dimensions = x.ndim() - 2;
     if dimensions != scale.len() {
@@ -149,7 +149,7 @@ type IndexWeight = (Array, Array);
 
 type IndicesFn = fn(i32, f32, bool, usize, usize) -> Result<Vec<IndexWeight>, Exception>;
 
-#[allow(non_snake_case)]
+#[allow(non_snake_case, reason = "local bindings mirror ML tensor names (N, C, H, W)")]
 fn interpolate(
     x: &Array,
     scale: &[f32],
@@ -231,7 +231,8 @@ fn nearest_indices(
     dim: usize,
     ndim: usize,
 ) -> Result<Array, Exception> {
-    scaled_indices(dimension, scale, true, dim, ndim).and_then(|i| i.as_type::<i32>())
+    let i = scaled_indices(dimension, scale, true, dim, ndim)?;
+    i.as_type::<i32>()
 }
 
 fn linear_indices(
@@ -314,7 +315,7 @@ fn compiled_get_weight2(ind: &Array, grid: &Array) -> Result<Array, Exception> {
     compiled((ind, grid))
 }
 
-#[allow(non_snake_case)]
+#[allow(non_snake_case, reason = "local bindings mirror ML tensor names (N, C, H, W)")]
 fn scaled_indices(
     N: i32,
     scale: f32,
@@ -324,17 +325,14 @@ fn scaled_indices(
 ) -> Result<Array, Exception> {
     let M = (scale * N as f32) as i32;
 
-    let indices = match align_corners {
-        true => {
-            // SAFETY: arith ops on with scalars won't panic
-            Array::from_iter(0..M, &[M]).as_type::<f32>()? * ((N as f32 - 1.0) / (M as f32 - 1.0))
-        }
-        false => {
-            let step = 1.0 / scale;
-            let start = ((M as f32 - 1.0) * step - N as f32 + 1.0) / 2.0;
-            // SAFETY: arith ops with scalars won't panic
-            Array::from_iter(0..M, &[M]).as_type::<f32>()? * step - start
-        }
+    let indices = if align_corners {
+        // SAFETY: arith ops on with scalars won't panic
+        Array::from_iter(0..M, &[M]).as_type::<f32>()? * ((N as f32 - 1.0) / (M as f32 - 1.0))
+    } else {
+        let step = 1.0 / scale;
+        let start = ((M as f32 - 1.0) * step - N as f32 + 1.0) / 2.0;
+        // SAFETY: arith ops with scalars won't panic
+        Array::from_iter(0..M, &[M]).as_type::<f32>()? * step - start
     };
 
     let mut shape = vec![1; ndim];
@@ -345,6 +343,10 @@ fn scaled_indices(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::assert_array_eq;
 
     use super::*;

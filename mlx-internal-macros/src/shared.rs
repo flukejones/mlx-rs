@@ -9,9 +9,9 @@ pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[derive(Debug, Clone, FromDeriveInput)]
 #[darling(attributes(builder))]
 pub(crate) struct BuilderStructProperty {
-    pub ident: syn::Ident,
+    pub ident: Ident,
 
-    pub build_with: Option<syn::Ident>,
+    pub build_with: Option<Ident>,
 
     pub root: Option<syn::Path>,
 
@@ -152,22 +152,16 @@ impl BuilderStructAnalyzer<'_> {
         let mandatory_field_idents = self.mandatory_fields.iter().map(|field| &field.ident);
         let optional_field_idents = self.optional_fields.iter().map(|field| &field.ident);
 
-        let err_ty = match self.err {
-            Some(err) => quote! { #err },
-            None => quote! { std::convert::Infallible },
-        };
+        let err_ty = if let Some(err) = self.err { quote! { #err } } else { quote! { std::convert::Infallible } };
 
-        let build_body = match self.build_with {
-            Some(f) => quote! {
-                #f(self)
-            },
-            None => quote! {
-                Ok(#struct_ident {
-                    #(#mandatory_field_idents: self.#mandatory_field_idents,)*
-                    #(#optional_field_idents: self.#optional_field_idents,)*
-                })
-            },
-        };
+        let build_body = if let Some(f) = self.build_with { quote! {
+            #f(self)
+        } } else { quote! {
+            Ok(#struct_ident {
+                #(#mandatory_field_idents: self.#mandatory_field_idents,)*
+                #(#optional_field_idents: self.#optional_field_idents,)*
+            })
+        } };
 
         quote! {
             impl #impl_generics #root::builder::Builder<#struct_ident #type_generics> for #builder_struct_ident #type_generics #where_clause {
@@ -238,7 +232,7 @@ impl BuilderStructAnalyzer<'_> {
 #[derive(Debug, darling::FromField, PartialEq)]
 #[darling(attributes(builder))]
 pub(crate) struct BuilderFieldProperty {
-    pub ident: Option<syn::Ident>,
+    pub ident: Option<Ident>,
 
     pub ty: syn::Type,
 
@@ -259,12 +253,12 @@ pub(crate) struct BuilderFieldProperty {
 }
 
 pub(crate) struct MandatoryField {
-    pub ident: syn::Ident,
+    pub ident: Ident,
     pub ty: syn::Type,
 }
 
 pub(crate) struct OptionalField {
-    pub ident: syn::Ident,
+    pub ident: Ident,
     pub ty: syn::Type,
     pub default: syn::Path,
     pub skip_setter: bool,
@@ -303,7 +297,7 @@ fn parse_fields(fields: &syn::Fields) -> Result<(Vec<MandatoryField>, Vec<Option
         };
 
         if let Some(rename) = field_prop.rename {
-            ident = syn::Ident::new(&rename, ident.span());
+            ident = Ident::new(&rename, ident.span());
         }
 
         let ty = match field_prop.ty_override {
@@ -341,14 +335,14 @@ fn parse_fields(fields: &syn::Fields) -> Result<(Vec<MandatoryField>, Vec<Option
 #[derive(Debug, Clone)]
 pub(crate) enum PathOrIdent {
     Path(syn::Path),
-    Ident(syn::Ident),
+    Ident(Ident),
 }
 
 impl ToTokens for PathOrIdent {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
-            PathOrIdent::Path(path) => path.to_tokens(tokens),
-            PathOrIdent::Ident(ident) => ident.to_tokens(tokens),
+            Self::Path(path) => path.to_tokens(tokens),
+            Self::Ident(ident) => ident.to_tokens(tokens),
         }
     }
 }
@@ -356,8 +350,8 @@ impl ToTokens for PathOrIdent {
 impl Display for PathOrIdent {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            PathOrIdent::Path(path) => path.to_token_stream().fmt(f),
-            PathOrIdent::Ident(ident) => Display::fmt(ident, f),
+            Self::Path(path) => path.to_token_stream().fmt(f),
+            Self::Ident(ident) => Display::fmt(ident, f),
         }
     }
 }

@@ -7,6 +7,10 @@
 //! All tests `#[ignore]` by default — they need the checkpoint on disk and
 //! the matching `.npz` fixtures alongside this file.
 
+#![allow(clippy::missing_assert_message, reason = "test code")]
+#![allow(clippy::print_stdout, reason = "test code")]
+#![allow(clippy::print_stderr, reason = "test code")]
+
 use std::path::PathBuf;
 
 use mlx_lm::models::gemma4::load_gemma4_model_sanitized;

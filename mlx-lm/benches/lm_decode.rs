@@ -11,6 +11,7 @@
 
 #![allow(clippy::unwrap_used, reason = "bench harness")]
 #![allow(clippy::print_stdout, reason = "bench output")]
+#![allow(clippy::print_stderr, reason = "bench output")]
 //!
 //! Checkpoints are pulled lazily on first use via the `hf` CLI into the
 //! cache directory printed at bench start. Cells skip silently if `hf` is
@@ -147,7 +148,7 @@ fn checkpoint_status(dir: &Path) -> CheckpointStatus {
     let missing: Vec<String> = shards
         .iter()
         .filter(|s| !dir.join(s).exists())
-        .map(|s| (*s).to_string())
+        .map(|s| (*s).to_owned())
         .collect();
     if missing.is_empty() {
         CheckpointStatus::Complete
@@ -703,7 +704,7 @@ fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
 
 fn bench_set() -> BenchSet {
     match std::env::var("MLX_LM_BENCH_SET").as_deref() {
-        Ok("full") | Ok("all") => BenchSet::Full,
+        Ok("full" | "all") => BenchSet::Full,
         _ => BenchSet::Trimmed,
     }
 }

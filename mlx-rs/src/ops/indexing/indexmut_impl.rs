@@ -19,13 +19,13 @@ use super::{ArrayIndex, ArrayIndexOp, Guarded, RangeIndex, TryIndexMutOp};
 impl Array {
     pub(crate) fn slice_update_device(
         &self,
-        update: &Array,
+        update: &Self,
         starts: &[i32],
         ends: &[i32],
         strides: &[i32],
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_slice_update(
                 res,
                 self.as_ptr(),
@@ -107,7 +107,7 @@ fn update_slice(
     }
 
     for item in operations.iter().rev() {
-        use ArrayIndexOp::*;
+        use ArrayIndexOp::{TakeIndex, Slice, ExpandDims, Ellipsis, TakeArray, TakeArrayRef};
 
         match item {
             TakeIndex { index } => {
@@ -161,7 +161,7 @@ fn remove_leading_singleton_dimensions(
     stream: impl AsRef<Stream>,
 ) -> Result<Cow<'_, Array>> {
     let shape = a.shape();
-    let mut new_shape: Vec<_> = shape.iter().skip_while(|&&dim| dim == 1).cloned().collect();
+    let mut new_shape: Vec<_> = shape.iter().skip_while(|&&dim| dim == 1).copied().collect();
     if shape != new_shape {
         if new_shape.is_empty() {
             new_shape = vec![1];
@@ -185,7 +185,7 @@ fn scatter_args<'a>(
     update: &Array,
     stream: impl AsRef<Stream>,
 ) -> Result<ScatterArgs<'a>> {
-    use ArrayIndexOp::*;
+    use ArrayIndexOp::{TakeIndex, TakeArray, TakeArrayRef, Slice, ExpandDims, Ellipsis};
 
     if operations.len() == 1 {
         return match &operations[0] {
@@ -250,7 +250,7 @@ fn scatter_args_array<'a>(
         .shape()
         .iter()
         .chain(src.shape().iter().skip(1))
-        .cloned()
+        .copied()
         .collect();
     let update = broadcast_to_device(&update, &update_shape, &stream)?;
 
@@ -294,7 +294,7 @@ fn scatter_args_slice<'a>(
 
         // Broadcast update to slice size
         let update_broadcast_shape: SmallVec<[i32; DEFAULT_STACK_VEC_LEN]> = (1..end - start)
-            .chain(src.shape().iter().skip(1).cloned())
+            .chain(src.shape().iter().skip(1).copied())
             .collect();
         let update = broadcast_to_device(&update, &update_broadcast_shape, &stream)?;
 
@@ -319,7 +319,7 @@ fn scatter_args_nd<'a>(
     update: &Array,
     stream: impl AsRef<Stream>,
 ) -> Result<ScatterArgs<'a>> {
-    use ArrayIndexOp::*;
+    use ArrayIndexOp::{TakeIndex, Slice, TakeArray, TakeArrayRef, ExpandDims, Ellipsis};
 
     // mlx_scatter_args_nd
 
@@ -504,7 +504,7 @@ fn scatter_args_nd<'a>(
         .iter()
         .chain(slice_shapes.iter())
         .chain(src.shape().iter().skip(non_new_axis_operation_count))
-        .cloned()
+        .copied()
         .collect();
     let update = broadcast_to_device(&update, &update_shape_broadcast, &stream)?;
 
@@ -514,7 +514,7 @@ fn scatter_args_nd<'a>(
         .iter()
         .chain(update_shape.iter())
         .chain(src.shape().iter().skip(non_new_axis_operation_count))
-        .cloned()
+        .copied()
         .collect();
 
     let update = update.reshape_device(&update_reshape, &stream)?;
@@ -577,7 +577,7 @@ impl Array {
     fn try_index_mut_device_inner(
         &mut self,
         operations: &[ArrayIndexOp],
-        update: &Array,
+        update: &Self,
         stream: impl AsRef<Stream>,
     ) -> Result<()> {
         if let Some(result) = update_slice(self, operations, update, &stream)? {
@@ -604,7 +604,7 @@ impl Array {
 
 impl<'a, Val> TryIndexMutOp<&'a [ArrayIndexOp<'a>], Val> for Array
 where
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -620,7 +620,7 @@ where
 impl<A, Val> TryIndexMutOp<A, Val> for Array
 where
     for<'a> A: ArrayIndex<'a>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(&mut self, i: A, val: Val, stream: impl AsRef<Stream>) -> Result<()> {
         let operations = [i.index_op()];
@@ -632,7 +632,7 @@ where
 impl<'a, A, Val> TryIndexMutOp<(A,), Val> for Array
 where
     A: ArrayIndex<'a>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -650,7 +650,7 @@ impl<'a, 'b, A, B, Val> TryIndexMutOp<(A, B), Val> for Array
 where
     A: ArrayIndex<'a>,
     B: ArrayIndex<'b>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -669,7 +669,7 @@ where
     A: ArrayIndex<'a>,
     B: ArrayIndex<'b>,
     C: ArrayIndex<'c>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -689,7 +689,7 @@ where
     B: ArrayIndex<'b>,
     C: ArrayIndex<'c>,
     D: ArrayIndex<'d>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -715,7 +715,7 @@ where
     C: ArrayIndex<'c>,
     D: ArrayIndex<'d>,
     E: ArrayIndex<'e>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -743,7 +743,7 @@ where
     D: ArrayIndex<'d>,
     E: ArrayIndex<'e>,
     F: ArrayIndex<'f>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -774,7 +774,7 @@ where
     E: ArrayIndex<'e>,
     F: ArrayIndex<'f>,
     G: ArrayIndex<'g>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -807,7 +807,7 @@ where
     F: ArrayIndex<'f>,
     G: ArrayIndex<'g>,
     H: ArrayIndex<'h>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -842,7 +842,7 @@ where
     G: ArrayIndex<'g>,
     H: ArrayIndex<'h>,
     I: ArrayIndex<'i>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -879,7 +879,7 @@ where
     H: ArrayIndex<'h>,
     I: ArrayIndex<'i>,
     J: ArrayIndex<'j>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -918,7 +918,7 @@ where
     I: ArrayIndex<'i>,
     J: ArrayIndex<'j>,
     K: ArrayIndex<'k>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -959,7 +959,7 @@ where
     J: ArrayIndex<'j>,
     K: ArrayIndex<'k>,
     L: ArrayIndex<'l>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -1029,7 +1029,7 @@ where
     K: ArrayIndex<'k>,
     L: ArrayIndex<'l>,
     M: ArrayIndex<'m>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -1103,7 +1103,7 @@ where
     L: ArrayIndex<'l>,
     M: ArrayIndex<'m>,
     N: ArrayIndex<'n>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -1181,7 +1181,7 @@ where
     M: ArrayIndex<'m>,
     N: ArrayIndex<'n>,
     O: ArrayIndex<'o>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -1263,7 +1263,7 @@ where
     N: ArrayIndex<'n>,
     O: ArrayIndex<'o>,
     P: ArrayIndex<'p>,
-    Val: AsRef<Array>,
+    Val: AsRef<Self>,
 {
     fn try_index_mut_device(
         &mut self,
@@ -1297,6 +1297,10 @@ where
 /// The unit tests below are adapted from the Swift binding tests
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::{
         ops::{indexing::*, ones, zeros},
         Array,

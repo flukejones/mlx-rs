@@ -1,4 +1,5 @@
 #![allow(clippy::print_stdout, reason = "xtask: CLI tool, stdout is the output")]
+#![allow(clippy::print_stderr, reason = "xtask: CLI tool, stderr is the output")]
 #![allow(clippy::unwrap_used, reason = "xtask: panic-on-error is idiomatic")]
 
 use std::collections::{HashMap, HashSet};
@@ -18,7 +19,7 @@ fn get_current_tag(mlx_c_dir: &Path) -> String {
         .output()
         .expect("Failed to get current tag");
 
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
 fn get_latest_tag(mlx_c_dir: &Path) -> String {
@@ -35,7 +36,7 @@ fn get_latest_tag(mlx_c_dir: &Path) -> String {
         .output()
         .expect("Failed to get latest tag commit");
 
-    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_owned();
 
     let output = Command::new("git")
         .args(["describe", "--tags", &commit])
@@ -43,7 +44,7 @@ fn get_latest_tag(mlx_c_dir: &Path) -> String {
         .output()
         .expect("Failed to get tag name");
 
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
 fn checkout_tag(mlx_c_dir: &Path, tag: &str) {
@@ -91,9 +92,9 @@ fn extract_functions(bindings: &str) -> HashMap<String, FunctionSig> {
             if let Some(start) = trimmed.find("pub fn ") {
                 let after_fn = &trimmed[start + 7..];
                 if let Some(paren) = after_fn.find('(') {
-                    let fn_name = after_fn[..paren].trim().to_string();
+                    let fn_name = after_fn[..paren].trim().to_owned();
                     // Start collecting the signature
-                    current_fn = Some((fn_name, line.to_string()));
+                    current_fn = Some((fn_name, line.to_owned()));
                 }
             }
         } else if let Some((ref _name, ref mut sig)) = current_fn {
@@ -143,9 +144,9 @@ fn extract_structs(bindings: &str) -> HashMap<String, StructDef> {
         // Look for struct declarations
         if let Some(after_struct) = trimmed.strip_prefix("pub struct ") {
             if let Some(name_end) = after_struct.find([' ', '{', ';']) {
-                let struct_name = after_struct[..name_end].trim().to_string();
-                let initial_depth = if trimmed.contains('{') { 1 } else { 0 };
-                current_struct = Some((struct_name, line.to_string(), initial_depth));
+                let struct_name = after_struct[..name_end].trim().to_owned();
+                let initial_depth = i32::from(trimmed.contains('{'));
+                current_struct = Some((struct_name, line.to_owned(), initial_depth));
 
                 // Handle single-line structs
                 if trimmed.ends_with(';') || (trimmed.contains('{') && trimmed.contains('}')) {
@@ -281,8 +282,7 @@ fn print_diff(old: &str, new: &str, current_tag: &str, target_tag: &str, root_di
     // Build output
     let mut output = String::new();
     output.push_str(&format!(
-        "=== Bindings Diff ({} -> {}) ===\n\n",
-        current_tag, target_tag
+        "=== Bindings Diff ({current_tag} -> {target_tag}) ===\n\n"
     ));
 
     output.push_str(&format!(
@@ -321,11 +321,11 @@ fn print_diff(old: &str, new: &str, current_tag: &str, target_tag: &str, root_di
             output.push_str(&format!("~ {}\n", old_f.name));
             output.push_str("  OLD:\n");
             for line in old_f.full_signature.lines() {
-                output.push_str(&format!("    {}\n", line));
+                output.push_str(&format!("    {line}\n"));
             }
             output.push_str("  NEW:\n");
             for line in new_f.full_signature.lines() {
-                output.push_str(&format!("    {}\n", line));
+                output.push_str(&format!("    {line}\n"));
             }
             output.push('\n');
         }
@@ -354,11 +354,11 @@ fn print_diff(old: &str, new: &str, current_tag: &str, target_tag: &str, root_di
             output.push_str(&format!("~ {}\n", old_s.name));
             output.push_str("  OLD:\n");
             for line in old_s.full_definition.lines().take(10) {
-                output.push_str(&format!("    {}\n", line));
+                output.push_str(&format!("    {line}\n"));
             }
             output.push_str("  NEW:\n");
             for line in new_s.full_definition.lines().take(10) {
-                output.push_str(&format!("    {}\n", line));
+                output.push_str(&format!("    {line}\n"));
             }
             output.push('\n');
         }
@@ -406,11 +406,11 @@ fn print_diff(old: &str, new: &str, current_tag: &str, target_tag: &str, root_di
             println!("\x1b[33m~ {}\x1b[0m", old_f.name);
             println!("  \x1b[31mOLD:\x1b[0m");
             for line in old_f.full_signature.lines().take(5) {
-                println!("    {}", line);
+                println!("    {line}");
             }
             println!("  \x1b[32mNEW:\x1b[0m");
             for line in new_f.full_signature.lines().take(5) {
-                println!("    {}", line);
+                println!("    {line}");
             }
             println!();
         }
@@ -439,9 +439,9 @@ fn print_diff(old: &str, new: &str, current_tag: &str, target_tag: &str, root_di
     }
 
     // Save full diff to file
-    let diff_file = root_dir.join(format!("mlx-c-diff-{}-to-{}.txt", current_tag, target_tag));
+    let diff_file = root_dir.join(format!("mlx-c-diff-{current_tag}-to-{target_tag}.txt"));
     if let Err(e) = std::fs::write(&diff_file, &output) {
-        eprintln!("Warning: Failed to write diff file: {}", e);
+        eprintln!("Warning: Failed to write diff file: {e}");
     } else {
         println!(
             "\n\x1b[33mFull diff saved to:\x1b[0m {}",
@@ -451,7 +451,7 @@ fn print_diff(old: &str, new: &str, current_tag: &str, target_tag: &str, root_di
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = env::args().collect();
     let target_tag = args.get(1).cloned();
 
     let root_dir = get_repo_root();
@@ -463,10 +463,10 @@ fn main() {
     let latest_tag = get_latest_tag(&mlx_c_dir);
     let target_tag = target_tag.unwrap_or(latest_tag.clone());
 
-    println!("Current version: \x1b[32m{}\x1b[0m", current_tag);
-    println!("Latest version:  \x1b[32m{}\x1b[0m", latest_tag);
+    println!("Current version: \x1b[32m{current_tag}\x1b[0m");
+    println!("Latest version:  \x1b[32m{latest_tag}\x1b[0m");
     if target_tag != latest_tag {
-        println!("Target version:  \x1b[32m{}\x1b[0m", target_tag);
+        println!("Target version:  \x1b[32m{target_tag}\x1b[0m");
     }
     println!();
 
@@ -475,22 +475,21 @@ fn main() {
         return;
     }
 
-    println!("\x1b[33mGenerating bindings for {}...\x1b[0m", current_tag);
+    println!("\x1b[33mGenerating bindings for {current_tag}...\x1b[0m");
     let current_bindings = generate_bindings(&root_dir);
 
-    println!("\x1b[33mChecking out {}...\x1b[0m", target_tag);
+    println!("\x1b[33mChecking out {target_tag}...\x1b[0m");
     checkout_tag(&mlx_c_dir, &target_tag);
 
-    println!("\x1b[33mGenerating bindings for {}...\x1b[0m", target_tag);
+    println!("\x1b[33mGenerating bindings for {target_tag}...\x1b[0m");
     let target_bindings = generate_bindings(&root_dir);
 
     // Restore original
-    println!("\x1b[33mRestoring {}...\x1b[0m", current_tag);
+    println!("\x1b[33mRestoring {current_tag}...\x1b[0m");
     checkout_tag(&mlx_c_dir, &current_tag);
 
     println!(
-        "\n\x1b[33m=== Bindings Diff ({} -> {}) ===\x1b[0m",
-        current_tag, target_tag
+        "\n\x1b[33m=== Bindings Diff ({current_tag} -> {target_tag}) ===\x1b[0m"
     );
 
     if current_bindings == target_bindings {
@@ -506,5 +505,5 @@ fn main() {
     }
 
     println!("\n\x1b[33mTo update, run:\x1b[0m");
-    println!("  cd mlx-sys/src/mlx-c && git checkout {}", target_tag);
+    println!("  cd mlx-sys/src/mlx-c && git checkout {target_tag}");
 }

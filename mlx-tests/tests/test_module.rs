@@ -1,3 +1,8 @@
+#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::missing_assert_message, reason = "test code")]
+#![allow(clippy::print_stdout, reason = "test code")]
+#![allow(clippy::print_stderr, reason = "test code")]
+
 use mlx_rs::{error::Exception, macros::ModuleParameters, module::Module, nn::Linear, Array};
 
 #[derive(Debug, ModuleParameters)]

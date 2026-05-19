@@ -57,9 +57,9 @@ impl LayerCache {
     /// linear-attention (Gated DeltaNet) layer.
     pub fn for_layer(is_linear: bool) -> Self {
         if is_linear {
-            LayerCache::LinearAttention(LinearAttnCache::new())
+            Self::LinearAttention(LinearAttnCache::new())
         } else {
-            LayerCache::FullAttention(KVCache::new())
+            Self::FullAttention(KVCache::new())
         }
     }
 
@@ -67,8 +67,8 @@ impl LayerCache {
     /// slot is a linear-attention cache instead.
     pub fn as_full_attention_mut(&mut self) -> &mut KVCache {
         match self {
-            LayerCache::FullAttention(c) => c,
-            LayerCache::LinearAttention(_) => {
+            Self::FullAttention(c) => c,
+            Self::LinearAttention(_) => {
                 panic!("LayerCache: expected FullAttention slot, got LinearAttention")
             }
         }
@@ -78,8 +78,8 @@ impl LayerCache {
     /// this slot is a full-attention cache instead.
     pub fn as_linear_attention_mut(&mut self) -> &mut LinearAttnCache {
         match self {
-            LayerCache::LinearAttention(c) => c,
-            LayerCache::FullAttention(_) => {
+            Self::LinearAttention(c) => c,
+            Self::FullAttention(_) => {
                 panic!("LayerCache: expected LinearAttention slot, got FullAttention")
             }
         }
@@ -87,15 +87,15 @@ impl LayerCache {
 
     /// Returns true if this slot is a linear-attention cache.
     pub fn is_linear(&self) -> bool {
-        matches!(self, LayerCache::LinearAttention(_))
+        matches!(self, Self::LinearAttention(_))
     }
 
     /// Returns the running offset for this layer.
     pub fn offset(&self) -> i32 {
         use crate::cache::KeyValueCache;
         match self {
-            LayerCache::FullAttention(c) => c.offset(),
-            LayerCache::LinearAttention(c) => c.offset,
+            Self::FullAttention(c) => c.offset(),
+            Self::LinearAttention(c) => c.offset,
         }
     }
 }
@@ -110,6 +110,10 @@ pub fn make_caches(config: &crate::models::qwen3_5::ModelConfig) -> Vec<LayerCac
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
 
     fn synthetic_config(layer_types: Vec<&str>) -> crate::models::qwen3_5::ModelConfig {

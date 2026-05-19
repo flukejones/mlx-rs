@@ -78,7 +78,7 @@ impl Neg for &Array {
     }
 }
 impl Neg for Array {
-    type Output = Array;
+    type Output = Self;
     fn neg(self) -> Self::Output {
         self.negative_device(StreamOrDevice::default()).unwrap()
     }
@@ -91,19 +91,19 @@ impl Not for &Array {
     }
 }
 impl Not for Array {
-    type Output = Array;
+    type Output = Self;
     fn not(self) -> Self::Output {
         self.logical_not_device(StreamOrDevice::default()).unwrap()
     }
 }
 
-impl Product<Array> for Array {
+impl Product<Self> for Array {
     fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.fold(1.0.into(), |acc, x| acc * x)
     }
 }
 
-impl<'a> Product<&'a Array> for Array {
+impl<'a> Product<&'a Self> for Array {
     fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
         iter.fold(1.0.into(), |acc, x| acc * x)
     }
@@ -111,6 +111,9 @@ impl<'a> Product<&'a Array> for Array {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use pretty_assertions::assert_eq;
 

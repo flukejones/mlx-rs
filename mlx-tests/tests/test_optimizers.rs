@@ -1,6 +1,11 @@
 //! Tests for the optimizers. These tests are placed here because the models
 //! used for testing make use of `ModuleParameter` macro.
 
+#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::missing_assert_message, reason = "test code")]
+#![allow(clippy::print_stdout, reason = "test code")]
+#![allow(clippy::print_stderr, reason = "test code")]
+
 use std::collections::HashMap;
 
 use mlx_rs::{
@@ -190,7 +195,7 @@ fn test_ada_delta() {
     mlx_rs::random::seed(547).unwrap();
     let a = mlx_rs::random::normal::<f32>(&[4, 3], None, None, None).unwrap();
     assert_eq!(a.shape(), &[4, 3]);
-    assert_eq!(a.dtype(), mlx_rs::Dtype::Float32);
+    assert_eq!(a.dtype(), Dtype::Float32);
     assert_array_eq!(
         a.mean(None).unwrap(),
         array!(-0.348_337_02),
@@ -204,7 +209,7 @@ fn test_ada_delta() {
 
     let a_grad = mlx_rs::random::normal::<f32>(&[4, 3], None, None, None).unwrap();
     assert_eq!(a_grad.shape(), &[4, 3]);
-    assert_eq!(a_grad.dtype(), mlx_rs::Dtype::Float32);
+    assert_eq!(a_grad.dtype(), Dtype::Float32);
     assert_array_eq!(
         a_grad.mean(None).unwrap(),
         array!(0.522_678_4),
@@ -227,7 +232,7 @@ fn test_ada_delta() {
     optimizer.update(&mut a_model, a_grad_params).unwrap();
 
     assert_eq!(a_model.a.shape(), &[4, 3]);
-    assert_eq!(a_model.a.dtype(), mlx_rs::Dtype::Float32);
+    assert_eq!(a_model.a.dtype(), Dtype::Float32);
     assert_array_eq!(
         a_model.a.mean(None).unwrap(),
         array!(-0.348_442_4),
@@ -475,17 +480,17 @@ fn test_rmsprop() {
     let expected_state_second = ones::<f32>(&[1]).unwrap() * 0.01;
 
     assert_array_eq!(
-        optim.state.get("first.a").unwrap(),
+        optim.state["first.a"],
         expected_state_first_a,
         ATOL
     );
     assert_array_eq!(
-        optim.state.get("first.b").unwrap(),
+        optim.state["first.b"],
         expected_state_first_b,
         ATOL
     );
     assert_array_eq!(
-        optim.state.get("second").unwrap(),
+        optim.state["second"],
         expected_state_second,
         ATOL
     );
@@ -760,7 +765,7 @@ fn test_adafactor1() {
 #[test]
 fn test_adafactor2() {
     mlx_rs::random::seed(620).unwrap();
-    let a = mlx_rs::random::uniform::<_, f32>(0.0, 1.0, &[10], None).unwrap();
+    let a = uniform::<_, f32>(0.0, 1.0, &[10], None).unwrap();
     assert_eq!(a.shape(), &[10]);
     assert_eq!(a.dtype(), Dtype::Float32);
     assert_array_eq!(
@@ -774,7 +779,7 @@ fn test_adafactor2() {
         0.09780490875244141
     );
 
-    let a_grad = mlx_rs::random::uniform::<_, f32>(0.0, 1.0, &[10], None).unwrap();
+    let a_grad = uniform::<_, f32>(0.0, 1.0, &[10], None).unwrap();
     assert_eq!(a_grad.shape(), &[10]);
     assert_eq!(a_grad.dtype(), Dtype::Float32);
     assert_array_eq!(

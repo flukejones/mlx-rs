@@ -34,28 +34,25 @@ pub(crate) fn resolve_index_unchecked(index: i32, len: usize) -> usize {
 
 /// Helper method to convert an optional slice of axes to a Vec covering all axes.
 pub(crate) fn axes_or_default_to_all<'a>(axes: impl IntoOption<&'a [i32]>, ndim: i32) -> Vec<i32> {
-    match axes.into_option() {
-        Some(axes) => axes.to_vec(),
-        None => {
-            let axes: Vec<i32> = (0..ndim).collect();
-            axes
-        }
+    if let Some(axes) = axes.into_option() { axes.to_vec() } else {
+        let axes: Vec<i32> = (0..ndim).collect();
+        axes
     }
 }
 
 pub(crate) struct VectorArray {
-    c_vec: mlx_sys::mlx_vector_array,
+    c_vec: mlx_vector_array,
 }
 
 impl VectorArray {
-    pub(crate) fn as_ptr(&self) -> mlx_sys::mlx_vector_array {
+    pub(crate) fn as_ptr(&self) -> mlx_vector_array {
         self.c_vec
     }
 
     pub(crate) fn try_from_iter(
         iter: impl Iterator<Item = impl AsRef<Array>>,
     ) -> Result<Self, Exception> {
-        VectorArray::try_from_op(|res| unsafe {
+        Self::try_from_op(|res| unsafe {
             let mut status = SUCCESS;
             for arr in iter {
                 status = mlx_sys::mlx_vector_array_append_value(*res, arr.as_ref().as_ptr());
@@ -97,7 +94,7 @@ pub trait IntoOption<T> {
 }
 
 impl<T> IntoOption<T> for Option<T> {
-    fn into_option(self) -> Option<T> {
+    fn into_option(self) -> Self {
         self
     }
 }
@@ -130,9 +127,9 @@ pub trait ScalarOrArray<'a> {
 }
 
 impl ScalarOrArray<'_> for Array {
-    type Array = Array;
+    type Array = Self;
 
-    fn into_owned_or_ref_array(self) -> Array {
+    fn into_owned_or_ref_array(self) -> Self {
         self
     }
 }
@@ -256,7 +253,7 @@ where
 
     // Create a raw pointer from the Box, transferring ownership to C
     let raw = Box::into_raw(boxed);
-    let payload = raw as *mut std::ffi::c_void;
+    let payload = raw.cast::<std::ffi::c_void>();
 
     unsafe {
         mlx_sys::mlx_closure_new_func_payload(
@@ -273,7 +270,7 @@ where
 {
     let boxed = Box::new(closure);
     let raw = Box::into_raw(boxed);
-    let payload = raw as *mut std::ffi::c_void;
+    let payload = raw.cast::<std::ffi::c_void>();
 
     unsafe {
         mlx_sys::mlx_closure_new_func_payload(
@@ -285,7 +282,7 @@ where
 }
 
 /// Function to create a new (+1 reference) mlx_vector_array from a vector of Array
-fn new_mlx_vector_array(arrays: Vec<Array>) -> mlx_sys::mlx_vector_array {
+fn new_mlx_vector_array(arrays: Vec<Array>) -> mlx_vector_array {
     unsafe {
         let result = mlx_sys::mlx_vector_array_new();
         let ctx_ptrs: Vec<mlx_sys::mlx_array> = arrays.iter().map(|array| array.as_ptr()).collect();
@@ -295,7 +292,7 @@ fn new_mlx_vector_array(arrays: Vec<Array>) -> mlx_sys::mlx_vector_array {
 }
 
 fn mlx_vector_array_values(
-    vector_array: mlx_sys::mlx_vector_array,
+    vector_array: mlx_vector_array,
 ) -> Result<Vec<Array>, Exception> {
     unsafe {
         let size = mlx_sys::mlx_vector_array_size(vector_array);
@@ -316,15 +313,12 @@ where
     F: FnMut(&[Array]) -> Vec<Array> + 'a,
 {
     unsafe {
-        let raw_closure: *mut F = payload as *mut _;
+        let raw_closure: *mut F = payload.cast();
         // Let the box take care of freeing the closure
         let mut closure = Box::from_raw(raw_closure);
-        let arrays = match mlx_vector_array_values(vector_array) {
-            Ok(arrays) => arrays,
-            Err(_) => {
-                let _ = Box::into_raw(closure); // prevent premature drop
-                return FAILURE;
-            }
+        let arrays = if let Ok(arrays) = mlx_vector_array_values(vector_array) { arrays } else {
+            let _ = Box::into_raw(closure); // prevent premature drop
+            return FAILURE;
         };
         let result = closure(&arrays);
         let _ = Box::into_raw(closure); // prevent premature drop
@@ -346,7 +340,7 @@ where
     F: FnMut(&[Array]) -> Result<Vec<Array>, Exception> + 'a,
 {
     unsafe {
-        let raw_closure: *mut F = payload as *mut _;
+        let raw_closure: *mut F = payload.cast();
         let mut closure = Box::from_raw(raw_closure);
         let arrays = match mlx_vector_array_values(vector_array) {
             Ok(arrays) => arrays,
@@ -379,7 +373,7 @@ extern "C" fn closure_dtor<F>(payload: *mut std::ffi::c_void) {
         return;
     }
     unsafe {
-        drop(Box::from_raw(payload as *mut F));
+        drop(Box::from_raw(payload.cast::<F>()));
     }
 }
 
@@ -501,29 +495,29 @@ impl<T: Clone> SingleOrPair<T> {
     /// Returns the first value.
     pub fn first(&self) -> T {
         match self {
-            SingleOrPair::Single(v) => v.clone(),
-            SingleOrPair::Pair(v1, _) => v1.clone(),
+            Self::Single(v) => v.clone(),
+            Self::Pair(v1, _) => v1.clone(),
         }
     }
 
     /// Returns the second value.
     pub fn second(&self) -> T {
         match self {
-            SingleOrPair::Single(v) => v.clone(),
-            SingleOrPair::Pair(_, v2) => v2.clone(),
+            Self::Single(v) => v.clone(),
+            Self::Pair(_, v2) => v2.clone(),
         }
     }
 }
 
 impl<T> From<T> for SingleOrPair<T> {
     fn from(value: T) -> Self {
-        SingleOrPair::Single(value)
+        Self::Single(value)
     }
 }
 
 impl<T> From<(T, T)> for SingleOrPair<T> {
     fn from(value: (T, T)) -> Self {
-        SingleOrPair::Pair(value.0, value.1)
+        Self::Pair(value.0, value.1)
     }
 }
 
@@ -550,37 +544,37 @@ impl<T: Clone> SingleOrTriple<T> {
     /// Returns the first value.
     pub fn first(&self) -> T {
         match self {
-            SingleOrTriple::Single(v) => v.clone(),
-            SingleOrTriple::Triple(v1, _, _) => v1.clone(),
+            Self::Single(v) => v.clone(),
+            Self::Triple(v1, _, _) => v1.clone(),
         }
     }
 
     /// Returns the second value.
     pub fn second(&self) -> T {
         match self {
-            SingleOrTriple::Single(v) => v.clone(),
-            SingleOrTriple::Triple(_, v2, _) => v2.clone(),
+            Self::Single(v) => v.clone(),
+            Self::Triple(_, v2, _) => v2.clone(),
         }
     }
 
     /// Returns the third value.
     pub fn third(&self) -> T {
         match self {
-            SingleOrTriple::Single(v) => v.clone(),
-            SingleOrTriple::Triple(_, _, v3) => v3.clone(),
+            Self::Single(v) => v.clone(),
+            Self::Triple(_, _, v3) => v3.clone(),
         }
     }
 }
 
 impl<T> From<T> for SingleOrTriple<T> {
     fn from(value: T) -> Self {
-        SingleOrTriple::Single(value)
+        Self::Single(value)
     }
 }
 
 impl<T> From<(T, T, T)> for SingleOrTriple<T> {
     fn from(value: (T, T, T)) -> Self {
-        SingleOrTriple::Triple(value.0, value.1, value.2)
+        Self::Triple(value.0, value.1, value.2)
     }
 }
 
@@ -605,12 +599,12 @@ pub enum SingleOrVec<T> {
 
 impl<T> From<T> for SingleOrVec<T> {
     fn from(value: T) -> Self {
-        SingleOrVec::Single(value)
+        Self::Single(value)
     }
 }
 
 impl<T> From<Vec<T>> for SingleOrVec<T> {
     fn from(value: Vec<T>) -> Self {
-        SingleOrVec::Vec(value)
+        Self::Vec(value)
     }
 }

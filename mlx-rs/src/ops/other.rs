@@ -24,8 +24,8 @@ impl Array {
         &self,
         k: impl Into<Option<i32>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_diag(
                 res,
                 self.as_ptr(),
@@ -56,8 +56,8 @@ impl Array {
         axis1: impl Into<Option<i32>>,
         axis2: impl Into<Option<i32>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_diagonal(
                 res,
                 self.as_ptr(),
@@ -82,14 +82,14 @@ impl Array {
         &self,
         scale: impl Into<Option<f32>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         let scale = scale.into();
         let scale = mlx_sys::mlx_optional_float {
             value: scale.unwrap_or(0.0),
             has_value: scale.is_some(),
         };
 
-        Array::try_from_op(|res| unsafe {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_hadamard_transform(res, self.as_ptr(), scale, stream.as_ref().as_ptr())
         })
     }
@@ -173,6 +173,10 @@ pub fn kron_device(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::{
         array,
         ops::{arange, diag, einsum, reshape},

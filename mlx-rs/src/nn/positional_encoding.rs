@@ -419,9 +419,13 @@ where
     fn training_mode(&mut self, _mode: bool) {}
 }
 
-#[allow(clippy::excessive_precision)]
+#[allow(clippy::excessive_precision, reason = "test reference values from Python; precision kept for parity")]
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::{module::Module, nn::AlibiInput, random::uniform, Dtype};
     use float_eq::assert_float_eq;
 

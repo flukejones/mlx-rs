@@ -88,7 +88,7 @@ pub struct Gemma4Config {
 }
 
 fn default_model_type() -> String {
-    "gemma4_text".to_string()
+    "gemma4_text".to_owned()
 }
 const fn default_hidden_size() -> i32 { 1536 }
 const fn default_num_hidden_layers() -> i32 { 35 }

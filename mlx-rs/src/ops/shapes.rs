@@ -11,7 +11,7 @@ use crate::{
 impl Array {
     /// See [`expand_dims()`].
     #[default_device]
-    pub fn expand_dims_device(&self, axis: i32, stream: impl AsRef<Stream>) -> Result<Array> {
+    pub fn expand_dims_device(&self, axis: i32, stream: impl AsRef<Stream>) -> Result<Self> {
         expand_dims_device(self, axis, stream)
     }
 
@@ -21,7 +21,7 @@ impl Array {
         &self,
         axes: &[i32],
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         expand_dims_axes_device(self, axes, stream)
     }
 
@@ -32,25 +32,25 @@ impl Array {
         start_axis: impl Into<Option<i32>>,
         end_axis: impl Into<Option<i32>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         flatten_device(self, start_axis, end_axis, stream)
     }
 
     /// See [`reshape`].
     #[default_device]
-    pub fn reshape_device(&self, shape: &[i32], stream: impl AsRef<Stream>) -> Result<Array> {
+    pub fn reshape_device(&self, shape: &[i32], stream: impl AsRef<Stream>) -> Result<Self> {
         reshape_device(self, shape, stream)
     }
 
     /// See [`squeeze_axes()`].
     #[default_device]
-    pub fn squeeze_axes_device(&self, axes: &[i32], stream: impl AsRef<Stream>) -> Result<Array> {
+    pub fn squeeze_axes_device(&self, axes: &[i32], stream: impl AsRef<Stream>) -> Result<Self> {
         squeeze_axes_device(self, axes, stream)
     }
 
     /// See [`squeeze()`].
     #[default_device]
-    pub fn squeeze_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
+    pub fn squeeze_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
         squeeze_device(self, stream)
     }
 
@@ -62,25 +62,25 @@ impl Array {
         strides: impl IntoOption<&'a [i64]>,
         offset: impl Into<Option<usize>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         as_strided_device(self, shape, strides, offset, stream)
     }
 
     /// See [`at_least_1d`]
     #[default_device]
-    pub fn at_least_1d_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
+    pub fn at_least_1d_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
         at_least_1d_device(self, stream)
     }
 
     /// See [`at_least_2d`]
     #[default_device]
-    pub fn at_least_2d_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
+    pub fn at_least_2d_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
         at_least_2d_device(self, stream)
     }
 
     /// See [`at_least_3d`]
     #[default_device]
-    pub fn at_least_3d_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
+    pub fn at_least_3d_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
         at_least_3d_device(self, stream)
     }
 
@@ -91,7 +91,7 @@ impl Array {
         src: i32,
         dst: i32,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         move_axis_device(self, src, dst, stream)
     }
 
@@ -102,7 +102,7 @@ impl Array {
         indices: &[i32],
         axis: impl Into<Option<i32>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Vec<Array>> {
+    ) -> Result<Vec<Self>> {
         split_sections_device(self, indices, axis, stream)
     }
 
@@ -113,7 +113,7 @@ impl Array {
         num_parts: i32,
         axis: impl Into<Option<i32>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Vec<Array>> {
+    ) -> Result<Vec<Self>> {
         split_device(self, num_parts, axis, stream)
     }
 
@@ -124,24 +124,24 @@ impl Array {
         axis1: i32,
         axis2: i32,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         swap_axes_device(self, axis1, axis2, stream)
     }
 
     /// See [`transpose_axes`]
     #[default_device]
-    pub fn transpose_axes_device(&self, axes: &[i32], stream: impl AsRef<Stream>) -> Result<Array> {
+    pub fn transpose_axes_device(&self, axes: &[i32], stream: impl AsRef<Stream>) -> Result<Self> {
         transpose_axes_device(self, axes, stream)
     }
 
     /// See [`transpose`]
     #[default_device]
-    pub fn transpose_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
+    pub fn transpose_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
         transpose_device(self, stream)
     }
 
     /// [`transpose_axes`] and unwrap the result.
-    pub fn t(&self) -> Array {
+    pub fn t(&self) -> Self {
         self.transpose().unwrap()
     }
 }
@@ -150,20 +150,17 @@ fn resolve_strides(
     shape: &[i32],
     strides: Option<&[i64]>,
 ) -> SmallVec<[i64; DEFAULT_STACK_VEC_LEN]> {
-    match strides {
-        Some(strides) => SmallVec::from_slice(strides),
-        None => {
-            let result = shape
-                .iter()
-                .rev()
-                .scan(1, |acc, &dim| {
-                    let result = *acc;
-                    *acc *= dim as i64;
-                    Some(result)
-                })
-                .collect::<SmallVec<[i64; DEFAULT_STACK_VEC_LEN]>>();
-            result.into_iter().rev().collect()
-        }
+    if let Some(strides) = strides { SmallVec::from_slice(strides) } else {
+        let result = shape
+            .iter()
+            .rev()
+            .scan(1, |acc, &dim| {
+                let result = *acc;
+                *acc *= dim as i64;
+                Some(result)
+            })
+            .collect::<SmallVec<[i64; DEFAULT_STACK_VEC_LEN]>>();
+        result.into_iter().rev().collect()
     }
 }
 
@@ -758,8 +755,8 @@ impl PadMode {
         static EDGE: &[u8] = b"edge\0";
 
         match self {
-            PadMode::Constant => CONSTANT.as_ptr() as *const _,
-            PadMode::Edge => EDGE.as_ptr() as *const _,
+            Self::Constant => CONSTANT.as_ptr().cast(),
+            Self::Edge => EDGE.as_ptr().cast(),
         }
     }
 }
@@ -1001,6 +998,10 @@ pub fn transpose_device(
 // https://github.com/ml-explore/mlx/blob/main/tests/ops_tests.cpp
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::{array, Array, Dtype};
 
     use super::*;

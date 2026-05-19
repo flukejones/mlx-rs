@@ -41,6 +41,10 @@ pub fn generate_rotation_matrix(d: i32, seed: u64) -> Result<Array, Error> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use mlx_rs::ops::indexing::IndexOp;
 

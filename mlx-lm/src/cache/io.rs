@@ -67,7 +67,7 @@ pub fn save_prompt_cache<C: KeyValueCache>(
 
     for (i, c) in caches.iter().enumerate() {
         let class_name = c.class_name();
-        metadata.insert(format!("layer.{i}.class_name"), class_name.to_string());
+        metadata.insert(format!("layer.{i}.class_name"), class_name.to_owned());
         for (k, v) in c.meta_state() {
             metadata.insert(format!("layer.{i}.{k}"), v);
         }
@@ -114,8 +114,8 @@ impl LoadedCache {
     /// Discriminant matching Python `class_name`.
     pub fn class_name(&self) -> &'static str {
         match self {
-            LoadedCache::Plain(_) => "KVCache",
-            LoadedCache::Quantized(_) => "QuantizedKVCache",
+            Self::Plain(_) => "KVCache",
+            Self::Quantized(_) => "QuantizedKVCache",
         }
     }
 }

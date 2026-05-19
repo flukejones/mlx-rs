@@ -11,7 +11,7 @@ pub enum NestedValue<K, T> {
     Value(T),
 
     /// A map of nested values
-    Map(HashMap<K, NestedValue<K, T>>),
+    Map(HashMap<K, Self>),
 }
 
 impl<K, V> NestedValue<K, V> {
@@ -21,12 +21,12 @@ impl<K, V> NestedValue<K, V> {
         K: Display,
     {
         match self {
-            NestedValue::Value(array) => {
+            Self::Value(array) => {
                 let mut map = HashMap::new();
                 map.insert(prefix.into(), array);
                 map
             }
-            NestedValue::Map(entries) => entries
+            Self::Map(entries) => entries
                 .into_iter()
                 .flat_map(|(key, value)| value.flatten(&format!("{prefix}{DELIMITER}{key}")))
                 .collect(),
@@ -43,7 +43,7 @@ pub struct NestedHashMap<K, V> {
 
 impl<K, V> From<NestedHashMap<K, V>> for NestedValue<K, V> {
     fn from(map: NestedHashMap<K, V>) -> Self {
-        NestedValue::Map(map.entries)
+        Self::Map(map.entries)
     }
 }
 
@@ -83,6 +83,9 @@ impl<K, V> NestedHashMap<K, V> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::array;
 
     use super::*;

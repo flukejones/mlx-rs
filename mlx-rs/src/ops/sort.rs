@@ -261,6 +261,9 @@ pub fn argpartition_device(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::Array;
 
     #[test]

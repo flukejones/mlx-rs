@@ -68,15 +68,15 @@ fn rewrite_outer_key(key: &str) -> String {
     }
     if let Some(rest) = key.strip_prefix("language_model.") {
         // Bare `language_model.X` (lm_head etc.). Drop the prefix.
-        return rest.to_string();
+        return rest.to_owned();
     }
-    key.to_string()
+    key.to_owned()
 }
 
 fn list_shards(model_dir: &Path) -> Result<Vec<String>, Error> {
     let single = model_dir.join("model.safetensors");
     if single.is_file() {
-        return Ok(vec!["model.safetensors".to_string()]);
+        return Ok(vec!["model.safetensors".to_owned()]);
     }
     let index_path = model_dir.join("model.safetensors.index.json");
     if !index_path.is_file() {
@@ -171,7 +171,7 @@ pub fn load_sanitized_gemma4_weights(
     // `MaybeQuantized::Quantized(QuantizedLinear { inner })` param.
     let quantised_prefixes: HashSet<String> = raw
         .keys()
-        .filter_map(|k| k.strip_suffix(".scales").map(|p| p.to_string()))
+        .filter_map(|k| k.strip_suffix(".scales").map(|p| p.to_owned()))
         .collect();
 
     let mut out: HashMap<String, Array> = HashMap::with_capacity(raw.len());
@@ -297,6 +297,9 @@ pub fn load_gemma4_model_sanitized(model_dir: impl AsRef<Path>) -> Result<Model,
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
 
     #[test]

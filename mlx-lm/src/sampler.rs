@@ -11,12 +11,9 @@ use mlx_rs::{
 
 /// Argmax at `temp == 0.0`, categorical sampling otherwise.
 pub fn sample(logits: &Array, temp: f32) -> Result<Array, Exception> {
-    match temp {
-        0.0 => argmax_axis!(logits, -1),
-        _ => {
-            let logits = logits.multiply(array!(1.0 / temp))?;
-            categorical!(logits)
-        }
+    if temp == 0.0 { argmax_axis!(logits, -1) } else {
+        let logits = logits.multiply(array!(1.0 / temp))?;
+        categorical!(logits)
     }
 }
 
@@ -75,6 +72,10 @@ pub fn top_p_sample(logits: &Array, p: f32) -> Result<Array, Exception> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
 
     #[test]

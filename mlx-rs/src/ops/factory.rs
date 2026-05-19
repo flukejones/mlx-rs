@@ -23,7 +23,7 @@ impl Array {
     pub fn zeros_device<T: ArrayElement>(
         shape: &[i32],
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         let dtype = T::DTYPE;
         zeros_dtype_device(shape, dtype, stream)
     }
@@ -44,7 +44,7 @@ impl Array {
     pub fn ones_device<T: ArrayElement>(
         shape: &[i32],
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
+    ) -> Result<Self> {
         let dtype = T::DTYPE;
         ones_dtype_device(shape, dtype, stream)
     }
@@ -70,8 +70,8 @@ impl Array {
         m: Option<i32>,
         k: Option<i32>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_eye(
                 res,
                 n,
@@ -103,10 +103,10 @@ impl Array {
     #[default_device]
     pub fn full_device<T: ArrayElement>(
         shape: &[i32],
-        values: impl AsRef<Array>,
+        values: impl AsRef<Self>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_full(
                 res,
                 shape.as_ptr(),
@@ -132,8 +132,8 @@ impl Array {
     /// let r = Array::identity_device::<f32>(10, StreamOrDevice::default()).unwrap();
     /// ```
     #[default_device]
-    pub fn identity_device<T: ArrayElement>(n: i32, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn identity_device<T: ArrayElement>(n: i32, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_identity(res, n, T::DTYPE.into(), stream.as_ref().as_ptr())
         })
     }
@@ -162,7 +162,7 @@ impl Array {
         stop: U,
         step: impl Into<Option<U>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array>
+    ) -> Result<Self>
     where
         U: NumCast,
         T: ArrayElement,
@@ -171,7 +171,7 @@ impl Array {
         let stop: f64 = NumCast::from(stop).unwrap();
         let step: f64 = step.into().and_then(NumCast::from).unwrap_or(1.0);
 
-        Array::try_from_op(|res| unsafe {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_arange(
                 res,
                 start,
@@ -204,7 +204,7 @@ impl Array {
         stop: U,
         count: impl Into<Option<i32>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array>
+    ) -> Result<Self>
     where
         U: NumCast,
         T: ArrayElement,
@@ -213,7 +213,7 @@ impl Array {
         let start_f32 = NumCast::from(start).unwrap();
         let stop_f32 = NumCast::from(stop).unwrap();
 
-        Array::try_from_op(|res| unsafe {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_linspace(
                 res,
                 start_f32,
@@ -243,12 +243,12 @@ impl Array {
     /// ```
     #[default_device]
     pub fn repeat_axis_device<T: ArrayElement>(
-        array: Array,
+        array: Self,
         count: i32,
         axis: i32,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_repeat_axis(res, array.as_ptr(), count, axis, stream.as_ref().as_ptr())
         })
     }
@@ -270,11 +270,11 @@ impl Array {
     /// ```
     #[default_device]
     pub fn repeat_device<T: ArrayElement>(
-        array: Array,
+        array: Self,
         count: i32,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_repeat(res, array.as_ptr(), count, stream.as_ref().as_ptr())
         })
     }
@@ -300,8 +300,8 @@ impl Array {
         m: Option<i32>,
         k: Option<i32>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_tri(
                 res,
                 n,
@@ -585,6 +585,10 @@ pub fn triu_device(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use crate::{array, dtype::Dtype, StreamOrDevice};
     use half::f16;

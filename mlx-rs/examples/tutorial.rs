@@ -1,3 +1,7 @@
+#![allow(clippy::print_stdout, reason = "example code")]
+#![allow(clippy::unwrap_used, reason = "example code")]
+#![allow(clippy::missing_assert_message, reason = "example code")]
+
 use mlx_rs::transforms::grad;
 use mlx_rs::{Array, Dtype};
 
@@ -29,7 +33,7 @@ fn scalar_basics() {
     assert!(shape.is_empty());
 }
 
-#[allow(unused_variables)]
+#[allow(unused_variables, reason = "example code: variables shown for didactic purposes")]
 fn array_basics() {
     // make a multidimensional array.
     let x: Array = Array::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);

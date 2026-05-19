@@ -1,4 +1,3 @@
-extern crate proc_macro;
 use darling::FromMeta;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
@@ -30,12 +29,15 @@ impl FromMeta for DefaultDeviceInput {
             ));
         };
 
-        let ident = meta_name_value.path.get_ident().unwrap();
+        let ident = meta_name_value
+            .path
+            .get_ident()
+            .expect("attribute path is checked to be a single ident");
         assert_eq!(ident, "device", "expected `device`");
 
         let device = DeviceType::from_expr(&meta_name_value.value)?;
 
-        Ok(DefaultDeviceInput { device })
+        Ok(Self { device })
     }
 }
 
@@ -44,7 +46,7 @@ impl FromMeta for DefaultDeviceInput {
 pub fn default_device(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = if !attr.is_empty() {
         let meta = syn::parse_macro_input!(attr as syn::Meta);
-        Some(DefaultDeviceInput::from_meta(&meta).unwrap())
+        Some(DefaultDeviceInput::from_meta(&meta).expect("default_device: invalid attribute"))
     } else {
         None
     };
@@ -53,9 +55,7 @@ pub fn default_device(attr: TokenStream, item: TokenStream) -> TokenStream {
     let original_fn = input_fn.clone();
 
     // Ensure function name convention
-    if !input_fn.sig.ident.to_string().contains("_device") {
-        panic!("Function name must end with '_device'");
-    }
+    assert!(input_fn.sig.ident.to_string().contains("_device"), "Function name must end with '_device'");
     let new_fn_name = format_ident!("{}", &input_fn.sig.ident.to_string().replace("_device", ""));
     input_fn.sig.ident = new_fn_name;
 
@@ -164,7 +164,8 @@ pub fn generate_test_cases(input: TokenStream) -> TokenStream {
 pub fn generate_builder(input: TokenStream) -> TokenStream {
     // let input = parse_macro_input!(input as ItemStruct);
     let input = parse_macro_input!(input as DeriveInput);
-    let builder = generate_builder::expand_generate_builder(&input).unwrap();
+    let builder = generate_builder::expand_generate_builder(&input)
+        .expect("generate_builder: expansion failed");
     quote::quote! {
         #input
         #builder
@@ -263,7 +264,8 @@ pub fn generate_builder(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Buildable, attributes(buildable, builder))]
 pub fn derive_buildable(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let builder = derive_buildable::expand_derive_buildable(input).unwrap();
+    let builder = derive_buildable::expand_derive_buildable(input)
+        .expect("Buildable derive: expansion failed");
     TokenStream::from(builder)
 }
 
@@ -299,7 +301,8 @@ pub fn derive_buildable(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive_builder(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let builder = derive_builder::expand_derive_builder(input).unwrap();
+    let builder = derive_builder::expand_derive_builder(input)
+        .expect("Builder derive: expansion failed");
     TokenStream::from(builder)
 }
 
@@ -348,5 +351,5 @@ pub fn generate_macro(attr: TokenStream, item: TokenStream) -> TokenStream {
         None
     };
     let item = parse_macro_input!(item as ItemFn);
-    generate_macro::expand_generate_macro(attr, item).unwrap()
+    generate_macro::expand_generate_macro(attr, item).expect("generate_macro: expansion failed")
 }

@@ -34,7 +34,7 @@ pub fn sigmoid(x: impl AsRef<Array>) -> Result<Array> {
 /// maximum(x, 0)
 /// ```
 pub fn relu(x: impl AsRef<Array>) -> Result<Array> {
-    crate::ops::maximum(x.as_ref(), &array!(0))
+    maximum(x.as_ref(), &array!(0))
 }
 
 /// Applies the Leaky Rectified Linear Unit.
@@ -961,6 +961,10 @@ fn compiled_hard_swish(x: &Array) -> Result<Array> {
 // mlx-swift/Tests/MLXTests/IntegrationTests.swift
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::{builder::Builder, random::uniform, Dtype};
     use float_eq::assert_float_eq;
 

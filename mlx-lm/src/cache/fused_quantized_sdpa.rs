@@ -333,12 +333,9 @@ pub fn fused_qsdpa_decode(
 
     // Dummy mask if not provided (kernel reads but `mask_present` gates the load).
     let dummy_mask;
-    let mask_arr: &Array = match inputs.mask {
-        Some(m) => m,
-        None => {
-            dummy_mask = Array::zeros::<u8>(&[1])?.as_dtype(Dtype::Bool)?;
-            &dummy_mask
-        }
+    let mask_arr: &Array = if let Some(m) = inputs.mask { m } else {
+        dummy_mask = Array::zeros::<u8>(&[1])?.as_dtype(Dtype::Bool)?;
+        &dummy_mask
     };
 
     // 32 simdgroups × 32 lanes = 1024 threads per TG (Flash-Attention pattern).
@@ -384,6 +381,10 @@ pub fn fused_qsdpa_decode(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use mlx_rs::ops::{dequantize, quantize, softmax_axis};
     use mlx_rs::random::{key, normal};
@@ -478,9 +479,9 @@ mod tests {
                     scores[k_idx] = s;
                 }
                 // Pass 2: softmax.
-                let m = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let m = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
                 let mut l = 0.0f32;
-                for s in scores.iter_mut() {
+                for s in &mut scores {
                     *s = (*s - m).exp();
                     l += *s;
                 }

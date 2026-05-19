@@ -113,20 +113,17 @@ impl Optimizer for Sgd {
             v = v.add(&gradient)?;
         }
 
-        match self.nesterov {
-            true => {
-                let momentum = array!(self.momentum);
-                let lr = array!(self.lr);
-                let update = gradient.add(momentum.multiply(&v)?)?;
-                *parameter = parameter.subtract(lr.multiply(&update)?)?;
-                *state = v;
-            }
-            false => {
-                let update = &v;
-                let lr = array!(self.lr);
-                *parameter = parameter.subtract(lr.multiply(update)?)?;
-                *state = v;
-            }
+        if self.nesterov {
+            let momentum = array!(self.momentum);
+            let lr = array!(self.lr);
+            let update = gradient.add(momentum.multiply(&v)?)?;
+            *parameter = parameter.subtract(lr.multiply(&update)?)?;
+            *state = v;
+        } else {
+            let update = &v;
+            let lr = array!(self.lr);
+            *parameter = parameter.subtract(lr.multiply(update)?)?;
+            *state = v;
         }
 
         Ok(())

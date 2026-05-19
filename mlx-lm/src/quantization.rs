@@ -13,7 +13,7 @@ pub struct QuantizationConfig {
 }
 
 fn default_quant_mode() -> String {
-    DEFAULT_QUANT_MODE.to_string()
+    DEFAULT_QUANT_MODE.to_owned()
 }
 
 /// Prefer `quantization`; fall back to legacy `quantization_config`.

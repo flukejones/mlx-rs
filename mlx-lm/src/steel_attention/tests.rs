@@ -4,6 +4,11 @@
 //! against `mlx_rs::fast::scaled_dot_product_attention` (no-mask,
 //! no-causal) at fp16/bf16 tolerances.
 
+#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::missing_assert_message, reason = "test code")]
+#![allow(clippy::print_stdout, reason = "test code")]
+#![allow(clippy::print_stderr, reason = "test code")]
+
 use mlx_rs::error::Result;
 use mlx_rs::fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask};
 use mlx_rs::random::{key, normal};
@@ -50,7 +55,7 @@ fn rand_4d(shape: &[i32], dtype: Dtype, seed: u64) -> Result<Array> {
     a.as_dtype(dtype)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "test helper: shape parameters")]
 fn parity_case_inner(
     d: i32,
     b: i32,
@@ -100,7 +105,7 @@ fn parity_case_inner(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "test helper: shape parameters")]
 fn parity_case(
     d: i32,
     b: i32,
@@ -114,7 +119,7 @@ fn parity_case(
     parity_case_inner(d, b, h_q, h_kv, q_len, k_len, dtype, tolerance, false)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "test helper: shape parameters")]
 fn causal_case(
     d: i32,
     b: i32,
@@ -286,7 +291,7 @@ fn d512_causal_aligned_long_fp16() {
 
 // ===== Quantised K/V =====
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "test helper: shape parameters")]
 fn quant_case(
     d: i32,
     b: i32,

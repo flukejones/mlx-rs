@@ -100,6 +100,7 @@ impl Quantizable for SwitchLinear {
 }
 
 /// Quantised per-expert linear. Packed weight + per-group scales/biases.
+///
 /// The dense `inner` carries the packed-uint32 weight and the optional
 /// bias slot, matching the `QuantizedLinear { inner: Linear, scales,
 /// biases }` shape so the sanitiser's `<prefix>.weight →
@@ -314,7 +315,7 @@ impl SwitchGLU {
 }
 
 impl Quantizable for SwitchGLU {
-    type Quantized = SwitchGLU;
+    type Quantized = Self;
     type QuantizationError = Exception;
 
     fn try_into_quantized(
@@ -322,7 +323,7 @@ impl Quantizable for SwitchGLU {
         group_size: i32,
         bits: i32,
     ) -> Result<Self::Quantized, Self::QuantizationError> {
-        Ok(SwitchGLU {
+        Ok(Self {
             gate_up_proj: self.gate_up_proj.try_into_quantized(group_size, bits)?,
             down_proj: self.down_proj.try_into_quantized(group_size, bits)?,
             hidden_dims: self.hidden_dims,

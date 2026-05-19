@@ -1,3 +1,7 @@
+#![allow(clippy::print_stdout, reason = "example code")]
+#![allow(clippy::unwrap_used, reason = "example code")]
+#![allow(clippy::missing_assert_message, reason = "example code")]
+
 use mlx_rs::error::Exception;
 use mlx_rs::{ops, transforms, Array};
 use std::error::Error;

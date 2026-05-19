@@ -385,46 +385,43 @@ impl Attention {
             .reshape(&[B, L, self.n_heads, self.head_dim])?;
         let mut queries = self.q_norm.forward(&queries)?;
 
-        let (keys, values) = match shared_kv {
-            Some(kv) => kv,
-            None => {
-                if !self.has_kv {
-                    return Err(Exception::custom(format!(
-                        "gemma4: layer {} is KV-shared but no shared_kv supplied",
-                        self.layer_idx
-                    )));
-                }
-                let k_proj = self.k_proj.as_mut().expect("has_kv guarantees k_proj");
-                let keys = k_proj
-                    .forward(x)?
-                    .reshape(&[B, L, self.n_kv_heads, self.head_dim])?;
-
-                let mut k_for_attn = self
-                    .k_norm
-                    .as_mut()
-                    .expect("has_kv guarantees k_norm")
-                    .forward(&keys)?
-                    .transpose_axes(&[0, 2, 1, 3])?;
-                k_for_attn = self.rope.forward_dynamic(&k_for_attn, &pre_offset_arr)?;
-
-                let values = if self.use_k_eq_v {
-                    keys.clone()
-                } else {
-                    self.v_proj
-                        .as_mut()
-                        .expect("non-keqv has v_proj")
-                        .forward(x)?
-                        .reshape(&[B, L, self.n_kv_heads, self.head_dim])?
-                };
-                let v_for_attn = self
-                    .v_norm
-                    .as_mut()
-                    .expect("has_kv guarantees v_norm")
-                    .forward(&values)?
-                    .transpose_axes(&[0, 2, 1, 3])?;
-
-                (k_for_attn, v_for_attn)
+        let (keys, values) = if let Some(kv) = shared_kv { kv } else {
+            if !self.has_kv {
+                return Err(Exception::custom(format!(
+                    "gemma4: layer {} is KV-shared but no shared_kv supplied",
+                    self.layer_idx
+                )));
             }
+            let k_proj = self.k_proj.as_mut().expect("has_kv guarantees k_proj");
+            let keys = k_proj
+                .forward(x)?
+                .reshape(&[B, L, self.n_kv_heads, self.head_dim])?;
+
+            let mut k_for_attn = self
+                .k_norm
+                .as_mut()
+                .expect("has_kv guarantees k_norm")
+                .forward(&keys)?
+                .transpose_axes(&[0, 2, 1, 3])?;
+            k_for_attn = self.rope.forward_dynamic(&k_for_attn, &pre_offset_arr)?;
+
+            let values = if self.use_k_eq_v {
+                keys.clone()
+            } else {
+                self.v_proj
+                    .as_mut()
+                    .expect("non-keqv has v_proj")
+                    .forward(x)?
+                    .reshape(&[B, L, self.n_kv_heads, self.head_dim])?
+            };
+            let v_for_attn = self
+                .v_norm
+                .as_mut()
+                .expect("has_kv guarantees v_norm")
+                .forward(&values)?
+                .transpose_axes(&[0, 2, 1, 3])?;
+
+            (k_for_attn, v_for_attn)
         };
 
         queries = queries.transpose_axes(&[0, 2, 1, 3])?;
@@ -667,7 +664,7 @@ impl Experts {
 }
 
 impl mlx_rs::quantization::Quantizable for Experts {
-    type Quantized = Experts;
+    type Quantized = Self;
     type QuantizationError = Exception;
 
     fn try_into_quantized(
@@ -675,7 +672,7 @@ impl mlx_rs::quantization::Quantizable for Experts {
         group_size: i32,
         bits: i32,
     ) -> Result<Self::Quantized, Self::QuantizationError> {
-        Ok(Experts {
+        Ok(Self {
             switch_glu: self.switch_glu.try_into_quantized(group_size, bits)?,
         })
     }

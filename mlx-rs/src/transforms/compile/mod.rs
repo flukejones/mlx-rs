@@ -145,7 +145,7 @@
 use super::{Closure, Guarded, VectorArray};
 use crate::Array;
 
-#[allow(clippy::module_inception)]
+#[allow(clippy::module_inception, reason = "wrapper module re-exports inner module by same name")]
 mod compile;
 mod compile_with_state;
 

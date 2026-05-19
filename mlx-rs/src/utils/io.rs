@@ -40,7 +40,7 @@ impl SafeTensors {
         let path_str = path.to_str().ok_or(IoError::InvalidUtf8)?;
         let filepath = CString::new(path_str)?;
 
-        SafeTensors::try_from_op(|(res_0, res_1)| unsafe {
+        Self::try_from_op(|(res_0, res_1)| unsafe {
             mlx_sys::mlx_load_safetensors(res_0, res_1, filepath.as_ptr(), stream.as_ref().as_ptr())
         })
         .map_err(Into::into)

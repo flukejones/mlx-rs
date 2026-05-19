@@ -2,6 +2,11 @@
 //!
 //! This is mainly a sanity check to ensure that the exported macros are working as expected.
 
+#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::missing_assert_message, reason = "test code")]
+#![allow(clippy::print_stdout, reason = "test code")]
+#![allow(clippy::print_stderr, reason = "test code")]
+
 use mlx_rs::{
     array, complex64,
     error::Exception,
@@ -161,7 +166,7 @@ fn test_random_normal() {
 // Test functions defined in `mlx_rs::fast` module.
 
 #[test]
-#[allow(non_snake_case)]
+#[allow(non_snake_case, reason = "test mirrors ML tensor names (Q, K, V)")]
 fn test_fast_sdpa_using_macros() -> Result<(), Exception> {
     // This test just makes sure that `scaled_dot_product_attention` is callable
     // in the various cases, based on the Python test `test_fast_sdpa`.
@@ -169,7 +174,7 @@ fn test_fast_sdpa_using_macros() -> Result<(), Exception> {
     let Dk = 64;
     let scale = 1.0 / (Dk as f32).sqrt();
     for seq_len in [63, 129, 400] {
-        for dtype in [crate::Dtype::Float32, crate::Dtype::Float16] {
+        for dtype in [Dtype::Float32, Dtype::Float16] {
             let B = 2;
             let H = 24;
             let q = mlx_rs::normal!(shape = &[B, H, seq_len, Dk])?.as_dtype(dtype)?;

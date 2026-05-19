@@ -106,11 +106,11 @@ where
         bits: i32,
     ) -> Result<Self, Self::QuantizationError> {
         match self {
-            MaybeQuantized::Original(m) => {
+            Self::Original(m) => {
                 let quantized = m.try_into_quantized(group_size, bits)?;
-                Ok(MaybeQuantized::Quantized(quantized))
+                Ok(Self::Quantized(quantized))
             }
-            MaybeQuantized::Quantized(q) => Ok(MaybeQuantized::Quantized(q)),
+            Self::Quantized(q) => Ok(Self::Quantized(q)),
         }
     }
 }
@@ -121,7 +121,7 @@ where
 {
     /// Create a new [`MaybeQuantized`] from the original module.
     pub fn new(module: M) -> Self {
-        MaybeQuantized::Original(module)
+        Self::Original(module)
     }
 
     /// Quantize the module with a custom quantization function.
@@ -132,16 +132,16 @@ where
         op: impl FnOnce(M) -> Result<M::Quantized, M::QuantizationError>,
     ) -> Result<Self, M::QuantizationError> {
         match self {
-            MaybeQuantized::Original(m) => op(m).map(MaybeQuantized::Quantized),
-            MaybeQuantized::Quantized(q) => Ok(MaybeQuantized::Quantized(q)),
+            Self::Original(m) => op(m).map(MaybeQuantized::Quantized),
+            Self::Quantized(q) => Ok(Self::Quantized(q)),
         }
     }
 
     /// Check if the module is quantized.
     pub fn is_quantized(&self) -> bool {
         match self {
-            MaybeQuantized::Original(_) => false,
-            MaybeQuantized::Quantized(_) => true,
+            Self::Original(_) => false,
+            Self::Quantized(_) => true,
         }
     }
 }
@@ -153,57 +153,57 @@ where
 {
     fn num_parameters(&self) -> usize {
         match self {
-            MaybeQuantized::Original(m) => m.num_parameters(),
-            MaybeQuantized::Quantized(q) => q.num_parameters(),
+            Self::Original(m) => m.num_parameters(),
+            Self::Quantized(q) => q.num_parameters(),
         }
     }
 
     fn parameters(&self) -> crate::module::ModuleParamRef<'_> {
         match self {
-            MaybeQuantized::Original(m) => m.parameters(),
-            MaybeQuantized::Quantized(q) => q.parameters(),
+            Self::Original(m) => m.parameters(),
+            Self::Quantized(q) => q.parameters(),
         }
     }
 
     fn parameters_mut(&mut self) -> crate::module::ModuleParamMut<'_> {
         match self {
-            MaybeQuantized::Original(m) => m.parameters_mut(),
-            MaybeQuantized::Quantized(q) => q.parameters_mut(),
+            Self::Original(m) => m.parameters_mut(),
+            Self::Quantized(q) => q.parameters_mut(),
         }
     }
 
     fn trainable_parameters(&self) -> crate::module::ModuleParamRef<'_> {
         match self {
-            MaybeQuantized::Original(m) => m.trainable_parameters(),
-            MaybeQuantized::Quantized(q) => q.trainable_parameters(),
+            Self::Original(m) => m.trainable_parameters(),
+            Self::Quantized(q) => q.trainable_parameters(),
         }
     }
 
     fn freeze_parameters(&mut self, recursive: bool) {
         match self {
-            MaybeQuantized::Original(m) => m.freeze_parameters(recursive),
-            MaybeQuantized::Quantized(q) => q.freeze_parameters(recursive),
+            Self::Original(m) => m.freeze_parameters(recursive),
+            Self::Quantized(q) => q.freeze_parameters(recursive),
         }
     }
 
     fn unfreeze_parameters(&mut self, recursive: bool) {
         match self {
-            MaybeQuantized::Original(m) => m.unfreeze_parameters(recursive),
-            MaybeQuantized::Quantized(q) => q.unfreeze_parameters(recursive),
+            Self::Original(m) => m.unfreeze_parameters(recursive),
+            Self::Quantized(q) => q.unfreeze_parameters(recursive),
         }
     }
 
     fn all_frozen(&self) -> Option<bool> {
         match self {
-            MaybeQuantized::Original(m) => m.all_frozen(),
-            MaybeQuantized::Quantized(q) => q.all_frozen(),
+            Self::Original(m) => m.all_frozen(),
+            Self::Quantized(q) => q.all_frozen(),
         }
     }
 
     fn any_frozen(&self) -> Option<bool> {
         match self {
-            MaybeQuantized::Original(m) => m.any_frozen(),
-            MaybeQuantized::Quantized(q) => q.any_frozen(),
+            Self::Original(m) => m.any_frozen(),
+            Self::Quantized(q) => q.any_frozen(),
         }
     }
 }
@@ -220,21 +220,25 @@ where
 
     fn forward(&mut self, x: Input) -> Result<Self::Output, Self::Error> {
         match self {
-            MaybeQuantized::Original(m) => m.forward(x),
-            MaybeQuantized::Quantized(q) => q.forward(x),
+            Self::Original(m) => m.forward(x),
+            Self::Quantized(q) => q.forward(x),
         }
     }
 
     fn training_mode(&mut self, mode: bool) {
         match self {
-            MaybeQuantized::Original(m) => m.training_mode(mode),
-            MaybeQuantized::Quantized(q) => q.training_mode(mode),
+            Self::Original(m) => m.training_mode(mode),
+            Self::Quantized(q) => q.training_mode(mode),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::nn::{self, Embedding, Linear};
 
     use super::*;

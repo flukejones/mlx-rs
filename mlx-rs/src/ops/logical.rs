@@ -26,8 +26,8 @@ impl Array {
     /// // c_data == [true, true, true]
     /// ```
     #[default_device]
-    pub fn eq_device(&self, other: impl AsRef<Array>, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn eq_device(&self, other: impl AsRef<Self>, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_equal(
                 res,
                 self.as_ptr(),
@@ -58,8 +58,8 @@ impl Array {
     /// // c_data == [true, true, true]
     /// ```
     #[default_device]
-    pub fn le_device(&self, other: impl AsRef<Array>, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn le_device(&self, other: impl AsRef<Self>, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_less_equal(
                 res,
                 self.as_ptr(),
@@ -90,8 +90,8 @@ impl Array {
     /// // c_data == [true, true, true]
     /// ```
     #[default_device]
-    pub fn ge_device(&self, other: impl AsRef<Array>, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn ge_device(&self, other: impl AsRef<Self>, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_greater_equal(
                 res,
                 self.as_ptr(),
@@ -122,8 +122,8 @@ impl Array {
     /// // c_data == [false, false, false]
     /// ```
     #[default_device]
-    pub fn ne_device(&self, other: impl AsRef<Array>, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn ne_device(&self, other: impl AsRef<Self>, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_not_equal(
                 res,
                 self.as_ptr(),
@@ -153,8 +153,8 @@ impl Array {
     /// // c_data == [false, false, false]
     /// ```
     #[default_device]
-    pub fn lt_device(&self, other: impl AsRef<Array>, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn lt_device(&self, other: impl AsRef<Self>, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_less(
                 res,
                 self.as_ptr(),
@@ -184,8 +184,8 @@ impl Array {
     /// // c_data == [false, false, false]
     /// ```
     #[default_device]
-    pub fn gt_device(&self, other: impl AsRef<Array>, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn gt_device(&self, other: impl AsRef<Self>, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_greater(
                 res,
                 self.as_ptr(),
@@ -217,10 +217,10 @@ impl Array {
     #[default_device]
     pub fn logical_and_device(
         &self,
-        other: impl AsRef<Array>,
+        other: impl AsRef<Self>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_logical_and(
                 res,
                 self.as_ptr(),
@@ -252,10 +252,10 @@ impl Array {
     #[default_device]
     pub fn logical_or_device(
         &self,
-        other: impl AsRef<Array>,
+        other: impl AsRef<Self>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_logical_or(
                 res,
                 self.as_ptr(),
@@ -278,8 +278,8 @@ impl Array {
     /// // b_data == [true]
     /// ```
     #[default_device]
-    pub fn logical_not_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn logical_not_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_logical_not(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -314,13 +314,13 @@ impl Array {
     #[default_device]
     pub fn all_close_device(
         &self,
-        other: impl AsRef<Array>,
+        other: impl AsRef<Self>,
         rtol: impl Into<Option<f64>>,
         atol: impl Into<Option<f64>>,
         equal_nan: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_allclose(
                 res,
                 self.as_ptr(),
@@ -348,13 +348,13 @@ impl Array {
     #[default_device]
     pub fn is_close_device(
         &self,
-        other: impl AsRef<Array>,
+        other: impl AsRef<Self>,
         rtol: impl Into<Option<f64>>,
         atol: impl Into<Option<f64>>,
         equal_nan: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_isclose(
                 res,
                 self.as_ptr(),
@@ -391,11 +391,11 @@ impl Array {
     #[default_device]
     pub fn array_eq_device(
         &self,
-        other: impl AsRef<Array>,
+        other: impl AsRef<Self>,
         equal_nan: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_array_equal(
                 res,
                 self.as_ptr(),
@@ -432,8 +432,8 @@ impl Array {
         axes: &[i32],
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_any_axes(
                 res,
                 self.as_ptr(),
@@ -452,8 +452,8 @@ impl Array {
         axis: i32,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_any_axis(
                 res,
                 self.as_ptr(),
@@ -470,8 +470,8 @@ impl Array {
         &self,
         keep_dims: impl Into<Option<bool>>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_any(
                 res,
                 self.as_ptr(),
@@ -750,6 +750,10 @@ pub fn which_device(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::{array, Dtype};
 
     use super::*;

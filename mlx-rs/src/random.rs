@@ -226,6 +226,7 @@ pub fn split_device(
 }
 
 /// Generate uniformly distributed random numbers.
+///
 /// The values are sampled uniformly in the half-open interval `[lower, upper)`.
 /// The lower and upper bound can be scalars or arrays and must be broadcastable to `shape`.
 ///
@@ -611,6 +612,10 @@ pub fn categorical_device<'a>(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use crate::{array, assert_array_eq};
     use float_eq::{assert_float_eq, float_eq};

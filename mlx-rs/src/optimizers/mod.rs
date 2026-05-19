@@ -146,7 +146,7 @@ impl OptimizerState for State<(Array, Array)> {
         I: IntoIterator<Item = (K, Array)>,
         K: Ord + AsRef<str> + Into<Rc<str>>,
     {
-        let mut state = State::new();
+        let mut state = Self::new();
         let iter = input
             .into_iter()
             .sorted_by(|a, b| a.0.as_ref().cmp(b.0.as_ref()))
@@ -209,7 +209,7 @@ pub trait Optimizer: Updatable {
     {
         let mut parameters = model.parameters_mut().flatten();
 
-        for (key, gradient) in gradients.borrow().iter() {
+        for (key, gradient) in gradients.borrow() {
             if let Some(parameter) = parameters.get_mut(key) {
                 self.update_single(key, gradient, parameter)?;
             }
@@ -254,6 +254,10 @@ pub fn clip_grad_norm(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use std::collections::HashMap;
 
     use crate::{array, module::FlattenedModuleParam, Array};
@@ -271,7 +275,7 @@ mod tests {
         let max_norm = 10.0;
 
         let (clipped_grads, _) = clip_grad_norm(&small_grads, max_norm).unwrap();
-        for (key, value) in small_grads.iter() {
+        for (key, value) in &small_grads {
             assert_eq!(&*clipped_grads[key], value);
         }
 
@@ -300,7 +304,7 @@ mod tests {
             .iter()
             .map(|(key, value)| (key.clone(), value * scale))
             .collect();
-        for (key, value) in expected_grads.iter() {
+        for (key, value) in &expected_grads {
             assert_eq!(&*clipped_grads[key], value);
         }
     }

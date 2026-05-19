@@ -9,7 +9,7 @@ use crate::{Array, Dtype, Stream};
 use mlx_internal_macros::{default_device, generate_macro};
 
 /// Optimized implementation of `NN.RoPE`.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
 #[generate_macro(customize(root = "$crate::fast"))]
 #[default_device]
 pub fn rope_device<'a>(
@@ -60,7 +60,7 @@ pub fn rope_device<'a>(
 /// - `offset`: An array of position offsets
 /// - `freqs`: Optional precomputed frequencies
 /// - `stream`: Stream to evaluate on
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "mlx op mirrors Python signature: shape/dtype/stream params")]
 #[generate_macro(customize(root = "$crate::fast"))]
 #[default_device]
 pub fn rope_dynamic_device<'a>(
@@ -264,19 +264,19 @@ pub enum MetalKernelTemplateArg {
 
 impl From<Dtype> for MetalKernelTemplateArg {
     fn from(value: Dtype) -> Self {
-        MetalKernelTemplateArg::Dtype(value)
+        Self::Dtype(value)
     }
 }
 
 impl From<i32> for MetalKernelTemplateArg {
     fn from(value: i32) -> Self {
-        MetalKernelTemplateArg::Int(value)
+        Self::Int(value)
     }
 }
 
 impl From<bool> for MetalKernelTemplateArg {
     fn from(value: bool) -> Self {
-        MetalKernelTemplateArg::Bool(value)
+        Self::Bool(value)
     }
 }
 
@@ -605,6 +605,10 @@ pub fn metal_kernel(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use crate::{
         ops::indexing::{ArrayIndexOp, IndexOp},
@@ -618,11 +622,11 @@ mod tests {
         crate::random::seed(71).unwrap();
         let a = crate::random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
         assert_eq!(a.shape(), [2, 8, 16]);
-        assert_eq!(a.dtype(), crate::Dtype::Float32);
+        assert_eq!(a.dtype(), Dtype::Float32);
 
         let result = rope(a, 8, false, 10000., 1.0, 0, None).unwrap();
         assert_eq!(result.shape(), [2, 8, 16]);
-        assert_eq!(result.dtype(), crate::Dtype::Float32);
+        assert_eq!(result.dtype(), Dtype::Float32);
         assert_float_eq!(
             result.mean(None).unwrap().item::<f32>(),
             0.456_253_77,
@@ -642,13 +646,13 @@ mod tests {
         crate::random::seed(71).unwrap();
         let a = crate::random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
         assert_eq!(a.shape(), [2, 8, 16]);
-        assert_eq!(a.dtype(), crate::Dtype::Float32);
+        assert_eq!(a.dtype(), Dtype::Float32);
 
         // Test with array offset - should produce similar results to int offset of 3
-        let offset = crate::Array::from_int(3);
+        let offset = Array::from_int(3);
         let result = rope_dynamic(&a, 8, false, 10000., 1.0, &offset, None).unwrap();
         assert_eq!(result.shape(), [2, 8, 16]);
-        assert_eq!(result.dtype(), crate::Dtype::Float32);
+        assert_eq!(result.dtype(), Dtype::Float32);
 
         // Compare with regular rope using int offset=3
         let result_int_offset = rope(&a, 8, false, 10000., 1.0, 3, None).unwrap();
@@ -657,7 +661,7 @@ mod tests {
         // The results should be close
         let diff = &result - &result_int_offset;
         let max_diff = diff.abs().unwrap().max(None).unwrap().item::<f32>();
-        assert!(max_diff < 1e-5, "Max difference was {}", max_diff);
+        assert!(max_diff < 1e-5, "Max difference was {max_diff}");
     }
 
     #[test]
@@ -665,12 +669,12 @@ mod tests {
         crate::random::seed(103).unwrap();
         let a = crate::random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
         assert_eq!(a.shape(), [2, 8, 16]);
-        assert_eq!(a.dtype(), crate::Dtype::Float32);
+        assert_eq!(a.dtype(), Dtype::Float32);
 
         let weight = Array::ones::<f32>(&[16]).unwrap();
         let result = rms_norm(a, &weight, 1e-5).unwrap();
         assert_eq!(result.shape(), [2, 8, 16]);
-        assert_eq!(result.dtype(), crate::Dtype::Float32);
+        assert_eq!(result.dtype(), Dtype::Float32);
         assert_float_eq!(
             result.mean(None).unwrap().item::<f32>(),
             0.872_938_75,
@@ -706,14 +710,14 @@ mod tests {
         crate::random::seed(635).unwrap();
         let a = crate::random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
         assert_eq!(a.shape(), [2, 8, 16]);
-        assert_eq!(a.dtype(), crate::Dtype::Float32);
+        assert_eq!(a.dtype(), Dtype::Float32);
 
         let weight = Array::ones::<f32>(&[16]).unwrap();
         let bias = Array::zeros::<f32>(&[16]).unwrap();
         let result = layer_norm(a, &weight, &bias, 1e-5).unwrap();
         let result = result.index((ArrayIndexOp::Ellipsis, 0));
         assert_eq!(result.shape(), [2, 8]);
-        assert_eq!(result.dtype(), crate::Dtype::Float32);
+        assert_eq!(result.dtype(), Dtype::Float32);
         assert_float_eq!(
             result.mean(None).unwrap().item::<f32>(),
             0.290_990_38,
@@ -727,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(non_snake_case)]
+    #[allow(non_snake_case, reason = "test mirrors ML tensor names (Q, K, V)")]
     fn test_fast_sdpa() {
         // This test just makes sure that `scaled_dot_product_attention` is callable
         // in the various cases, based on the Python test `test_fast_sdpa`.
@@ -735,7 +739,7 @@ mod tests {
         let Dk = 64;
         let scale = 1.0 / (Dk as f32).sqrt();
         for seq_len in [63, 129, 400] {
-            for dtype in [crate::Dtype::Float32, crate::Dtype::Float16] {
+            for dtype in [Dtype::Float32, Dtype::Float16] {
                 let B = 2;
                 let H = 24;
                 let q = normal::<f32>(&[B, H, seq_len, Dk], None, None, None)
@@ -812,7 +816,7 @@ mod tests {
             .unwrap();
 
         let outs = kernel
-            .apply(&[a.clone(), b.clone()], config, crate::Stream::default())
+            .apply(&[a.clone(), b.clone()], config, Stream::default())
             .unwrap();
         assert_eq!(outs.len(), 1);
         let got = &outs[0];

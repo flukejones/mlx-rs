@@ -46,7 +46,7 @@ pub struct RopeParameters {
 }
 
 fn default_rope_type() -> String {
-    "default".to_string()
+    "default".to_owned()
 }
 
 /// Text-decoder hyperparameters for Qwen3.5.
@@ -129,8 +129,8 @@ impl EosTokenId {
     /// Python implementation.
     pub fn into_vec_with_chat_eos(self) -> Vec<u32> {
         let mut v = match self {
-            EosTokenId::Single(x) => vec![x],
-            EosTokenId::Multiple(xs) => xs,
+            Self::Single(x) => vec![x],
+            Self::Multiple(xs) => xs,
         };
         if !v.contains(&QWEN_CHAT_EOS_TOKEN_ID) {
             v.push(QWEN_CHAT_EOS_TOKEN_ID);
@@ -164,7 +164,7 @@ pub struct VisionConfig {
 }
 
 fn default_vision_model_type() -> String {
-    "qwen3_5".to_string()
+    "qwen3_5".to_owned()
 }
 
 fn default_temporal_patch_size() -> i32 {
@@ -265,6 +265,10 @@ impl ModelConfig {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
 
     const CHANDRA_CONFIG_JSON: &str = r#"

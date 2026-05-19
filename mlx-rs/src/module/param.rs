@@ -104,15 +104,15 @@ impl Parameter for Param<Array> {
         Some(self.is_frozen)
     }
 
-    fn as_nested_value<'a>(&self) -> NestedValue<Rc<str>, &Array> {
+    fn as_nested_value(&self) -> NestedValue<Rc<str>, &Array> {
         NestedValue::Value(&self.value)
     }
 
-    fn as_nested_value_mut<'a>(&mut self) -> NestedValue<Rc<str>, &mut Array> {
+    fn as_nested_value_mut(&mut self) -> NestedValue<Rc<str>, &mut Array> {
         NestedValue::Value(&mut self.value)
     }
 
-    fn as_trainable_nested_value<'a>(&self) -> Option<NestedValue<Rc<str>, &Array>> {
+    fn as_trainable_nested_value(&self) -> Option<NestedValue<Rc<str>, &Array>> {
         match self.is_frozen {
             true => None,
             false => Some(NestedValue::Value(&self.value)),
@@ -182,7 +182,8 @@ where
     }
 
     fn is_frozen(&self) -> Option<bool> {
-        self.as_ref().and_then(|m| m.is_frozen())
+        let m = self.as_ref()?;
+        m.is_frozen()
     }
 
     fn as_nested_value(&self) -> NestedValue<Rc<str>, &Array> {

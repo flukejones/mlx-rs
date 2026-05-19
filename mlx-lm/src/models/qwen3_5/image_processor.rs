@@ -356,6 +356,10 @@ fn hwc_u8_to_chw_f32(rgb: &ImageBuffer<Rgb<u8>, Vec<u8>>) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use image::{ImageBuffer, Rgb};
 

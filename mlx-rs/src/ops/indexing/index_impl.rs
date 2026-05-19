@@ -56,7 +56,7 @@ impl<'a> ArrayIndex<'a> for &'a Array {
 }
 
 impl<'a> ArrayIndex<'a> for ArrayIndexOp<'a> {
-    fn index_op(self) -> ArrayIndexOp<'a> {
+    fn index_op(self) -> Self {
         self
     }
 }
@@ -709,8 +709,8 @@ impl Array {
         stop: &[i32],
         strides: &[i32],
         stream: impl AsRef<Stream>,
-    ) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    ) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_slice(
                 res,
                 self.as_ptr(),
@@ -779,7 +779,7 @@ fn gather_nd<'a>(
     last_array_or_index: usize,
     stream: impl AsRef<Stream>,
 ) -> Result<(usize, Array)> {
-    use ArrayIndexOp::*;
+    use ArrayIndexOp::{TakeIndex, Slice, TakeArray, TakeArrayRef, Ellipsis, ExpandDims};
 
     let mut max_dims = 0;
     let mut slice_count = 0;
@@ -931,7 +931,7 @@ fn get_item<'a>(
     index: impl ArrayIndex<'a>,
     stream: impl AsRef<Stream>,
 ) -> Result<Array> {
-    use ArrayIndexOp::*;
+    use ArrayIndexOp::{Ellipsis, TakeIndex, TakeArray, TakeArrayRef, Slice, ExpandDims};
 
     match index.index_op() {
         Ellipsis => Ok(src.deep_clone()),
@@ -950,7 +950,7 @@ fn get_item_nd(
     operations: &[ArrayIndexOp],
     stream: impl AsRef<Stream>,
 ) -> Result<Array> {
-    use ArrayIndexOp::*;
+    use ArrayIndexOp::{Ellipsis, ExpandDims, Slice, TakeIndex, TakeArray, TakeArrayRef};
 
     let mut src = Cow::Borrowed(src);
 
@@ -1063,7 +1063,7 @@ fn get_item_nd(
     let mut squeeze_needed = false;
     let mut axis = 0;
 
-    for item in remaining_indices.iter() {
+    for item in &remaining_indices {
         match item {
             ExpandDims => continue,
             TakeIndex { mut index } => {
@@ -1108,7 +1108,7 @@ fn get_item_nd(
                 }
             }
         }
-        new_shape.extend(src.shape()[(axis_ as usize)..].iter().cloned());
+        new_shape.extend(src.shape()[(axis_ as usize)..].iter().copied());
 
         src = Cow::Owned(src.reshape(&new_shape)?);
     }
@@ -1122,6 +1122,10 @@ fn get_item_nd(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::{
         assert_array_eq,
         ops::indexing::{Ellipsis, IndexOp, IntoStrideBy, NewAxis},

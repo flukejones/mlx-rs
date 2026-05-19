@@ -12,8 +12,8 @@ impl Array {
     ///
     /// An array with dtype uint8 containing the FP8 E4M3 encoded values.
     #[default_device]
-    pub fn to_fp8_device(&self, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn to_fp8_device(&self, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_to_fp8(res, self.as_ptr(), stream.as_ref().as_ptr())
         })
     }
@@ -26,8 +26,8 @@ impl Array {
     ///
     /// - `dtype`: The target floating point dtype (float32, float16, or bfloat16)
     #[default_device]
-    pub fn from_fp8_device(&self, dtype: Dtype, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn from_fp8_device(&self, dtype: Dtype, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_from_fp8(res, self.as_ptr(), dtype.into(), stream.as_ref().as_ptr())
         })
     }
@@ -48,14 +48,14 @@ impl Array {
     /// assert_eq!(new_array.as_slice::<f32>(), &[1.0,2.0,3.0]);
     /// ```
     #[default_device]
-    pub fn as_type_device<T: ArrayElement>(&self, stream: impl AsRef<Stream>) -> Result<Array> {
+    pub fn as_type_device<T: ArrayElement>(&self, stream: impl AsRef<Stream>) -> Result<Self> {
         self.as_dtype_device(T::DTYPE, stream)
     }
 
     /// Same as `as_type` but with a [`Dtype`] argument.
     #[default_device]
-    pub fn as_dtype_device(&self, dtype: Dtype, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn as_dtype_device(&self, dtype: Dtype, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_astype(res, self.as_ptr(), dtype.into(), stream.as_ref().as_ptr())
         })
     }
@@ -70,14 +70,14 @@ impl Array {
     /// representation of each element (or group of elements) is the same._
     ///
     #[default_device]
-    pub fn view_device<T: ArrayElement>(&self, stream: impl AsRef<Stream>) -> Result<Array> {
+    pub fn view_device<T: ArrayElement>(&self, stream: impl AsRef<Stream>) -> Result<Self> {
         self.view_dtype_device(T::DTYPE, stream)
     }
 
     /// Same as `view` but with a [`Dtype`] argument.
     #[default_device]
-    pub fn view_dtype_device(&self, dtype: Dtype, stream: impl AsRef<Stream>) -> Result<Array> {
-        Array::try_from_op(|res| unsafe {
+    pub fn view_dtype_device(&self, dtype: Dtype, stream: impl AsRef<Stream>) -> Result<Self> {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_view(res, self.as_ptr(), dtype.into(), stream.as_ref().as_ptr())
         })
     }
@@ -110,6 +110,10 @@ pub fn from_fp8_device(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use crate::complex64;
     use half::{bf16, f16};

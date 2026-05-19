@@ -95,6 +95,10 @@ pub fn ifftshift_device<'a>(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use crate::random;
 
@@ -177,8 +181,7 @@ mod tests {
                     .all_close(&r, 1e-5, 1e-6, None)
                     .unwrap()
                     .item::<bool>(),
-                "fftshift(ifftshift(x)) should equal x for axes {:?}",
-                axes
+                "fftshift(ifftshift(x)) should equal x for axes {axes:?}"
             );
         }
     }

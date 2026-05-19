@@ -451,6 +451,10 @@ impl Module<&Array> for Conv3d {
 // mlx-swift/Tests/MLXTests/IntegrationTests.swift
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::module::Module;
     use crate::{random::uniform, Dtype};
     use float_eq::assert_float_eq;

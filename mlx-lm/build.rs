@@ -34,9 +34,7 @@ use std::process::Command;
 fn ensure_mlx_src() -> PathBuf {
     if let Some(dir) = env::var_os("MLX_RS_SRC_DIR") {
         let path = PathBuf::from(dir);
-        if !path.is_dir() {
-            panic!("MLX_RS_SRC_DIR={} is not a directory", path.display());
-        }
+        assert!(path.is_dir(), "MLX_RS_SRC_DIR={} is not a directory", path.display());
         return path;
     }
 
@@ -74,12 +72,10 @@ fn workspace_root() -> PathBuf {
                 return dir;
             }
         }
-        if !dir.pop() {
-            panic!(
-                "workspace root not found from {}",
-                env::var("CARGO_MANIFEST_DIR").unwrap()
-            );
-        }
+        assert!(dir.pop(), 
+            "workspace root not found from {}",
+            env::var("CARGO_MANIFEST_DIR").unwrap()
+        );
     }
 }
 
@@ -122,8 +118,7 @@ fn parse_quoted_value(rest: &str) -> String {
     inner
         .split_once('"')
         .map(|(v, _)| v)
-        .unwrap_or(inner)
-        .to_string()
+        .unwrap_or(inner).to_owned()
 }
 
 fn fetch_mlx_tarball(sha: &str, cache_root: &Path) -> Result<(), String> {
@@ -216,9 +211,7 @@ fn main() {
 /// `<out>/steel_attention_preamble.metal`. Returns that path.
 fn generate_steel_preamble(mlx_src: &Path, out_dir: &Path) -> PathBuf {
     let script = mlx_src.join("mlx/backend/metal/make_compiled_preamble.sh");
-    if !script.is_file() {
-        panic!("make_compiled_preamble.sh missing at {}", script.display());
-    }
+    assert!(script.is_file(), "make_compiled_preamble.sh missing at {}", script.display());
 
     // The script writes <stage>/steel_attention.cpp from steel/attn/.../steel_attention.h.
     let stage = out_dir.join("steel-preamble-stage");
@@ -234,13 +227,11 @@ fn generate_steel_preamble(mlx_src: &Path, out_dir: &Path) -> PathBuf {
         .arg(STEEL_SRC_REL)
         .status()
         .unwrap_or_else(|e| panic!("spawn {}: {e}", script.display()));
-    if !status.success() {
-        panic!(
-            "{} exited with {} (need Xcode CLT + `xcrun metal` toolchain)",
-            script.display(),
-            status
-        );
-    }
+    assert!(status.success(), 
+        "{} exited with {} (need Xcode CLT + `xcrun metal` toolchain)",
+        script.display(),
+        status
+    );
 
     let cpp = stage.join("steel_attention.cpp");
     let cpp_body = fs::read_to_string(&cpp)

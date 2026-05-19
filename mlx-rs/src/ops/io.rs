@@ -26,7 +26,7 @@ impl Array {
     pub fn load_numpy_device(
         path: impl AsRef<Path>,
         stream: impl AsRef<Stream>,
-    ) -> Result<Array, IoError> {
+    ) -> Result<Self, IoError> {
         let path = path.as_ref();
         if !path.is_file() {
             return Err(IoError::NotFile);
@@ -34,7 +34,7 @@ impl Array {
         let c_path = CString::new(path.to_str().ok_or(IoError::InvalidUtf8)?)?;
         check_file_extension(path, "npy")?;
 
-        Array::try_from_op(|res| unsafe {
+        Self::try_from_op(|res| unsafe {
             mlx_sys::mlx_load(res, c_path.as_ptr(), stream.as_ref().as_ptr())
         })
         .map_err(Into::into)
@@ -51,7 +51,7 @@ impl Array {
     pub fn load_safetensors_device(
         path: impl AsRef<Path>,
         stream: impl AsRef<Stream>,
-    ) -> Result<HashMap<String, Array>, IoError> {
+    ) -> Result<HashMap<String, Self>, IoError> {
         let safetensors = SafeTensors::load_device(path.as_ref(), stream)?;
         let data = safetensors.data()?;
         Ok(data)
@@ -63,12 +63,12 @@ impl Array {
     ///
     /// - path: path of file to load
     /// - stream: stream or device to evaluate on
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity, reason = "safetensors loader returns nested map of arrays + metadata")]
     #[default_device(device = "cpu")]
     pub fn load_safetensors_with_metadata_device(
         path: impl AsRef<Path>,
         stream: impl AsRef<Stream>,
-    ) -> Result<(HashMap<String, Array>, HashMap<String, String>), IoError> {
+    ) -> Result<(HashMap<String, Self>, HashMap<String, String>), IoError> {
         let safetensors = SafeTensors::load_device(path.as_ref(), stream)?;
         let data = safetensors.data()?;
         let metadata = safetensors.metadata()?;
@@ -108,7 +108,7 @@ impl Array {
     where
         I: IntoIterator<Item = (S, V)>,
         S: AsRef<str>,
-        V: AsRef<Array>,
+        V: AsRef<Self>,
     {
         crate::error::INIT_ERR_HANDLER
             .with(|init| init.call_once(crate::error::setup_mlx_error_handler));
@@ -119,7 +119,7 @@ impl Array {
 
         let arrays = unsafe {
             let data = mlx_sys::mlx_map_string_to_array_new();
-            for (key, array) in arrays.into_iter() {
+            for (key, array) in arrays {
                 let key = CString::new(key.as_ref())?;
 
                 let status = mlx_sys::mlx_map_string_to_array_insert(
@@ -143,7 +143,7 @@ impl Array {
 
         let metadata = unsafe {
             let data = mlx_sys::mlx_map_string_to_string_new();
-            for (key, value) in metadata_ref.iter() {
+            for (key, value) in metadata_ref {
                 let key = CString::new(key.as_str())?;
                 let value = CString::new(value.as_str())?;
 
@@ -187,6 +187,10 @@ impl Array {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::Array;
 
     #[test]
@@ -195,8 +199,8 @@ mod tests {
         let path = tmp_dir.path().join("test.safetensors");
 
         let mut arrays = std::collections::HashMap::new();
-        arrays.insert("foo".to_string(), Array::ones::<i32>(&[1, 2]).unwrap());
-        arrays.insert("bar".to_string(), Array::zeros::<i32>(&[2, 1]).unwrap());
+        arrays.insert("foo".to_owned(), Array::ones::<i32>(&[1, 2]).unwrap());
+        arrays.insert("bar".to_owned(), Array::zeros::<i32>(&[2, 1]).unwrap());
 
         Array::save_safetensors(&arrays, None, &path).unwrap();
 
@@ -210,8 +214,8 @@ mod tests {
         assert_eq!(loaded_keys, original_keys);
 
         for key in loaded_keys {
-            let loaded_array = loaded_arrays.get(&key).unwrap();
-            let original_array = arrays.get(&key).unwrap();
+            let loaded_array = &loaded_arrays[&key];
+            let original_array = &arrays[&key];
             assert!(loaded_array
                 .all_close(original_array, None, None, None)
                 .unwrap()

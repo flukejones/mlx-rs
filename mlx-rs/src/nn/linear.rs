@@ -198,7 +198,7 @@ impl Module<&Array> for Bilinear {
         y = y.squeeze_axes(&[1])?;
 
         // reset the shape
-        let new_shape = x_shape.iter().cloned().chain(once(out)).collect::<Vec<_>>();
+        let new_shape = x_shape.iter().copied().chain(once(out)).collect::<Vec<_>>();
         y = y.reshape(&new_shape)?;
 
         if let Some(bias) = &self.bias.value {
@@ -215,6 +215,10 @@ impl Module<&Array> for Bilinear {
 // mlx-swift/Tests/MLXTests/IntegrationTests.swift
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::{random::uniform, Dtype};
     use float_eq::assert_float_eq;
 

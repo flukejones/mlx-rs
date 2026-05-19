@@ -147,6 +147,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::module::Module;
     use crate::{array, error::Exception, Array};
 
@@ -246,6 +250,6 @@ mod tests {
 
         // Check that the error message is not just "mlx_closure returned a non-zero value"
         let err = result.unwrap_err();
-        assert!(!err.what().contains("non-zero value"))
+        assert!(!err.what().contains("non-zero value"));
     }
 }

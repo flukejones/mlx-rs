@@ -1,4 +1,7 @@
-#![allow(unused_variables)]
+#![allow(unused_variables, reason = "macro-expansion test: generated bindings may be unused")]
+#![allow(clippy::missing_assert_message, reason = "test code")]
+#![allow(clippy::print_stdout, reason = "test code")]
+#![allow(clippy::print_stderr, reason = "test code")]
 
 use mlx_internal_macros::{default_device, generate_macro};
 use mlx_rs::Stream;

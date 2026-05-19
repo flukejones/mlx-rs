@@ -28,8 +28,8 @@ pub enum FloatOrString {
 impl FloatOrString {
     pub fn borrowed(&self) -> FloatOrStr<'_> {
         match self {
-            FloatOrString::Float(f) => FloatOrStr::Float(*f),
-            FloatOrString::String(s) => FloatOrStr::Str(s),
+            Self::Float(f) => FloatOrStr::Float(*f),
+            Self::String(s) => FloatOrStr::Str(s),
         }
     }
 }
@@ -173,57 +173,57 @@ pub enum RopeVariant {
 impl mlx_rs::module::ModuleParameters for RopeVariant {
     fn num_parameters(&self) -> usize {
         match self {
-            RopeVariant::Default(rope) => rope.num_parameters(),
-            RopeVariant::Llama3(rope) => rope.num_parameters(),
+            Self::Default(rope) => rope.num_parameters(),
+            Self::Llama3(rope) => rope.num_parameters(),
         }
     }
 
     fn freeze_parameters(&mut self, _recursive: bool) {
         match self {
-            RopeVariant::Default(rope) => rope.freeze_parameters(_recursive),
-            RopeVariant::Llama3(rope) => rope.freeze_parameters(_recursive),
+            Self::Default(rope) => rope.freeze_parameters(_recursive),
+            Self::Llama3(rope) => rope.freeze_parameters(_recursive),
         }
     }
 
     fn unfreeze_parameters(&mut self, _recursive: bool) {
         match self {
-            RopeVariant::Default(rope) => rope.unfreeze_parameters(_recursive),
-            RopeVariant::Llama3(rope) => rope.unfreeze_parameters(_recursive),
+            Self::Default(rope) => rope.unfreeze_parameters(_recursive),
+            Self::Llama3(rope) => rope.unfreeze_parameters(_recursive),
         }
     }
 
     fn parameters(&self) -> mlx_rs::module::ModuleParamRef<'_> {
         match self {
-            RopeVariant::Default(rope) => rope.parameters(),
-            RopeVariant::Llama3(rope) => rope.parameters(),
+            Self::Default(rope) => rope.parameters(),
+            Self::Llama3(rope) => rope.parameters(),
         }
     }
 
     fn parameters_mut(&mut self) -> mlx_rs::module::ModuleParamMut<'_> {
         match self {
-            RopeVariant::Default(rope) => rope.parameters_mut(),
-            RopeVariant::Llama3(rope) => rope.parameters_mut(),
+            Self::Default(rope) => rope.parameters_mut(),
+            Self::Llama3(rope) => rope.parameters_mut(),
         }
     }
 
     fn trainable_parameters(&self) -> mlx_rs::module::ModuleParamRef<'_> {
         match self {
-            RopeVariant::Default(rope) => rope.trainable_parameters(),
-            RopeVariant::Llama3(rope) => rope.trainable_parameters(),
+            Self::Default(rope) => rope.trainable_parameters(),
+            Self::Llama3(rope) => rope.trainable_parameters(),
         }
     }
 
     fn all_frozen(&self) -> Option<bool> {
         match self {
-            RopeVariant::Default(rope) => rope.all_frozen(),
-            RopeVariant::Llama3(rope) => rope.all_frozen(),
+            Self::Default(rope) => rope.all_frozen(),
+            Self::Llama3(rope) => rope.all_frozen(),
         }
     }
 
     fn any_frozen(&self) -> Option<bool> {
         match self {
-            RopeVariant::Default(rope) => rope.any_frozen(),
-            RopeVariant::Llama3(rope) => rope.any_frozen(),
+            Self::Default(rope) => rope.any_frozen(),
+            Self::Llama3(rope) => rope.any_frozen(),
         }
     }
 }
@@ -237,18 +237,18 @@ where
 
     fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
         match self {
-            RopeVariant::Default(rope) => rope.forward(input),
-            RopeVariant::Llama3(rope) => rope.forward(input),
+            Self::Default(rope) => rope.forward(input),
+            Self::Llama3(rope) => rope.forward(input),
         }
     }
 
     fn training_mode(&mut self, mode: bool) {
         match self {
-            RopeVariant::Default(rope) => {
-                <nn::Rope as Module<nn::RopeInput>>::training_mode(rope, mode)
+            Self::Default(rope) => {
+                <nn::Rope as Module<nn::RopeInput>>::training_mode(rope, mode);
             }
-            RopeVariant::Llama3(rope) => {
-                <Llama3Rope as Module<nn::RopeInput>>::training_mode(rope, mode)
+            Self::Llama3(rope) => {
+                <Llama3Rope as Module<nn::RopeInput>>::training_mode(rope, mode);
             }
         }
     }

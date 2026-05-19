@@ -6,7 +6,7 @@ use crate::shared::{PathOrIdent, Result};
 
 #[derive(Debug, Clone, FromDeriveInput)]
 #[darling(attributes(buildable))]
-#[allow(dead_code)]
+#[allow(dead_code, reason = "fields populated by darling parse; some only conditionally read in codegen")]
 pub(crate) struct StructProperty {
     pub ident: syn::Ident,
 

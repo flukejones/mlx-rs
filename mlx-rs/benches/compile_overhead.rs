@@ -49,7 +49,7 @@ fn bench_compile_overhead(c: &mut Criterion) {
             let r =
                 compute_g_inner((black_box(&a_log), black_box(&a), black_box(&dt_bias))).unwrap();
             eval([&r]).unwrap();
-        })
+        });
     });
 
     group.bench_function("compile_per_call", |b| {
@@ -57,7 +57,7 @@ fn bench_compile_overhead(c: &mut Criterion) {
             let mut compiled = compile(compute_g_inner, Some(true));
             let r = compiled((black_box(&a_log), black_box(&a), black_box(&dt_bias))).unwrap();
             eval([&r]).unwrap();
-        })
+        });
     });
 
     group.bench_function("compile_warm", |b| {
@@ -65,7 +65,7 @@ fn bench_compile_overhead(c: &mut Criterion) {
         b.iter(|| {
             let r = compiled((black_box(&a_log), black_box(&a), black_box(&dt_bias))).unwrap();
             eval([&r]).unwrap();
-        })
+        });
     });
 
     group.finish();

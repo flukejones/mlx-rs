@@ -81,7 +81,7 @@ fn sanitize_key(key: &str) -> String {
     if let Some(rest) = key.strip_prefix("lm_head") {
         return format!("language_model.lm_head{rest}");
     }
-    key.to_string()
+    key.to_owned()
 }
 
 /// Strip the `language_model.` prefix to match the Rust LanguageModel's
@@ -106,10 +106,10 @@ pub enum Bucketed {
 
 fn bucket_key(key: String) -> Bucketed {
     if let Some(rest) = key.strip_prefix("language_model.") {
-        return Bucketed::LanguageModel(rest.to_string());
+        return Bucketed::LanguageModel(rest.to_owned());
     }
     if let Some(rest) = key.strip_prefix("vision_tower.") {
-        return Bucketed::Vision(rest.to_string());
+        return Bucketed::Vision(rest.to_owned());
     }
     Bucketed::Other(key)
 }
@@ -196,7 +196,7 @@ pub fn load_sanitized_weights(
     // QuantizedLinear's param path.
     let quantised_prefixes: HashSet<String> = raw
         .keys()
-        .filter_map(|k| k.strip_suffix(".scales").map(|p| p.to_string()))
+        .filter_map(|k| k.strip_suffix(".scales").map(|p| p.to_owned()))
         .collect();
 
     let mut out: HashMap<String, Array> = HashMap::with_capacity(raw.len());
@@ -228,7 +228,7 @@ pub fn load_sanitized_weights(
 fn list_shards(model_dir: &Path) -> Result<Vec<String>, Error> {
     let single = model_dir.join("model.safetensors");
     if single.is_file() {
-        return Ok(vec!["model.safetensors".to_string()]);
+        return Ok(vec!["model.safetensors".to_owned()]);
     }
     let index_path = model_dir.join("model.safetensors.index.json");
     if !index_path.is_file() {
@@ -349,6 +349,10 @@ fn quantize_language_model(model: &mut LanguageModel, q: &QuantizationConfig) ->
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use super::super::vision::VisionModel;
     use super::*;
 
@@ -457,7 +461,7 @@ mod tests {
         let q = QuantizationConfig {
             group_size: 64,
             bits: 8,
-            mode: "affine".to_string(),
+            mode: "affine".to_owned(),
         };
         quantize_language_model(&mut model, &q).unwrap();
         let params = model.parameters_mut().flatten();

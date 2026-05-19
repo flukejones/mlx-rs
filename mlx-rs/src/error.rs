@@ -13,7 +13,7 @@ use thiserror::Error;
 pub type Result<T> = std::result::Result<T, Exception>;
 
 /// Error with io operations
-#[derive(Error, PartialEq, Debug)]
+#[derive(Error, PartialEq, Eq, Debug)]
 pub enum IoError {
     /// Path must point to a local file
     #[error("Path must point to a local file")]
@@ -74,7 +74,7 @@ impl From<RawException> for IoError {
 }
 
 /// Error associated with `Array::try_as_slice()`
-#[derive(Debug, PartialEq, Error)]
+#[derive(Debug, PartialEq, Eq, Error)]
 pub enum AsSliceError {
     /// The underlying data pointer is null.
     ///
@@ -98,7 +98,7 @@ pub enum AsSliceError {
 }
 
 /// Error with unflattening a loaded optimizer state
-#[derive(Debug, PartialEq, Error)]
+#[derive(Debug, PartialEq, Eq, Error)]
 pub enum UnflattenError {
     /// Expecting next (key, value) pair, found none
     #[error("Expecting next (key, value) pair, found none")]
@@ -110,7 +110,7 @@ pub enum UnflattenError {
 }
 
 /// Error with loading an optimizer state
-#[derive(Debug, PartialEq, Error)]
+#[derive(Debug, PartialEq, Eq, Error)]
 pub enum OptimizerStateLoadError {
     /// Error with io operations
     #[error(transparent)]
@@ -159,7 +159,7 @@ pub(crate) struct RawException {
 }
 
 /// Exception. Most will come from the C API.
-#[derive(Debug, PartialEq, Error)]
+#[derive(Debug, PartialEq, Eq, Error)]
 #[error("{what:?} at {location}")]
 pub struct Exception {
     pub(crate) what: String,
@@ -205,7 +205,7 @@ impl From<&str> for Exception {
     #[track_caller]
     fn from(what: &str) -> Self {
         Self {
-            what: what.to_string(),
+            what: what.to_owned(),
             location: Location::caller(),
         }
     }
@@ -243,7 +243,7 @@ extern "C" fn noop_mlx_error_handler_data_deleter(_data: *mut std::ffi::c_void) 
 
 pub(crate) fn setup_mlx_error_handler() {
     let handler = default_mlx_error_handler;
-    let data_ptr = LAST_MLX_ERROR.with(|last_error| last_error.as_ptr() as *mut std::ffi::c_void);
+    let data_ptr = LAST_MLX_ERROR.with(|last_error| last_error.as_ptr().cast::<std::ffi::c_void>());
     let dtor = noop_mlx_error_handler_data_deleter;
     unsafe {
         mlx_sys::mlx_set_error_handler(Some(handler), data_ptr, Some(dtor));
@@ -280,7 +280,7 @@ pub(crate) fn get_and_clear_last_mlx_error() -> Option<RawException> {
 }
 
 /// Error with building a cross-entropy loss function
-#[derive(Debug, Clone, PartialEq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CrossEntropyBuildError {
     /// Label smoothing factor must be in the range [0, 1)
     #[error("Label smoothing factor must be in the range [0, 1)")]
@@ -289,12 +289,12 @@ pub enum CrossEntropyBuildError {
 
 impl From<CrossEntropyBuildError> for Exception {
     fn from(value: CrossEntropyBuildError) -> Self {
-        Exception::custom(format!("{value}"))
+        Self::custom(format!("{value}"))
     }
 }
 
 /// Error with building a RmsProp optimizer
-#[derive(Debug, Clone, PartialEq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RmsPropBuildError {
     /// Alpha must be non-negative
     #[error("alpha must be non-negative")]
@@ -306,7 +306,7 @@ pub enum RmsPropBuildError {
 }
 
 /// Error with building an AdaDelta optimizer
-#[derive(Debug, Clone, PartialEq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum AdaDeltaBuildError {
     /// Rho must be non-negative
     #[error("rho must be non-negative")]
@@ -318,7 +318,7 @@ pub enum AdaDeltaBuildError {
 }
 
 /// Error with building an Adafactor optimizer.
-#[derive(Debug, Clone, PartialEq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum AdafactorBuildError {
     /// Either learning rate is provided or relative step is set to true.
     #[error("Either learning rate is provided or relative step is set to true")]
@@ -326,7 +326,7 @@ pub enum AdafactorBuildError {
 }
 
 /// Error with building a dropout layer
-#[derive(Debug, Clone, PartialEq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum DropoutBuildError {
     /// Dropout probability must be in the range [0, 1)
     #[error("Dropout probability must be in the range [0, 1)")]
@@ -334,7 +334,7 @@ pub enum DropoutBuildError {
 }
 
 /// Error with building a MultiHeadAttention module
-#[derive(Debug, PartialEq, Error)]
+#[derive(Debug, PartialEq, Eq, Error)]
 pub enum MultiHeadAttentionBuildError {
     /// Invalid number of heads
     #[error("Invalid number of heads: {0}")]
@@ -346,7 +346,7 @@ pub enum MultiHeadAttentionBuildError {
 }
 
 /// Error with building a transformer
-#[derive(Debug, PartialEq, Error)]
+#[derive(Debug, PartialEq, Eq, Error)]
 pub enum TransformerBulidError {
     /// Dropout probability must be in the range [0, 1)
     #[error("Dropout probability must be in the range [0, 1)")]
@@ -386,12 +386,15 @@ pub struct InexactDtypeError(pub Dtype);
 impl From<InexactDtypeError> for Exception {
     #[track_caller]
     fn from(value: InexactDtypeError) -> Self {
-        Exception::custom(value.to_string())
+        Self::custom(value.to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::array;
 
     #[test]
@@ -406,6 +409,6 @@ mod tests {
         // so we just check for a substring
         assert!(error
             .what()
-            .contains("Shapes (3) and (2) cannot be broadcast."))
+            .contains("Shapes (3) and (2) cannot be broadcast."));
     }
 }
