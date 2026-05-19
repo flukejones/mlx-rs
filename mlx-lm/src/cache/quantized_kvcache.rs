@@ -229,7 +229,7 @@ impl QuantizedKVCache {
     /// Append (keys, values), quantise into the buffer, return packed views
     /// sliced to populated `[..., :offset, ...]` rows. Shared back-end for
     /// `update_and_fetch` and the packed-matmul `attention` override.
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity, reason = "6-tuple of Array refs matches the C-kernel input layout")]
     fn append_quantised(
         &mut self,
         keys: Array,
@@ -299,24 +299,18 @@ impl QuantizedKVCache {
     /// Reconstruct from previously-persisted `state` + `meta_state`.
     /// `state` order: `[k_wq, k_scales, k_biases, v_wq, v_scales, v_biases]`.
     pub fn from_state(
-        mut state: Vec<Array>,
+        state: Vec<Array>,
         meta: &HashMap<String, String>,
     ) -> Result<Self, Error> {
-        if state.len() != 6 {
-            return Err(Error::Other(
+        let [k_wq, k_s, k_b, v_wq, v_s, v_b]: [Array; 6] = state.try_into().map_err(|v: Vec<Array>| {
+            Error::Other(
                 format!(
                     "QuantizedKVCache::from_state expected 6 arrays, got {}",
-                    state.len()
+                    v.len()
                 )
                 .into(),
-            ));
-        }
-        let v_b = state.pop().unwrap();
-        let v_s = state.pop().unwrap();
-        let v_wq = state.pop().unwrap();
-        let k_b = state.pop().unwrap();
-        let k_s = state.pop().unwrap();
-        let k_wq = state.pop().unwrap();
+            )
+        })?;
         let offset = parse_meta(meta, "offset")?;
         let step = parse_meta_or(meta, "step", DEFAULT_KV_CACHE_STEP)?;
         let group_size = parse_meta_or(meta, "group_size", 64)?;
@@ -346,7 +340,7 @@ impl QuantizedKVCache {
     /// `additional` more tokens beyond the current `offset`. Allocates
     /// fresh zero buffers at the target capacity and copies the populated
     /// `[:offset]` rows over.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "6 Array refs match the C-kernel quantised-tensor inputs")]
     fn grow_to_fit(
         &mut self,
         new_k_wq: &Array,

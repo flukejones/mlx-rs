@@ -526,7 +526,7 @@ where
 
 // TODO: render with assistant indices
 fn render_jinja_tempalte<'a, R, T>(
-    template: Template,
+    template: Template<'_, '_>,
     conversations: impl IntoIterator<Item = Chat<'a, R, T>>,
     documents: Option<&'a [Document]>,
     add_generation_prompt: Option<bool>,

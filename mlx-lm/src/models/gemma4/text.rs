@@ -355,7 +355,7 @@ pub struct AttentionOut {
 }
 
 impl Attention {
-    #[allow(non_snake_case)]
+    #[allow(non_snake_case, reason = "local bindings mirror ML tensor names (Q, K, V)")]
     pub fn attend<C: KeyValueCache + Default>(
         &mut self,
         input: AttentionInput<'_, C>,

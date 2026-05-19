@@ -92,13 +92,13 @@ impl AsRef<Stream> for StreamOrDevice {
 }
 
 impl std::fmt::Debug for StreamOrDevice {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.stream)
     }
 }
 
 impl std::fmt::Display for StreamOrDevice {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.stream)
     }
 }
@@ -147,11 +147,11 @@ impl Stream {
         unsafe {
             let mut dev = mlx_sys::mlx_device_new();
             // SAFETY: mlx_get_default_device internally never throws an error
-            mlx_sys::mlx_get_default_device(&mut dev as *mut _);
+            mlx_sys::mlx_get_default_device(&mut dev);
 
             let mut c_stream = mlx_sys::mlx_stream_new();
             // SAFETY: mlx_get_default_stream internally never throws if dev is valid
-            mlx_sys::mlx_get_default_stream(&mut c_stream as *mut _, dev);
+            mlx_sys::mlx_get_default_stream(&mut c_stream, dev);
 
             mlx_sys::mlx_device_free(dev);
             Self { c_stream }
@@ -206,10 +206,10 @@ impl Stream {
         <() as Guarded>::try_from_op(|_| unsafe { mlx_sys::mlx_synchronize(self.c_stream) })
     }
 
-    fn describe(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn describe(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         unsafe {
             let mut mlx_str = mlx_sys::mlx_string_new();
-            let result = match mlx_sys::mlx_stream_tostring(&mut mlx_str as *mut _, self.c_stream) {
+            let result = match mlx_sys::mlx_stream_tostring(&mut mlx_str, self.c_stream) {
                 SUCCESS => {
                     let ptr = mlx_sys::mlx_string_data(mlx_str);
                     let c_str = CStr::from_ptr(ptr);
@@ -236,13 +236,13 @@ impl Default for Stream {
 }
 
 impl std::fmt::Debug for Stream {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.describe(f)
     }
 }
 
 impl std::fmt::Display for Stream {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.describe(f)
     }
 }

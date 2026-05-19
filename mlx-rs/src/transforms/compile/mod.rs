@@ -262,6 +262,6 @@ pub fn allocate_compile_id() -> usize {
 fn update_by_replace_with_ref_to_new_array(src: &mut Array, new_array: &Array) {
     debug_assert_eq!(src.shape(), new_array.shape());
     unsafe {
-        mlx_sys::mlx_array_set(&mut src.as_ptr() as *mut _, new_array.as_ptr());
+        mlx_sys::mlx_array_set(&mut src.as_ptr(), new_array.as_ptr());
     }
 }

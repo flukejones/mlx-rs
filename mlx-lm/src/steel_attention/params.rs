@@ -32,7 +32,7 @@ impl FlatAttnParams {
     /// Build flat params from `[B, H_q, qL, D]` / `[B, H_kv, kL, D]`
     /// shapes. Block sizes (`bq`, `bk`) determine the `NQ` / `NK`
     /// tile counts and remainders.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "from_shapes accepts the full Q/K/V shape tuple per the steel-attention preamble")]
     pub fn from_shapes(
         b: i32,
         h_q: i32,

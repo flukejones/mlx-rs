@@ -133,7 +133,7 @@ where
 
     type Error = Exception;
 
-    #[allow(non_snake_case)]
+    #[allow(non_snake_case, reason = "local bindings mirror ML tensor names (Q, K, V)")]
     fn forward(&mut self, input: AttentionInput<'_, C>) -> Result<Self::Output, Self::Error> {
         let AttentionInput { x, mask, mut cache, .. } = input;
 
@@ -196,7 +196,7 @@ where
         self.o_proj.training_mode(mode);
         self.q_norm.training_mode(mode);
         self.k_norm.training_mode(mode);
-        <RopeVariant as Module<nn::RopeInput>>::training_mode(&mut self.rope, mode);
+        <RopeVariant as Module<nn::RopeInput<'_>>>::training_mode(&mut self.rope, mode);
     }
 }
 

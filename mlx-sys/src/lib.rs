@@ -5,5 +5,7 @@
 #![allow(clippy::undocumented_unsafe_blocks, reason = "bindgen-generated C bindings")]
 #![allow(clippy::pedantic, reason = "bindgen-generated C bindings")]
 #![allow(unsafe_op_in_unsafe_fn, reason = "bindgen-generated C bindings")]
+#![allow(unused_qualifications, reason = "bindgen-generated C bindings")]
+#![allow(trivial_casts, reason = "bindgen-generated C bindings")]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));

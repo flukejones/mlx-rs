@@ -135,7 +135,7 @@ fn upsample_nearest(x: &Array, scale: &[f32]) -> Result<Array, Exception> {
         // Float scales
         let shape_len = x.shape().len();
         let N = &x.shape()[1..shape_len - 1];
-        let mut indices: Vec<ArrayIndexOp> = vec![(..).index_op()];
+        let mut indices: Vec<ArrayIndexOp<'_>> = vec![(..).index_op()];
 
         for (i, (n, s)) in N.iter().zip(scale.iter()).enumerate() {
             indices.push(nearest_indices(*n, *s, i, dimensions)?.index_op());

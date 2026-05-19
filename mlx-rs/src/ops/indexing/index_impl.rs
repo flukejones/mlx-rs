@@ -784,7 +784,7 @@ fn gather_nd<'a>(
     let mut max_dims = 0;
     let mut slice_count = 0;
     let mut is_slice: Vec<bool> = Vec::with_capacity(last_array_or_index);
-    let mut gather_indices: Vec<GatherIndexItem> = Vec::with_capacity(last_array_or_index);
+    let mut gather_indices: Vec<GatherIndexItem<'_>> = Vec::with_capacity(last_array_or_index);
 
     let shape = src.shape();
 
@@ -947,7 +947,7 @@ fn get_item<'a>(
 // mlx-swift/Sources/MLX/MLXArray+Indexing.swift
 fn get_item_nd(
     src: &Array,
-    operations: &[ArrayIndexOp],
+    operations: &[ArrayIndexOp<'_>],
     stream: impl AsRef<Stream>,
 ) -> Result<Array> {
     use ArrayIndexOp::{Ellipsis, ExpandDims, Slice, TakeIndex, TakeArray, TakeArrayRef};
@@ -998,7 +998,7 @@ fn get_item_nd(
         }
     }
 
-    let mut remaining_indices: Vec<ArrayIndexOp> = Vec::new();
+    let mut remaining_indices: Vec<ArrayIndexOp<'_>> = Vec::new();
     if let (true, Some(last_array_or_index)) = (have_array, last_array_or_index) {
         // apply all the operations (except for .newAxis) up to and including the
         // final .array operation (array operations are implemented via gather)

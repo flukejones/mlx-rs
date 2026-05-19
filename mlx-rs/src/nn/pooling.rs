@@ -53,7 +53,7 @@ impl Clone for Pool {
 }
 
 impl std::fmt::Debug for Pool {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pool")
             .field("kernel_size", &self.kernel_size)
             .field("stride", &self.stride)

@@ -73,10 +73,10 @@ impl Device {
         unsafe { mlx_sys::mlx_set_default_device(device.c_device) };
     }
 
-    fn describe(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn describe(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         unsafe {
             let mut mlx_str = mlx_sys::mlx_string_new();
-            let result = match mlx_sys::mlx_device_tostring(&mut mlx_str as *mut _, self.c_device) {
+            let result = match mlx_sys::mlx_device_tostring(&mut mlx_str, self.c_device) {
                 SUCCESS => {
                     let ptr = mlx_sys::mlx_string_data(mlx_str);
                     let c_str = CStr::from_ptr(ptr);
@@ -104,13 +104,13 @@ impl Default for Device {
 }
 
 impl std::fmt::Debug for Device {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.describe(f)
     }
 }
 
 impl std::fmt::Display for Device {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.describe(f)
     }
 }

@@ -57,7 +57,7 @@ impl SafeTensors {
                 let mut key_ptr: *const ::std::os::raw::c_char = null_mut();
                 let mut value = mlx_sys::mlx_array_new();
                 let status = mlx_sys::mlx_map_string_to_array_iterator_next(
-                    &mut key_ptr as *mut *const _,
+                    &mut key_ptr,
                     &mut value,
                     iterator,
                 );
@@ -100,8 +100,8 @@ impl SafeTensors {
             let mut value: *const ::std::os::raw::c_char = null_mut();
             loop {
                 let status = mlx_sys::mlx_map_string_to_string_iterator_next(
-                    &mut key as *mut *const _,
-                    &mut value as *mut *const _,
+                    &mut key,
+                    &mut value,
                     iterator,
                 );
 

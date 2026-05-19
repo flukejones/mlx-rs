@@ -522,6 +522,7 @@ mod tests {
     #![allow(clippy::missing_assert_message, reason = "test code")]
     #![allow(clippy::print_stdout, reason = "test code")]
     #![allow(clippy::print_stderr, reason = "test code")]
+    #![allow(trivial_casts, reason = "fn-item ZST → fn-pointer; required for distinct-compile-id regression test")]
     use crate::{
         array,
         error::Exception,

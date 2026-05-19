@@ -434,7 +434,11 @@ mod tests {
     /// uint32 K/V, extracts codes, dequants in-place, runs softmax,
     /// computes output. Helps isolate kernel-vs-spec bugs from kernel-
     /// vs-mlx-quantize-layout bugs.
-    #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::needless_range_loop,
+        reason = "reference kernel mirrors Metal indexing for debugging clarity"
+    )]
     fn kernel_scalar_reference(
         b: i32, h_q: i32, h_kv: i32, n_k: i32, d: i32,
         bits: i32, group_size: i32,

@@ -11,6 +11,10 @@
 //! - returned `y`: `[B, T, Hv, Dv]`
 //! - returned `state`: `[B, Hv, Dv, Dk]`
 
+// See `mlx_lm::activations` for the rationale on the fn-item-to-fn-pointer
+// coercion required at the `Compile::compile_with_id` call site.
+#![allow(trivial_casts, reason = "fn-item ZST → fn-pointer coercion for shared compile cache")]
+
 use mlx_rs::{
     error::Exception,
     fast::{metal_kernel, MetalKernel, MetalKernelConfig},
@@ -153,7 +157,7 @@ pub fn step_ops(
 /// Inputs match `gated_delta_ops` in the Python reference. `state` is
 /// optional — `None` initialises a zero state of dtype float32. Returns
 /// `(y, final_state)`.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "GDN op signature mirrors Python mlx_lm.models.gated_delta")]
 pub fn gated_delta_update_ops(
     compute_g_cache: &mut ComputeGCache,
     q: &Array,
@@ -243,7 +247,7 @@ pub fn make_gated_delta_kernel() -> Result<MetalKernel, Exception> {
 /// Metal-kernel fast path for the gated-delta T-step scan. Mirrors
 /// `mlx_lm.models.gated_delta._make_gated_delta_kernel` from the Python
 /// reference, plumbed through `mlx_rs::fast::metal_kernel`.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "GDN op signature mirrors Python mlx_lm.models.gated_delta")]
 pub fn gated_delta_update_metal(
     kernel: &MetalKernel,
     compute_g_cache: &mut ComputeGCache,
@@ -299,20 +303,11 @@ pub fn gated_delta_update_metal(
         .add_template("Hv", hv)?;
 
     let t_arr = Array::from_int(time);
-    let outs = kernel.apply(
+    let [y, state_out] = kernel.apply_array::<2>(
         &[q, k, v, &g, &beta, state_in, &t_arr],
         config,
         Stream::default(),
     )?;
-    if outs.len() != 2 {
-        return Err(Exception::custom(format!(
-            "gated_delta_update_metal: expected 2 outputs, got {}",
-            outs.len()
-        )));
-    }
-    let mut it = outs.into_iter();
-    let y = it.next().unwrap();
-    let state_out = it.next().unwrap();
     Ok((y, state_out))
 }
 

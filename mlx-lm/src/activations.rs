@@ -8,6 +8,14 @@
 //! compile/encoder state is thread-local since mlx 0.31, so the cache
 //! must be Drop-bound to the same thread that calls it.
 
+// Each `as fn(...) -> ...` below coerces a zero-sized fn-item to a
+// shared fn-pointer type. Without the cast every fn-item would yield a
+// distinct `Compiled<F, _>` and the `OnceLock` cache slot could not be
+// re-used across activations. Clippy/rustc's trivial_casts diagnostic
+// prints identical source/dest types, but the source is the fn-item
+// ZST, not a fn-pointer.
+#![allow(trivial_casts, reason = "fn-item ZST → fn-pointer coercion for shared compile cache")]
+
 use std::sync::OnceLock;
 
 use mlx_rs::{

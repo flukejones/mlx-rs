@@ -73,7 +73,7 @@ pub struct RnnBuilder {
 }
 
 impl std::fmt::Debug for RnnBuilder {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RnnBuilder")
             .field("bias", &self.bias)
             .finish()
@@ -106,7 +106,7 @@ fn build_rnn(builder: RnnBuilder) -> Result<Rnn, Exception> {
 }
 
 impl std::fmt::Debug for Rnn {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Rnn")
             .field("wxh", &self.wxh)
             .field("whh", &self.whh)
@@ -584,6 +584,7 @@ mod tests {
     #![allow(clippy::missing_assert_message, reason = "test code")]
     #![allow(clippy::print_stdout, reason = "test code")]
     #![allow(clippy::print_stderr, reason = "test code")]
+    #![allow(trivial_casts, reason = "closure → Arc<dyn Fn> trait object coercion at builder call site")]
     use crate::{builder::Builder, ops::maximum_device, random::normal};
 
     use super::*;

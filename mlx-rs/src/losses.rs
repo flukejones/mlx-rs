@@ -85,8 +85,8 @@ generate_builder! {
 }
 
 fn build_cross_entropy(
-    builder: CrossEntropyBuilder,
-) -> Result<CrossEntropy, CrossEntropyBuildError> {
+    builder: CrossEntropyBuilder<'_>,
+) -> Result<CrossEntropy<'_>, CrossEntropyBuildError> {
     let axis = builder.axis;
     let label_smoothing = builder.label_smoothing;
     let reduction = builder.reduction;

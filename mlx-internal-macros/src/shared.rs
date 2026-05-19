@@ -348,7 +348,7 @@ impl ToTokens for PathOrIdent {
 }
 
 impl Display for PathOrIdent {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Path(path) => path.to_token_stream().fmt(f),
             Self::Ident(ident) => Display::fmt(ident, f),

@@ -451,7 +451,7 @@ where
     }
 
     fn training_mode(&mut self, mode: bool) {
-        <MultiHeadAttention as Module<MultiHeadAttentionInput>>::training_mode(
+        <MultiHeadAttention as Module<MultiHeadAttentionInput<'_>>>::training_mode(
             &mut self.attention,
             mode,
         );
@@ -569,7 +569,7 @@ where
 
     fn training_mode(&mut self, mode: bool) {
         self.layers.iter_mut().for_each(|layer| {
-            <TransformerEncoderLayer as Module<TransformerEncoderInput>>::training_mode(
+            <TransformerEncoderLayer as Module<TransformerEncoderInput<'_>>>::training_mode(
                 layer, mode,
             );
         });
@@ -804,11 +804,11 @@ where
     }
 
     fn training_mode(&mut self, mode: bool) {
-        <MultiHeadAttention as Module<MultiHeadAttentionInput>>::training_mode(
+        <MultiHeadAttention as Module<MultiHeadAttentionInput<'_>>>::training_mode(
             &mut self.self_attention,
             mode,
         );
-        <MultiHeadAttention as Module<MultiHeadAttentionInput>>::training_mode(
+        <MultiHeadAttention as Module<MultiHeadAttentionInput<'_>>>::training_mode(
             &mut self.cross_attention,
             mode,
         );
@@ -931,7 +931,7 @@ where
 
     fn training_mode(&mut self, mode: bool) {
         self.layers.iter_mut().for_each(|layer| {
-            <TransformerDecoderLayer as Module<TransformerDecoderInput>>::training_mode(
+            <TransformerDecoderLayer as Module<TransformerDecoderInput<'_>>>::training_mode(
                 layer, mode,
             );
         });
@@ -1138,11 +1138,11 @@ where
     }
 
     fn training_mode(&mut self, mode: bool) {
-        <TransformerEncoder as Module<TransformerEncoderInput>>::training_mode(
+        <TransformerEncoder as Module<TransformerEncoderInput<'_>>>::training_mode(
             &mut self.encoder,
             mode,
         );
-        <TransformerDecoder as Module<TransformerDecoderInput>>::training_mode(
+        <TransformerDecoder as Module<TransformerDecoderInput<'_>>>::training_mode(
             &mut self.decoder,
             mode,
         );

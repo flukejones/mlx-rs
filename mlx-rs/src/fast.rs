@@ -538,6 +538,32 @@ impl MetalKernel {
             )
         })
     }
+
+    /// Fixed-output variant of [`Self::apply`] that drains the result
+    /// directly into a stack `[Array; N]`. Avoids the `Vec<Array>` heap
+    /// allocation on the hot path when the kernel output count is known
+    /// statically. Errors if the kernel returns a different count.
+    pub fn apply_array<const N: usize>(
+        &self,
+        inputs: &[impl AsRef<Array>],
+        config: MetalKernelConfig,
+        stream: impl AsRef<Stream>,
+    ) -> Result<[Array; N]> {
+        let raw_config = config.into_raw()?;
+        let input_vec = VectorArray::try_from_iter(inputs.iter())?;
+        let stream_ptr = stream.as_ref().as_ptr();
+
+        let out = VectorArray::try_from_op(|res| unsafe {
+            mlx_sys::mlx_fast_metal_kernel_apply(
+                res,
+                self.raw,
+                input_vec.as_ptr(),
+                raw_config.raw,
+                stream_ptr,
+            )
+        })?;
+        out.try_into_array::<N>()
+    }
 }
 
 impl Drop for MetalKernel {

@@ -42,7 +42,7 @@ fn expand_quantizable_module_for_struct(
 fn impl_quantizable_module_for_struct(
     ident: &Ident,
     generics: &Generics,
-    fields: FilteredFields,
+    fields: FilteredFields<'_>,
     root: Option<syn::Path>,
 ) -> Result<proc_macro2::TokenStream, syn::Error> {
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();

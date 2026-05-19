@@ -12,6 +12,7 @@ use mlx_rs::{
 };
 
 #[derive(Debug, ModuleParameters, Quantizable)]
+#[allow(dead_code, reason = "derive-only compile test; struct is never constructed")]
 struct QuantizableExample {
     #[quantizable]
     pub ql: MaybeQuantized<Linear>,

@@ -45,7 +45,7 @@ impl Array {
 // See `updateSlice` in the swift binding or `mlx_slice_update` in the python binding
 fn update_slice(
     src: &Array,
-    operations: &[ArrayIndexOp],
+    operations: &[ArrayIndexOp<'_>],
     update: &Array,
     stream: impl AsRef<Stream>,
 ) -> Result<Option<Array>> {
@@ -181,7 +181,7 @@ struct ScatterArgs<'a> {
 /// See `scatterArguments` in the swift binding
 fn scatter_args<'a>(
     src: &'a Array,
-    operations: &'a [ArrayIndexOp],
+    operations: &'a [ArrayIndexOp<'_>],
     update: &Array,
     stream: impl AsRef<Stream>,
 ) -> Result<ScatterArgs<'a>> {
@@ -315,7 +315,7 @@ fn scatter_args_slice<'a>(
 
 fn scatter_args_nd<'a>(
     src: &'a Array,
-    operations: &[ArrayIndexOp],
+    operations: &[ArrayIndexOp<'_>],
     update: &Array,
     stream: impl AsRef<Stream>,
 ) -> Result<ScatterArgs<'a>> {
@@ -576,7 +576,7 @@ unsafe fn scatter_device(
 impl Array {
     fn try_index_mut_device_inner(
         &mut self,
-        operations: &[ArrayIndexOp],
+        operations: &[ArrayIndexOp<'_>],
         update: &Self,
         stream: impl AsRef<Stream>,
     ) -> Result<()> {

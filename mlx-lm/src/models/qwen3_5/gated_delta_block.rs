@@ -4,6 +4,10 @@
 //! RMSNorm + output projection, matching
 //! `mlx_vlm.models.qwen3_5.language.Qwen3_5GatedDeltaNet`.
 
+// See `mlx_lm::activations` for the rationale on the fn-item-to-fn-pointer
+// coercion required at the `Compile::compile_with_id` call site.
+#![allow(trivial_casts, reason = "fn-item ZST → fn-pointer coercion for shared compile cache")]
+
 use std::sync::OnceLock;
 
 use mlx_rs::{

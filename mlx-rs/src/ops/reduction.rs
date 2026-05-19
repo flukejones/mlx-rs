@@ -1021,6 +1021,7 @@ mod tests {
     #![allow(clippy::missing_assert_message, reason = "test code")]
     #![allow(clippy::print_stdout, reason = "test code")]
     #![allow(clippy::print_stderr, reason = "test code")]
+    #![allow(trivial_casts, reason = "&[] as &[i32] — empty-slice type ascription")]
     use super::*;
     use pretty_assertions::assert_eq;
 

@@ -49,7 +49,7 @@ impl std::fmt::Display for Array {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         unsafe {
             let mut mlx_str = mlx_sys::mlx_string_new();
-            let status = mlx_sys::mlx_array_tostring(&mut mlx_str as *mut _, self.as_ptr());
+            let status = mlx_sys::mlx_array_tostring(&mut mlx_str, self.as_ptr());
             if status != SUCCESS {
                 return Err(std::fmt::Error);
             }

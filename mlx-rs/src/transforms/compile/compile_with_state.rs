@@ -429,7 +429,7 @@ where
 /// as-is and the single-output caller picks `vec.swap_remove(0)`.
 #[inline]
 fn call_mut_with_state_inner<U, R>(
-    inner_closure: Closure,
+    inner_closure: Closure<'_>,
     fun_id: usize,
     shapeless: bool,
     state: Rc<RefCell<&mut U>>,

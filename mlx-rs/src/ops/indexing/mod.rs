@@ -912,7 +912,7 @@ pub fn masked_scatter_device(
 /*                              Helper functions                              */
 /* -------------------------------------------------------------------------- */
 
-fn count_non_new_axis_operations(operations: &[ArrayIndexOp]) -> usize {
+fn count_non_new_axis_operations(operations: &[ArrayIndexOp<'_>]) -> usize {
     operations
         .iter()
         .filter(|op| !matches!(op, ArrayIndexOp::ExpandDims))

@@ -385,7 +385,7 @@ impl Optimizer for Adafactor {
         )?;
         let beta2 = array!(1.0).subtract(&step.power(&self.decay_rate)?)?;
 
-        let mut update: Cow<Array> = Cow::Owned(gradient.square()?.add(&self.eps.0)?);
+        let mut update: Cow<'_, Array> = Cow::Owned(gradient.square()?.add(&self.eps.0)?);
 
         let one_minus_beta2 = array!(1.0).subtract(&beta2)?;
         if factored {
