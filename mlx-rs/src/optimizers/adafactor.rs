@@ -307,11 +307,11 @@ fn get_mut_or_insert_with<'a, T, E>(
     key: &Rc<str>,
     f: impl FnOnce() -> Result<T, E>,
 ) -> Result<&'a mut T, E> {
-    if !map.contains_key(key) {
-        map.insert(key.clone(), f()?);
+    use std::collections::hash_map::Entry;
+    match map.entry(key.clone()) {
+        Entry::Occupied(o) => Ok(o.into_mut()),
+        Entry::Vacant(v) => Ok(v.insert(f()?)),
     }
-
-    Ok(map.get_mut(key).unwrap())
 }
 
 fn compute_lr(

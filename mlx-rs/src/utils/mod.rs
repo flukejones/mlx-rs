@@ -382,11 +382,7 @@ pub(crate) fn get_mut_or_insert_with<'a, T>(
     key: &Rc<str>,
     f: impl FnOnce() -> T,
 ) -> &'a mut T {
-    if !map.contains_key(key) {
-        map.insert(key.clone(), f());
-    }
-
-    map.get_mut(key).unwrap()
+    map.entry(key.clone()).or_insert_with(f)
 }
 
 /// Helper trait for compiling a function that takes a Module and/or an Optimizer.
