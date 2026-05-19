@@ -320,12 +320,14 @@ pub trait TryIndexOp<Idx> {
 pub trait IndexOp<Idx>: TryIndexOp<Idx> {
     /// Index the array with the given index.
     fn index_device(&self, i: Idx, stream: impl AsRef<Stream>) -> Array {
-        self.try_index_device(i, stream).unwrap()
+        self.try_index_device(i, stream)
+            .expect("IndexOp::index_device: try_index_device failed")
     }
 
     /// Index the array with the given index.
     fn index(&self, i: Idx) -> Array {
-        self.try_index(i).unwrap()
+        self.try_index(i)
+            .expect("IndexOp::index: try_index failed")
     }
 }
 
@@ -348,12 +350,14 @@ pub trait TryIndexMutOp<Idx, Val> {
 pub trait IndexMutOp<Idx, Val>: TryIndexMutOp<Idx, Val> {
     /// Index the array with the given index and set the value.
     fn index_mut_device(&mut self, i: Idx, val: Val, stream: impl AsRef<Stream>) {
-        self.try_index_mut_device(i, val, stream).unwrap();
+        self.try_index_mut_device(i, val, stream)
+            .expect("IndexMutOp::index_mut_device: try_index_mut_device failed");
     }
 
     /// Index the array with the given index and set the value.
     fn index_mut(&mut self, i: Idx, val: Val) {
-        self.try_index_mut(i, val).unwrap();
+        self.try_index_mut(i, val)
+            .expect("IndexMutOp::index_mut: try_index_mut failed");
     }
 }
 

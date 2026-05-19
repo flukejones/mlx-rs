@@ -99,7 +99,7 @@ impl Drop for Device {
 
 impl Default for Device {
     fn default() -> Self {
-        Self::try_default().unwrap()
+        Self::try_default().expect("Device::default: mlx_get_default_device failed")
     }
 }
 

@@ -74,26 +74,30 @@ impl_binary_op!(Pow, pow, power);
 impl Neg for &Array {
     type Output = Array;
     fn neg(self) -> Self::Output {
-        self.negative_device(StreamOrDevice::default()).unwrap()
+        self.negative_device(StreamOrDevice::default())
+            .expect("Neg::neg: mlx_negative failed")
     }
 }
 impl Neg for Array {
     type Output = Self;
     fn neg(self) -> Self::Output {
-        self.negative_device(StreamOrDevice::default()).unwrap()
+        self.negative_device(StreamOrDevice::default())
+            .expect("Neg::neg: mlx_negative failed")
     }
 }
 
 impl Not for &Array {
     type Output = Array;
     fn not(self) -> Self::Output {
-        self.logical_not_device(StreamOrDevice::default()).unwrap()
+        self.logical_not_device(StreamOrDevice::default())
+            .expect("Not::not: mlx_logical_not failed")
     }
 }
 impl Not for Array {
     type Output = Self;
     fn not(self) -> Self::Output {
-        self.logical_not_device(StreamOrDevice::default()).unwrap()
+        self.logical_not_device(StreamOrDevice::default())
+            .expect("Not::not: mlx_logical_not failed")
     }
 }
 

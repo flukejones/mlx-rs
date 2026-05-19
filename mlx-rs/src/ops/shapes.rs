@@ -142,7 +142,7 @@ impl Array {
 
     /// [`transpose_axes`] and unwrap the result.
     pub fn t(&self) -> Self {
-        self.transpose().unwrap()
+        self.transpose().expect("Array::t: transpose failed")
     }
 }
 
