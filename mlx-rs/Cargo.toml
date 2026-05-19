@@ -58,3 +58,6 @@ metal = ["mlx-sys/metal"]
 
 # Enables conversion between `Array` and `safetensors::TensorView`
 safetensors = ["dep:safetensors", "dep:bytemuck"]
+
+[lints]
+workspace = true

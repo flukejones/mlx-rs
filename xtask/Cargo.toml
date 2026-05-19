@@ -6,3 +6,7 @@ publish = false
 
 [dependencies]
 bindgen = { workspace = true }
+
+
+[lints]
+workspace = true

@@ -19,3 +19,7 @@ quote.workspace = true
 darling.workspace = true
 proc-macro2.workspace = true
 itertools.workspace = true
+
+
+[lints]
+workspace = true

@@ -10,3 +10,6 @@ authors.workspace = true
 mlx-internal-macros.workspace = true
 mlx-rs.workspace = true
 tempfile.workspace = true
+
+[lints]
+workspace = true
