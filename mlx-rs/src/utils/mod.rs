@@ -78,6 +78,20 @@ impl VectorArray {
         }
     }
 
+    /// Drain a single-element vector into one Array. Errors if length != 1.
+    /// Allocation-free: no Vec is built, the C-vector is read directly.
+    pub(crate) fn try_into_one(self) -> Result<Array, Exception> {
+        let size = unsafe { mlx_sys::mlx_vector_array_size(self.c_vec) };
+        if size != 1 {
+            return Err(Exception::custom(format!(
+                "try_into_one: expected 1 array, got {size}"
+            )));
+        }
+        Array::try_from_op(|res| unsafe {
+            mlx_sys::mlx_vector_array_get(res, self.c_vec, 0)
+        })
+    }
+
     /// Drain the vector into a fixed-size array. Returns an error if the
     /// underlying mlx vector length does not equal `N`.
     pub(crate) fn try_into_array<const N: usize>(self) -> Result<[Array; N], Exception> {

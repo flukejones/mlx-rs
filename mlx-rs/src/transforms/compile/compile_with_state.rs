@@ -21,6 +21,19 @@ use crate::{
 
 use super::{update_by_replace_with_ref_to_new_array, Closure, Compiled, Guarded, VectorArray};
 
+/// `extract` callback for the single-Array output variants. Moves the
+/// lone function output out of the owned Vec without cloning.
+#[inline]
+fn take_one_output(mut outputs: Vec<Array>) -> Result<Array, Exception> {
+    if outputs.len() != 1 {
+        return Err(Exception::custom(format!(
+            "compile_with_state: traced single-output function returned {} arrays",
+            outputs.len()
+        )));
+    }
+    Ok(outputs.swap_remove(0))
+}
+
 /// Similar to [`crate::transforms::compile`] but allows for functions that take
 /// a mutable reference to a state `U`.
 pub fn compile_with_state<F, U, A, O, E>(
@@ -306,7 +319,7 @@ where
     U: Updatable,
 {
     fn call_mut(&mut self, state: &mut U, args: &[Array]) -> Result<Vec<Array>, Exception> {
-        self.state.retry_call_mut_with_state(state, args)
+        self.state.retry_call_mut_with_state(state, args, Ok)
     }
 }
 
@@ -317,9 +330,8 @@ where
     U: Updatable,
 {
     fn call_mut(&mut self, state: &mut U, args: &Array) -> Result<Array, Exception> {
-        let args = std::slice::from_ref(args);
-        let result = self.state.retry_call_mut_with_state(state, args)?;
-        Ok(result.into_iter().next().unwrap())
+        self.state
+            .retry_call_mut_with_state(state, std::slice::from_ref(args), take_one_output)
     }
 }
 
@@ -330,9 +342,8 @@ where
     U: Updatable,
 {
     fn call_mut(&mut self, state: &mut U, args: (&Array, &Array)) -> Result<Array, Exception> {
-        let args = &[args.0, args.1];
-        let result = self.state.retry_call_mut_with_state(state, args)?;
-        Ok(result.into_iter().next().unwrap())
+        self.state
+            .retry_call_mut_with_state(state, &[args.0, args.1], take_one_output)
     }
 }
 
@@ -347,9 +358,8 @@ where
         state: &mut U,
         args: (&Array, &Array, &Array),
     ) -> Result<Array, Exception> {
-        let args = &[args.0, args.1, args.2];
-        let result = self.state.retry_call_mut_with_state(state, args)?;
-        Ok(result.into_iter().next().unwrap())
+        self.state
+            .retry_call_mut_with_state(state, &[args.0, args.1, args.2], take_one_output)
     }
 }
 
@@ -360,7 +370,8 @@ where
     U: Updatable,
 {
     fn call_mut(&mut self, state: &mut U, args: &[Array]) -> Result<Vec<Array>, Exception> {
-        self.state.retry_fallible_call_mut_with_state(state, args)
+        self.state
+            .retry_fallible_call_mut_with_state(state, args, Ok)
     }
 }
 
@@ -371,9 +382,11 @@ where
     U: Updatable,
 {
     fn call_mut(&mut self, state: &mut U, args: &Array) -> Result<Array, Exception> {
-        let args = std::slice::from_ref(args);
-        let result = self.state.retry_fallible_call_mut_with_state(state, args)?;
-        Ok(result.into_iter().next().unwrap())
+        self.state.retry_fallible_call_mut_with_state(
+            state,
+            std::slice::from_ref(args),
+            take_one_output,
+        )
     }
 }
 
@@ -384,9 +397,8 @@ where
     U: Updatable,
 {
     fn call_mut(&mut self, state: &mut U, args: (&Array, &Array)) -> Result<Array, Exception> {
-        let args = &[args.0, args.1];
-        let result = self.state.retry_fallible_call_mut_with_state(state, args)?;
-        Ok(result.into_iter().next().unwrap())
+        self.state
+            .retry_fallible_call_mut_with_state(state, &[args.0, args.1], take_one_output)
     }
 }
 
@@ -401,26 +413,33 @@ where
         state: &mut U,
         args: (&Array, &Array, &Array),
     ) -> Result<Array, Exception> {
-        let args = &[args.0, args.1, args.2];
-        let result = self.state.retry_fallible_call_mut_with_state(state, args)?;
-        Ok(result.into_iter().next().unwrap())
+        self.state.retry_fallible_call_mut_with_state(
+            state,
+            &[args.0, args.1, args.2],
+            take_one_output,
+        )
     }
 }
 
+/// Compile the inner closure, apply it, and update state. `extract`
+/// receives an owned `Vec<Array>` of the function outputs (length =
+/// `num_fn_outputs`) so it can move elements out without cloning.
+///
+/// Splitting via a callback means the variadic caller returns the Vec
+/// as-is and the single-output caller picks `vec.swap_remove(0)`.
 #[inline]
-fn call_mut_with_state_inner<U>(
+fn call_mut_with_state_inner<U, R>(
     inner_closure: Closure,
     fun_id: usize,
     shapeless: bool,
     state: Rc<RefCell<&mut U>>,
     args: &[impl AsRef<Array>],
     num_function_outputs: Rc<Cell<Option<usize>>>,
-) -> crate::error::Result<Vec<Array>>
+    extract: impl FnOnce(Vec<Array>) -> Result<R, Exception>,
+) -> Result<R, Exception>
 where
     U: Updatable,
 {
-    // note: this will use the cached compile (via the id)
-    // but will be able to re-evaluate with fresh state if needed
     let compiled = Closure::try_from_op(|res| unsafe {
         let constants = &[];
         mlx_sys::mlx_detail_compile(
@@ -442,80 +461,61 @@ where
         )?
     };
 
-    // will compile the function (if needed) and evaluate the
-    // compiled graph
     let result_vector = VectorArray::try_from_op(|res| unsafe {
         mlx_sys::mlx_closure_apply(res, compiled.as_ptr(), inner_inputs_vector.as_ptr())
     })?;
 
     let result_plus_state_output: Vec<Array> = result_vector.try_into_values()?;
 
-    // The combined output layout is: [function_outputs..., state_arrays...]
-    // We captured the function output count during tracing to know where to split.
     let num_fn_outputs = num_function_outputs.get().ok_or_else(|| {
         Exception::custom(
-            "compile_with_state: internal error - function output count not captured during tracing"
+            "compile_with_state: internal error - function output count not captured during tracing",
         )
     })?;
 
     if num_fn_outputs > result_plus_state_output.len() {
         return Err(Exception::custom(format!(
-            "compile_with_state: invalid output count - expected {} function outputs \
+            "compile_with_state: invalid output count - expected {num_fn_outputs} function outputs \
              but only got {} total outputs. This indicates an internal compilation error.",
-            num_fn_outputs,
             result_plus_state_output.len()
         )));
     }
 
-    let function_results = &result_plus_state_output[..num_fn_outputs];
-    let state_outputs = &result_plus_state_output[num_fn_outputs..];
-
-    // Update state arrays. MLX's compiler may prune unchanged arrays from output,
-    // so zip() handles cases where fewer state arrays are returned than expected.
-    for (s, new_values) in state
-        .borrow_mut()
-        .updatable_states_mut()
-        .into_iter()
-        .zip(state_outputs.iter())
+    // Update state arrays from the tail of the C-vector first (borrows
+    // the slice), then truncate to leave only function outputs for
+    // `extract` to consume.
     {
-        update_by_replace_with_ref_to_new_array(s, new_values);
+        let state_outputs = &result_plus_state_output[num_fn_outputs..];
+        // MLX's compiler may prune unchanged arrays from output, so
+        // zip() handles cases where fewer state arrays are returned
+        // than expected.
+        for (s, new_values) in state
+            .borrow_mut()
+            .updatable_states_mut()
+            .into_iter()
+            .zip(state_outputs.iter())
+        {
+            update_by_replace_with_ref_to_new_array(s, new_values);
+        }
     }
 
-    // Return only the function results (not the state arrays)
-    Ok(function_results.to_vec())
+    let mut function_outputs = result_plus_state_output;
+    function_outputs.truncate(num_fn_outputs);
+    extract(function_outputs)
 }
 
 impl<F> CompiledState<F> {
-    fn retry_call_mut_with_state<U>(
+    fn retry_call_mut_with_state<U, R>(
         &mut self,
         state: &mut U,
         args: &[impl AsRef<Array>],
-    ) -> Result<Vec<Array>, Exception>
+        extract: impl Fn(Vec<Array>) -> Result<R, Exception> + Copy,
+    ) -> Result<R, Exception>
     where
         F: FnMut(&mut U, &[Array]) -> Vec<Array>,
         U: Updatable,
     {
-        self.call_mut_with_state(state, args).or_else(|_e| {
-            // Somehow the mlx_closure_apply may fail on the first call for
-            // certain types of state with the error message:
-            // "unordered_map::at: key not found", so we just try again.
-            //
-            // One type that is known to cause this is a tuple of
-            // `Module` and `Optimizer` eg. `(<Module>, <Optimizer>)`
-            self.call_mut_with_state(state, args)
-        })
-    }
-
-    fn retry_fallible_call_mut_with_state<U>(
-        &mut self,
-        state: &mut U,
-        args: &[impl AsRef<Array>],
-    ) -> Result<Vec<Array>, Exception>
-    where
-        F: FnMut(&mut U, &[Array]) -> Result<Vec<Array>, Exception>,
-        U: Updatable,
-    {
-        self.fallible_call_mut_with_state(state, args)
+        self.call_mut_with_state(state, args, extract)
             .or_else(|_e| {
                 // Somehow the mlx_closure_apply may fail on the first call for
                 // certain types of state with the error message:
@@ -523,15 +523,38 @@ impl<F> CompiledState<F> {
                 //
                 // One type that is known to cause this is a tuple of
                 // `Module` and `Optimizer` eg. `(<Module>, <Optimizer>)`
-                self.fallible_call_mut_with_state(state, args)
+                self.call_mut_with_state(state, args, extract)
             })
     }
 
-    fn call_mut_with_state<U>(
+    fn retry_fallible_call_mut_with_state<U, R>(
         &mut self,
         state: &mut U,
         args: &[impl AsRef<Array>],
-    ) -> Result<Vec<Array>, Exception>
+        extract: impl Fn(Vec<Array>) -> Result<R, Exception> + Copy,
+    ) -> Result<R, Exception>
+    where
+        F: FnMut(&mut U, &[Array]) -> Result<Vec<Array>, Exception>,
+        U: Updatable,
+    {
+        self.fallible_call_mut_with_state(state, args, extract)
+            .or_else(|_e| {
+                // Somehow the mlx_closure_apply may fail on the first call for
+                // certain types of state with the error message:
+                // "unordered_map::at: key not found", so we just try again.
+                //
+                // One type that is known to cause this is a tuple of
+                // `Module` and `Optimizer` eg. `(<Module>, <Optimizer>)`
+                self.fallible_call_mut_with_state(state, args, extract)
+            })
+    }
+
+    fn call_mut_with_state<U, R>(
+        &mut self,
+        state: &mut U,
+        args: &[impl AsRef<Array>],
+        extract: impl FnOnce(Vec<Array>) -> Result<R, Exception>,
+    ) -> Result<R, Exception>
     where
         F: FnMut(&mut U, &[Array]) -> Vec<Array>,
         U: Updatable,
@@ -608,14 +631,16 @@ impl<F> CompiledState<F> {
             state,
             args,
             num_function_outputs,
+            extract,
         )
     }
 
-    fn fallible_call_mut_with_state<U>(
+    fn fallible_call_mut_with_state<U, R>(
         &mut self,
         state: &mut U,
         args: &[impl AsRef<Array>],
-    ) -> Result<Vec<Array>, Exception>
+        extract: impl FnOnce(Vec<Array>) -> Result<R, Exception>,
+    ) -> Result<R, Exception>
     where
         F: FnMut(&mut U, &[Array]) -> Result<Vec<Array>, Exception>,
         U: Updatable,
@@ -692,6 +717,7 @@ impl<F> CompiledState<F> {
             state,
             args,
             num_function_outputs,
+            extract,
         )
     }
 }
