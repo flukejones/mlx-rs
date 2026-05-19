@@ -919,20 +919,20 @@ fn expand_ellipsis_operations<'a>(
     ndim: usize,
     operations: &'a [ArrayIndexOp<'a>],
 ) -> Cow<'a, [ArrayIndexOp<'a>]> {
-    let ellipsis_count = operations
-        .iter()
-        .filter(|op| matches!(op, ArrayIndexOp::Ellipsis))
-        .count();
-    if ellipsis_count == 0 {
-        return Cow::Borrowed(operations);
-    }
-
-    assert!(ellipsis_count <= 1, "Indexing with multiple ellipsis is not supported");
-
-    let ellipsis_pos = operations
+    let Some(ellipsis_pos) = operations
         .iter()
         .position(|op| matches!(op, ArrayIndexOp::Ellipsis))
-        .unwrap();
+    else {
+        return Cow::Borrowed(operations);
+    };
+
+    assert!(
+        !operations[ellipsis_pos + 1..]
+            .iter()
+            .any(|op| matches!(op, ArrayIndexOp::Ellipsis)),
+        "Indexing with multiple ellipsis is not supported"
+    );
+
     let prefix = &operations[..ellipsis_pos];
     let suffix = &operations[(ellipsis_pos + 1)..];
     let expand_range =
