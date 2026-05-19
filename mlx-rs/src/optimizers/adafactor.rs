@@ -142,15 +142,15 @@ impl AdafactorState {
         let mut exp_avg_sq = None;
         let mut exp_avg = None;
 
-        if parameter.ndim() >= 2 {
-            let shape = parameter.shape();
+        if let [head @ .., second_last, last] = parameter.shape() {
             let dtype = parameter.dtype();
 
-            let row_shape = &shape[..shape.len() - 1];
-            exp_avg_sq_row = Some(zeros_dtype(row_shape, dtype)?);
+            let mut row_shape = head.to_vec();
+            row_shape.push(*second_last);
+            exp_avg_sq_row = Some(zeros_dtype(&row_shape, dtype)?);
 
-            let mut col_shape = shape[..shape.len() - 2].to_vec();
-            col_shape.push(*shape.last().unwrap());
+            let mut col_shape = head.to_vec();
+            col_shape.push(*last);
             exp_avg_sq_col = Some(zeros_dtype(&col_shape, dtype)?);
         } else {
             exp_avg_sq = Some(zeros_like(parameter)?);

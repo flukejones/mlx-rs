@@ -282,7 +282,9 @@ impl Array {
     /// - Panics if the dimension is out of bounds.
     pub fn dim(&self, dim: i32) -> i32 {
         let dim = if dim.is_negative() {
-            (self.ndim() as i32).checked_add(dim).unwrap()
+            (self.ndim() as i32)
+                .checked_add(dim)
+                .expect("dim + ndim overflow")
         } else {
             dim
         };
