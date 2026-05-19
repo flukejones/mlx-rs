@@ -5,7 +5,10 @@ use mlx_rs::{
     macros::{ModuleParameters, Quantizable},
     module::Module,
     nn,
-    ops::concatenate_axis,
+    ops::{
+        arange, concatenate_axis,
+        indexing::{IndexOp, NewAxis},
+    },
     quantization::MaybeQuantized,
     Array,
 };
@@ -368,11 +371,29 @@ impl Module<MistralInput<'_>> for Mistral {
 
         let mut h = self.tok_embeddings.forward(inputs)?;
 
+        // Cache-aware additive causal mask: shape `[L, offset + L]`. A
+        // bare `[L, L]` mask works on turn 1 (offset == 0) but breaks
+        // the SDPA broadcast on every subsequent turn against the
+        // concatenated K/V.
         let mut mask = None;
-        if h.shape()[1] > 1 {
-            let mask_ = nn::MultiHeadAttention::create_additive_causal_mask::<f32>(h.shape()[1])?;
-            let mask_ = mask_.as_dtype(h.dtype())?;
-            mask = Some(mask_);
+        let l_q = h.shape()[1];
+        if l_q > 1 {
+            let offset = cache
+                .first()
+                .and_then(Option::as_ref)
+                .map(|(k, _)| {
+                    let s = k.shape();
+                    s[s.len() - 2]
+                })
+                .unwrap_or(0);
+            let total = offset + l_q;
+            let rinds = arange::<_, i32>(0, total, 1)?;
+            let linds = arange::<_, i32>(offset, total, 1)?;
+            let linds = linds.index((.., NewAxis));
+            let rinds = rinds.index(NewAxis);
+            let causal = linds.ge(&rinds)?;
+            let neg_inf = causal.logical_not()?.as_dtype(h.dtype())?;
+            mask = Some(neg_inf.multiply(Array::from_f32(f32::NEG_INFINITY))?);
         }
 
         let mut out_cache = Vec::with_capacity(self.layers.len());
