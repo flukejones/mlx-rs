@@ -52,6 +52,21 @@ const WARMUP_TOKENS: i32 = 4;
 const SAMPLE_SIZE: usize = 10;
 const MEASUREMENT_SECS: u64 = 20;
 
+/// Emit `[mlx_mem] tag active=<MB> cache=<MB> peak=<MB>` to stderr so
+/// downstream tools (e.g. `bench_with_temp`) can overlay MLX allocator
+/// state on the bench-wall-clock timeline.
+fn log_mlx_mem(tag: &str) {
+    let active = mlx_rs::memory::active_memory();
+    let cache = mlx_rs::memory::cache_memory();
+    let peak = mlx_rs::memory::peak_memory();
+    eprintln!(
+        "[mlx_mem] {tag} active_mb={:.1} cache_mb={:.1} peak_mb={:.1}",
+        active as f64 / 1e6,
+        cache as f64 / 1e6,
+        peak as f64 / 1e6,
+    );
+}
+
 /// Resolve `<cache>/<repo_id>`; download via `hf` CLI on first miss.
 /// Set `MLX_LM_BENCH_NO_DOWNLOAD=1` to skip download.
 fn ensure_model(repo_id: &str) -> Option<PathBuf> {
@@ -606,6 +621,7 @@ fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
             return;
         }
     };
+    log_mlx_mem(&format!("gemma4_{label}/loaded"));
 
     let short = synthetic_prompt(SHORT_PROMPT_LEN, 1000);
     let long = synthetic_prompt(LONG_PROMPT_LEN, 1000);
@@ -641,13 +657,15 @@ fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
 
-    for (id, prompt) in [
-        (BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32), &short),
-        (BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32), &long),
+    for (cell_name, id, prompt) in [
+        ("prefill_short", BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32), &short),
+        ("prefill_long", BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32), &long),
     ] {
         let prompt_len = prompt.shape().last().copied().unwrap_or(0) as u64;
         group.throughput(Throughput::Elements(prompt_len));
+        let tag = format!("gemma4_{label}/{cell_name}");
         group.bench_function(id, |b| {
+            log_mlx_mem(&format!("{tag}/start"));
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
                 for _ in 0..iters {
@@ -655,15 +673,18 @@ fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
                 }
                 total
             });
+            log_mlx_mem(&format!("{tag}/end"));
         });
     }
 
     group.throughput(Throughput::Elements(decode_steps as u64));
-    for (id, prompt) in [
-        (BenchmarkId::new("decode_short", decode_steps), &short),
-        (BenchmarkId::new("decode_long", decode_steps), &long),
+    for (cell_name, id, prompt) in [
+        ("decode_short", BenchmarkId::new("decode_short", decode_steps), &short),
+        ("decode_long", BenchmarkId::new("decode_long", decode_steps), &long),
     ] {
+        let tag = format!("gemma4_{label}/{cell_name}");
         group.bench_function(id, |b| {
+            log_mlx_mem(&format!("{tag}/start"));
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
                 for _ in 0..iters {
@@ -671,6 +692,7 @@ fn maybe_bench_gemma4(c: &mut Criterion, label: &str, repo_id: &str) {
                 }
                 total
             });
+            log_mlx_mem(&format!("{tag}/end"));
         });
     }
     group.finish();
@@ -704,6 +726,7 @@ fn bench_decode(c: &mut Criterion) {
     maybe_bench_gemma4(c, "e4b_it_q8", "mlx-community/gemma-4-e4b-it-8bit");
     maybe_bench_gemma4(c, "26b_a4b_it_q8", "mlx-community/gemma-4-26b-a4b-it-8bit");
     maybe_bench_gemma4(c, "31b_it_q8", "mlx-community/gemma-4-31b-it-8bit");
+
     if set == BenchSet::Full {
         maybe_bench_gemma4(c, "26b_a4b_it_q4", "mlx-community/gemma-4-26b-a4b-it-4bit");
     }
