@@ -389,9 +389,14 @@ impl Optimizer for Adafactor {
 
         let one_minus_beta2 = array!(1.0).subtract(&beta2)?;
         if factored {
-            // SAFETY: These fields are created in the `new` when ndim >= 2 and won't panic.
-            let exp_avg_sq_row = state.exp_avg_sq_row.as_mut().unwrap();
-            let exp_avg_sq_col = state.exp_avg_sq_col.as_mut().unwrap();
+            let exp_avg_sq_row = state
+                .exp_avg_sq_row
+                .as_mut()
+                .expect("Adafactor: exp_avg_sq_row populated by new() when ndim >= 2");
+            let exp_avg_sq_col = state
+                .exp_avg_sq_col
+                .as_mut()
+                .expect("Adafactor: exp_avg_sq_col populated by new() when ndim >= 2");
 
             *exp_avg_sq_row = beta2
                 .multiply(&*exp_avg_sq_row)?
@@ -406,8 +411,10 @@ impl Optimizer for Adafactor {
             )?);
             update = Cow::Owned(update.multiply(gradient)?);
         } else {
-            // SAFETY: This field is created in the `new` when ndim < 2 and won't panic.
-            let exp_avg_sq = state.exp_avg_sq.as_mut().unwrap();
+            let exp_avg_sq = state
+                .exp_avg_sq
+                .as_mut()
+                .expect("Adafactor: exp_avg_sq populated by new() when ndim < 2");
 
             *exp_avg_sq = beta2
                 .multiply(&*exp_avg_sq)?
@@ -421,8 +428,10 @@ impl Optimizer for Adafactor {
         update = Cow::Owned(lr.multiply(update)?);
 
         if let Some(beta1) = &self.beta1 {
-            // SAFETY: This field is created in the `new` when beta1 is set and won't panic.
-            let exp_avg = state.exp_avg.as_mut().unwrap();
+            let exp_avg = state
+                .exp_avg
+                .as_mut()
+                .expect("Adafactor: exp_avg populated by new() when beta1 is set");
             let one_minus_beta1 = array!(1.0).subtract(beta1)?;
             *exp_avg = beta1
                 .multiply(&*exp_avg)?
