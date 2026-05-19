@@ -85,11 +85,11 @@ bench-compile:
 
 # Run a generate example. Usage: just generate <model> <prompt...>
 generate model *args:
-	cargo run --release --manifest-path examples/lm/Cargo.toml --bin generate -- --model {{model}} {{args}}
+	cargo run --release -p lm --bin generate -- --model {{model}} {{args}}
 
 # Run the chat REPL example.
 chat *args:
-	cargo run --release --manifest-path examples/lm/Cargo.toml --bin chat -- {{args}}
+	cargo run --release -p lm --bin chat -- {{args}}
 
 # --- maintenance ---
 
