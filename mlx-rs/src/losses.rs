@@ -877,6 +877,10 @@ impl MarginRankingLoss {
 #[cfg(test)]
 #[allow(clippy::approx_constant, reason = "test float literals close to known constants by design")]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::missing_assert_message, reason = "test code")]
+    #![allow(clippy::print_stdout, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
     use crate::{array, assert_array_eq, builder::Builder, ops::is_nan};
     use float_eq::assert_float_eq;
 
