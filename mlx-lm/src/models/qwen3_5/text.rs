@@ -59,7 +59,6 @@ impl Mlp {
             swiglu_cache: SwigluCache::default(),
         })
     }
-
 }
 
 impl Module<&Array> for Mlp {

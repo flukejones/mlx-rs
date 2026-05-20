@@ -229,7 +229,7 @@ fn merge_gate_up(raw: &mut HashMap<String, Array>, module: &str, axis: i32) -> R
 
 /// End-to-end load: build `Model::new`, apply quantisation config, load
 /// sanitised weights into the parameter walk, then `eval_params`.
-pub fn load_gemma4_model_sanitized(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
+pub(crate) fn load_gemma4_model_sanitized(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
     let model_dir = model_dir.as_ref();
     let cfg = Gemma4Config::from_file(model_dir.join("config.json"))?;
     let quant = resolve_quantization(&cfg.quantization, &cfg.quantization_config).cloned();

@@ -126,7 +126,9 @@ where
             blk.forward(&normed, full_attn_mask, cache, position_ids)?
         };
         let h = x.add(&attn_out)?;
-        let mlp_out = self.mlp.forward(&self.post_attention_layernorm.forward(&h)?)?;
+        let mlp_out = self
+            .mlp
+            .forward(&self.post_attention_layernorm.forward(&h)?)?;
         h.add(&mlp_out)
     }
 
@@ -159,7 +161,9 @@ impl DecoderLayer<Mlp> {
     /// Convenience constructor for the dense (Mlp-FFN) layer; mirrors
     /// the pre-generic API.
     pub fn new_dense(cfg: &TextConfig, layer_idx: usize) -> Result<Self, Exception> {
-        Self::new(cfg, layer_idx, |c| Mlp::new(c.hidden_size, c.intermediate_size))
+        Self::new(cfg, layer_idx, |c| {
+            Mlp::new(c.hidden_size, c.intermediate_size)
+        })
     }
 }
 

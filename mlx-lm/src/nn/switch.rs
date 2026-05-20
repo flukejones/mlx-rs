@@ -381,11 +381,7 @@ impl<A: SwitchActivation> Quantizable for PackedSwitchFfn<A> {
     type Quantized = Self;
     type QuantizationError = Exception;
 
-    fn try_into_quantized(
-        self,
-        group_size: i32,
-        bits: i32,
-    ) -> Result<Self, Exception> {
+    fn try_into_quantized(self, group_size: i32, bits: i32) -> Result<Self, Exception> {
         Ok(Self {
             gate_up_proj: self.gate_up_proj.try_into_quantized(group_size, bits)?,
             down_proj: self.down_proj.try_into_quantized(group_size, bits)?,
@@ -520,11 +516,7 @@ impl<A: SwitchActivation> Quantizable for SplitSwitchFfn<A> {
     type Quantized = Self;
     type QuantizationError = Exception;
 
-    fn try_into_quantized(
-        self,
-        group_size: i32,
-        bits: i32,
-    ) -> Result<Self, Exception> {
+    fn try_into_quantized(self, group_size: i32, bits: i32) -> Result<Self, Exception> {
         Ok(Self {
             gate_proj: self.gate_proj.try_into_quantized(group_size, bits)?,
             up_proj: self.up_proj.try_into_quantized(group_size, bits)?,

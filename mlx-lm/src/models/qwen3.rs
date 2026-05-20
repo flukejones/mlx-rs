@@ -6,13 +6,10 @@ use mlx_rs::{
     macros::{ModuleParameters, Quantizable},
     module::Module,
     nn,
-    ops::indexing::{IndexOp, NewAxis},
     quantization::{MaybeQuantized, Quantizable as _},
-    transforms::async_eval,
     Array,
 };
 use serde::Deserialize;
-use tokenizers::Tokenizer;
 
 use crate::{
     cache::KeyValueCache,
@@ -446,17 +443,9 @@ where
     }
 }
 
-pub fn load_qwen3_tokenizer(model_dir: impl AsRef<Path>) -> Result<Tokenizer, Error> {
-    crate::loader::load_tokenizer(model_dir)
-}
-
-pub fn get_qwen3_model_args(model_dir: impl AsRef<Path>) -> Result<ModelArgs, Error> {
-    crate::loader::load_config(model_dir)
-}
-
-pub fn load_qwen3_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
+pub(crate) fn load_qwen3_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
     let model_dir = model_dir.as_ref();
-    let model_args = get_qwen3_model_args(model_dir)?;
+    let model_args: ModelArgs = crate::loader::load_config(model_dir)?;
     let quant =
         resolve_quantization(&model_args.quantization, &model_args.quantization_config).cloned();
     let mut model = Model::new(model_args)?;
@@ -471,185 +460,32 @@ pub fn load_qwen3_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
     Ok(model)
 }
 
-pub use crate::sampler::sample;
-
-pub struct Generate<'a, C> {
-    model: &'a mut Model,
-    cache: &'a mut Vec<Option<C>>,
-    temp: f32,
-    state: GenerateState<'a>,
-}
-
-impl<'a, C> Generate<'a, C>
-where
-    C: KeyValueCache + Default,
-{
-    pub fn new(
-        model: &'a mut Model,
-        cache: &'a mut Vec<Option<C>>,
-        temp: f32,
-        prompt_token: &'a Array,
-    ) -> Self {
-        Self {
-            model,
-            cache,
-            temp,
-            state: GenerateState::Prefill { prompt_token },
-        }
-    }
-}
-
-pub enum GenerateState<'a> {
-    Prefill {
-        prompt_token: &'a Array,
-    },
-    /// `pending` is the next token to hand out; its predecessor has
-    /// already been returned to the caller.
-    Decode {
-        pending: Array,
-    },
-}
-
-use crate::tri;
-
-impl<'a, C> Generate<'a, C>
-where
-    C: KeyValueCache + Default,
-{
-    fn step(&mut self, inputs: &Array) -> Result<Array, Exception> {
-        let input = ModelInput {
-            inputs,
-            mask: None,
-            cache: self.cache,
-        };
-        let logits = self.model.forward(input)?;
-        sample(&logits.index((.., -1, ..)), self.temp)
-    }
-}
-
-impl<'a, C> Iterator for Generate<'a, C>
-where
-    C: KeyValueCache + Default,
-{
-    type Item = Result<Array, Exception>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match std::mem::replace(
-            &mut self.state,
-            GenerateState::Decode {
-                pending: Array::from_int(0),
-            },
-        ) {
-            GenerateState::Prefill { prompt_token } => {
-                let y0 = tri!(self.step(prompt_token));
-                tri!(async_eval([&y0]));
-                let inputs = y0.index((.., NewAxis));
-                let y1 = tri!(self.step(&inputs));
-                tri!(async_eval([&y1]));
-                self.state = GenerateState::Decode { pending: y1 };
-                Some(Ok(y0))
-            }
-            GenerateState::Decode { pending } => {
-                let inputs = pending.index((.., NewAxis));
-                let next_y = tri!(self.step(&inputs));
-                tri!(async_eval([&next_y]));
-                self.state = GenerateState::Decode { pending: next_y };
-                Some(Ok(pending))
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test code")]
-    #![allow(clippy::missing_assert_message, reason = "test code")]
-    #![allow(clippy::print_stdout, reason = "test code")]
-    #![allow(clippy::print_stderr, reason = "test code")]
-    use mlx_rs::{
-        module::Module,
-        ops::indexing::{IndexOp, NewAxis},
-        transforms::eval,
-        Array,
-    };
+    use crate::{generate, load, GenerateParams, UserInput};
 
-    use crate::{
-        cache::KVCache,
-        models::qwen3::{load_qwen3_model, load_qwen3_tokenizer},
-    };
+    const CACHED_TEST_MODEL_DIR: &str = ".cache/mlx-rs-bench/mlx-community/Qwen3-1.7B-4bit";
 
-    const CACHED_TEST_MODEL_DIR: &str = "../cache/Qwen3-4B-bf16";
-
-    #[test]
-    #[ignore = "requires local model files"]
-    fn test_load_qwen3_model() {
-        let _model = load_qwen3_model(CACHED_TEST_MODEL_DIR).unwrap();
+    fn home_dir() -> Option<std::path::PathBuf> {
+        std::env::var_os("HOME").map(std::path::PathBuf::from)
     }
 
-    const CACHED_QUANT_TEST_MODEL_DIR: &str = "../cache/Qwen3-1.7B-MLX-8bit";
-
-    /// Regression guard for the quantised-checkpoint loader path: without
-    /// `try_into_quantized` before `load_safetensors`, the packed-uint32
-    /// weights overwrite the unquantised `Linear.weight` slot and the first
-    /// forward fires `[rms_norm] weight has K elements but x's last dim is D`.
+    /// End-to-end smoke against the unified surface.
     #[test]
-    #[ignore = "requires local quantised model files"]
-    fn quantized_qwen3_model_loads_and_forwards() {
-        let mut model = load_qwen3_model(CACHED_QUANT_TEST_MODEL_DIR).unwrap();
-        let prompt = Array::from_slice(&[1i32, 2, 3, 4], &[1, 4]);
-        let mut cache: Vec<Option<KVCache>> = Vec::new();
-        let input = super::ModelInput {
-            inputs: &prompt,
-            mask: None,
-            cache: &mut cache,
+    #[ignore = "requires mlx-community/Qwen3-1.7B-4bit on disk"]
+    fn qwen3_generates_through_unified_surface() {
+        let dir = home_dir().expect("HOME").join(CACHED_TEST_MODEL_DIR);
+        let mut ctx = load(&dir).expect("load");
+        let input = UserInput::text("Hello");
+        let params = GenerateParams {
+            max_new_tokens: 8,
+            ..GenerateParams::default()
         };
-        let logits = Module::forward(&mut model, input).unwrap();
-        eval([&logits]).unwrap();
-        assert_eq!(logits.shape()[2], model.args.vocab_size);
-    }
-
-    #[test]
-    #[ignore = "requires local model files"]
-    fn test_load_tokenizer() {
-        let tokenizer = load_qwen3_tokenizer(CACHED_TEST_MODEL_DIR).unwrap();
-
-        let _encoding = tokenizer.encode("Hello, world!", true).unwrap();
-    }
-
-    #[test]
-    #[ignore = "requires local model files"]
-    fn test_load_and_run_qwen3_with_concat_cache() {
-        let tokenizer = load_qwen3_tokenizer(CACHED_TEST_MODEL_DIR).unwrap();
-
-        let mut model = load_qwen3_model(CACHED_TEST_MODEL_DIR).unwrap();
-
-        let encoding = tokenizer.encode("hello", true).unwrap();
-        let prompt_tokens = Array::from(encoding.get_ids()).index(NewAxis);
-        let mut cache = Vec::new();
-
-        let mut tokens = Vec::new();
-        let generate = super::Generate::<KVCache>::new(&mut model, &mut cache, 0.0, &prompt_tokens);
-        for (token, ntoks) in generate.zip(0..10) {
-            let token = token.unwrap();
-            tokens.push(token.clone());
-
-            if ntoks == 0 {
-                eval(&tokens).unwrap();
-            }
-
-            if tokens.len() % 20 == 0 {
-                eval(&tokens).unwrap();
-                let slice: Vec<u32> = tokens.drain(..).map(|t| t.item::<u32>()).collect();
-                let s = tokenizer.decode(&slice, true).unwrap();
-                print!("{s}");
-            }
-        }
-
-        eval(&tokens).unwrap();
-        let slice: Vec<u32> = tokens.drain(..).map(|t| t.item::<u32>()).collect();
-        let s = tokenizer.decode(&slice, true).unwrap();
-        println!("{s}");
-
-        println!("------");
+        let result = generate(&mut ctx, input, params, &mut |_, _| {
+            std::ops::ControlFlow::Continue(())
+        })
+        .expect("generate");
+        assert!(result.completion_tokens > 0);
     }
 }

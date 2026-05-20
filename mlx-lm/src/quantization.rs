@@ -110,10 +110,8 @@ mod tests {
 
     #[test]
     fn parses_uniform_config() {
-        let q: QuantizationConfig = serde_json::from_str(
-            r#"{"group_size": 64, "bits": 8, "mode": "affine"}"#,
-        )
-        .unwrap();
+        let q: QuantizationConfig =
+            serde_json::from_str(r#"{"group_size": 64, "bits": 8, "mode": "affine"}"#).unwrap();
         assert_eq!(q.group_size, 64);
         assert_eq!(q.bits, 8);
         assert_eq!(q.mode, "affine");

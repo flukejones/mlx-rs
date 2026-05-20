@@ -94,11 +94,8 @@ impl Qwen35MoeBlock {
             num_experts,
             false,
         )?;
-        let shared_expert =
-            SwigluMlp::new(hidden_size, shared_expert_intermediate_size, false)?;
-        let shared_expert_gate = nn::LinearBuilder::new(hidden_size, 1)
-            .bias(false)
-            .build()?;
+        let shared_expert = SwigluMlp::new(hidden_size, shared_expert_intermediate_size, false)?;
+        let shared_expert_gate = nn::LinearBuilder::new(hidden_size, 1).bias(false).build()?;
         Ok(Self {
             gate: MaybeQuantized::Original(gate),
             switch_mlp,
@@ -162,12 +159,11 @@ pub type Qwen35MoeLanguageModel = LanguageModel<Qwen35MoeBlock>;
 /// both hybrid (linear-attn + full-attn) layer kinds and works
 /// unchanged on the MoE variant.
 pub use qwen3_5::cache::{make_caches, LayerCache};
-pub use qwen3_5::generation::{Generate, SamplingParams, StopCriteria};
 
 /// End-to-end loader: parse config, build the model with per-tensor
 /// quant overrides, sanitise + bind weights, hard-error on unbound
 /// LM keys.
-pub fn load_qwen3_5_moe_model(
+pub(crate) fn load_qwen3_5_moe_model(
     model_dir: impl AsRef<Path>,
 ) -> Result<Qwen35MoeLanguageModel, Error> {
     let model_dir = model_dir.as_ref();
@@ -271,16 +267,14 @@ fn quantize_with_overrides(
     // Per-layer override pass: re-build override slots at the
     // override (group_size, bits) if it differs from the body.
     for (layer_idx, layer) in model.model.layers.iter_mut().enumerate() {
-        let raw_gate_prefix =
-            format!("language_model.model.layers.{layer_idx}.mlp.gate");
+        let raw_gate_prefix = format!("language_model.model.layers.{layer_idx}.mlp.gate");
         let (gate_gs, gate_bits) = q.for_path(&raw_gate_prefix);
         if (gate_gs, gate_bits) != (q.group_size, q.bits) {
             requantise_linear(&mut layer.mlp.gate, gate_gs, gate_bits)?;
         }
 
-        let raw_sgate_prefix = format!(
-            "language_model.model.layers.{layer_idx}.mlp.shared_expert_gate"
-        );
+        let raw_sgate_prefix =
+            format!("language_model.model.layers.{layer_idx}.mlp.shared_expert_gate");
         let (sgate_gs, sgate_bits) = q.for_path(&raw_sgate_prefix);
         if (sgate_gs, sgate_bits) != (q.group_size, q.bits) {
             requantise_linear(&mut layer.mlp.shared_expert_gate, sgate_gs, sgate_bits)?;
@@ -332,4 +326,3 @@ fn requantise_linear(
     *slot = requant;
     Ok(())
 }
-

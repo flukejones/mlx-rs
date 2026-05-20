@@ -1,86 +1,45 @@
+//! Minimal example driver: load a Qwen3 checkpoint and run one
+//! `mlx_lm::generate` call. For interactive use see `chat`; for
+//! one-shot completion with full CLI options see `generate`.
+
+#![allow(clippy::print_stderr)]
+#![allow(clippy::print_stdout)]
+
+use std::io::Write;
 use std::path::Path;
 
-use mlx_lm::{cache::KVCache, models::qwen3::load_qwen3_model};
-use mlx_lm_utils::tokenizer::{
-    load_model_chat_template_from_file, ApplyChatTemplateArgs, Conversation, Role, Tokenizer,
-};
-use mlx_rs::{
-    ops::indexing::{IndexOp, NewAxis},
-    transforms::eval,
-    Array,
-};
+use mlx_lm::chat_template::ChatMessage;
+use mlx_lm::{generate, load, GenerateParams, SamplingParams, UserInput};
 
-const CACHED_TEST_MODEL_DIR: &str = "./cache/Qwen3-4B-bf16";
-
-fn qwen3() -> anyhow::Result<()> {
-    let model_dir = Path::new(CACHED_TEST_MODEL_DIR);
-
-    let model_id = "mlx-community/Qwen3-4B-bf16".to_string();
-    let tokenizer_file = model_dir.join("tokenizer.json");
-    let tokenizer_config_file = model_dir.join("tokenizer_config.json");
-    let mut tokenizer =
-        Tokenizer::from_file(tokenizer_file).map_err(|e| anyhow::anyhow!("{:?}", e))?;
-    let model_chat_template = load_model_chat_template_from_file(tokenizer_config_file)?
-        .expect("Model chat template not found");
-
-    let conversations = vec![Conversation {
-        role: Role::User,
-        content: "what's your name?",
-    }];
-    let args = ApplyChatTemplateArgs {
-        conversations: vec![conversations.into()],
-        documents: None,
-        model_id: &model_id,
-        chat_template_id: None,
-        add_generation_prompt: None,
-        continue_final_message: None,
-        special_tokens: Default::default(),
-        template_kwargs: Default::default(),
-    };
-    let encodings = tokenizer.apply_chat_template_and_encode(model_chat_template, args)?;
-    let prompt: Vec<u32> = encodings
-        .iter()
-        .flat_map(|encoding| encoding.get_ids())
-        .copied()
-        .collect();
-    let prompt_tokens = Array::from(&prompt[..]).index(NewAxis);
-
-    let mut cache = Vec::new();
-    let mut model = load_qwen3_model(model_dir)?;
-    let generate = mlx_lm::models::qwen3::Generate::<KVCache>::new(
-        &mut model,
-        &mut cache,
-        0.2,
-        &prompt_tokens,
-    );
-
-    let mut tokens = Vec::new();
-    for (token, ntoks) in generate.zip(0..256) {
-        let token = token.unwrap();
-        tokens.push(token.clone());
-
-        if ntoks == 0 {
-            eval(&tokens).unwrap();
-        }
-
-        if tokens.len() % 20 == 0 {
-            eval(&tokens).unwrap();
-            let slice: Vec<u32> = tokens.drain(..).map(|t| t.item::<u32>()).collect();
-            let s = tokenizer.decode(&slice, true).unwrap();
-            print!("{s}");
-        }
-    }
-
-    eval(&tokens).unwrap();
-    let slice: Vec<u32> = tokens.drain(..).map(|t| t.item::<u32>()).collect();
-    let s = tokenizer.decode(&slice, true).unwrap();
-    println!("{s}");
-
-    println!("------");
-
-    Ok(())
-}
+const DEFAULT_MODEL_DIR: &str = "./cache/Qwen3-4B-bf16";
 
 fn main() -> anyhow::Result<()> {
-    qwen3()
+    let dir = std::env::var("MLX_LM_MODEL_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| Path::new(DEFAULT_MODEL_DIR).to_path_buf());
+    eprintln!("[loading {}]", dir.display());
+    let mut ctx = load(&dir)?;
+
+    let input = UserInput::chat(vec![ChatMessage::user("what's your name?")]);
+    let params = GenerateParams {
+        max_new_tokens: 256,
+        sampling: SamplingParams {
+            temperature: 0.2,
+            top_p: None,
+        },
+        extra_stop_ids: Vec::new(),
+    };
+
+    let mut stdout = std::io::stdout().lock();
+    let result = generate(&mut ctx, input, params, &mut |_, delta| {
+        let _ = stdout.write_all(delta.as_bytes());
+        let _ = stdout.flush();
+        std::ops::ControlFlow::Continue(())
+    })?;
+    println!();
+    eprintln!(
+        "[prompt={} completion={}]",
+        result.prompt_tokens, result.completion_tokens
+    );
+    Ok(())
 }

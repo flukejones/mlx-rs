@@ -6,13 +6,10 @@ use mlx_rs::{
     macros::{ModuleParameters, Quantizable},
     module::Module,
     nn,
-    ops::indexing::{IndexOp, NewAxis},
     quantization::{MaybeQuantized, Quantizable as _},
-    transforms::async_eval,
     Array,
 };
 use serde::Deserialize;
-use tokenizers::Tokenizer;
 
 use crate::{
     cache::KeyValueCache,
@@ -437,17 +434,9 @@ where
     }
 }
 
-pub fn load_llama_tokenizer(model_dir: impl AsRef<Path>) -> Result<Tokenizer, Error> {
-    crate::loader::load_tokenizer(model_dir)
-}
-
-pub fn get_llama_model_args(model_dir: impl AsRef<Path>) -> Result<ModelArgs, Error> {
-    crate::loader::load_config(model_dir)
-}
-
-pub fn load_llama_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
+pub(crate) fn load_llama_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
     let model_dir = model_dir.as_ref();
-    let model_args = get_llama_model_args(model_dir)?;
+    let model_args: ModelArgs = crate::loader::load_config(model_dir)?;
     let quant =
         resolve_quantization(&model_args.quantization, &model_args.quantization_config).cloned();
     let mut model = Model::new(model_args)?;
@@ -459,122 +448,14 @@ pub fn load_llama_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
     Ok(model)
 }
 
-pub use crate::sampler::sample;
-
-pub struct Generate<'a, C> {
-    model: &'a mut Model,
-    cache: &'a mut Vec<Option<C>>,
-    temp: f32,
-    state: GenerateState<'a>,
-}
-
-impl<'a, C> Generate<'a, C>
-where
-    C: KeyValueCache + Default,
-{
-    pub fn new(
-        model: &'a mut Model,
-        cache: &'a mut Vec<Option<C>>,
-        temp: f32,
-        prompt_token: &'a Array,
-    ) -> Self {
-        Self {
-            model,
-            cache,
-            temp,
-            state: GenerateState::Prefill { prompt_token },
-        }
-    }
-}
-
-pub enum GenerateState<'a> {
-    Prefill {
-        prompt_token: &'a Array,
-    },
-    /// `pending` is the next token to hand out; its predecessor has
-    /// already been returned to the caller.
-    Decode {
-        pending: Array,
-    },
-}
-
-use crate::tri;
-
-impl<'a, C> Generate<'a, C>
-where
-    C: KeyValueCache + Default,
-{
-    fn step(&mut self, inputs: &Array) -> Result<Array, Exception> {
-        let input = ModelInput {
-            inputs,
-            mask: None,
-            cache: self.cache,
-        };
-        let logits = self.model.forward(input)?;
-        sample(&logits.index((.., -1, ..)), self.temp)
-    }
-}
-
-impl<'a, C> Iterator for Generate<'a, C>
-where
-    C: KeyValueCache + Default,
-{
-    type Item = Result<Array, Exception>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match std::mem::replace(
-            &mut self.state,
-            GenerateState::Decode {
-                pending: Array::from_int(0),
-            },
-        ) {
-            GenerateState::Prefill { prompt_token } => {
-                let y0 = tri!(self.step(prompt_token));
-                tri!(async_eval([&y0]));
-                let inputs = y0.index((.., NewAxis));
-                let y1 = tri!(self.step(&inputs));
-                tri!(async_eval([&y1]));
-                self.state = GenerateState::Decode { pending: y1 };
-                Some(Ok(y0))
-            }
-            GenerateState::Decode { pending } => {
-                let inputs = pending.index((.., NewAxis));
-                let next_y = tri!(self.step(&inputs));
-                tri!(async_eval([&next_y]));
-                self.state = GenerateState::Decode { pending: next_y };
-                Some(Ok(pending))
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test code")]
-    #![allow(clippy::missing_assert_message, reason = "test code")]
-    #![allow(clippy::print_stdout, reason = "test code")]
-    #![allow(clippy::print_stderr, reason = "test code")]
+    use std::sync::LazyLock;
     use std::{env::home_dir, fs};
 
-    use mlx_rs::{
-        ops::indexing::{IndexOp, NewAxis},
-        transforms::eval,
-        Array,
-    };
-    use std::sync::LazyLock;
+    use crate::{generate, load, GenerateParams, UserInput};
 
-    use crate::{
-        cache::KVCache,
-        models::llama::{load_llama_model, load_llama_tokenizer},
-    };
-
-    /// Resolve the HuggingFace cache directory to the actual snapshot path.
-    /// The structure is:
-    ///   models--<org>--<name>/
-    ///     refs/
-    ///       main  (contains the commit hash)
-    ///     snapshots/
-    ///       <commit_hash>/  (actual model files)
     fn resolve_hf_cache_dir(model_cache_dir: &str) -> String {
         let refs_main = std::path::Path::new(model_cache_dir)
             .join("refs")
@@ -590,19 +471,6 @@ mod tests {
             .into_owned()
     }
 
-    static CACHED_TEST_MODEL_DIR: LazyLock<String> = LazyLock::new(|| {
-        let cache_dir = home_dir()
-            .map(|p| {
-                p.join(".cache")
-                    .join("huggingface")
-                    .join("hub")
-                    .join("models--meta-llama--Llama-3.2-1B-Instruct")
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .unwrap_or_default();
-        resolve_hf_cache_dir(&cache_dir)
-    });
     static CACHED_QUANT_TEST_MODEL_DIR: LazyLock<String> = LazyLock::new(|| {
         let cache_dir = home_dir()
             .map(|p| {
@@ -617,120 +485,25 @@ mod tests {
         resolve_hf_cache_dir(&cache_dir)
     });
 
-    #[test]
-    #[ignore = "requires local model files"]
-    fn test_load_llama_model() {
-        use mlx_rs::module::ModuleParameters;
-
-        let model_dir = CACHED_TEST_MODEL_DIR.as_str();
-        let model_args = super::get_llama_model_args(model_dir).unwrap();
-        let model = super::Model::new(model_args).unwrap();
-
-        // Print some model parameter keys
-        let params = model.parameters().flatten();
-        let mut param_keys: Vec<_> = params.keys().map(|k| k.to_string()).collect();
-        param_keys.sort();
-        println!("=== Model parameter keys (first 20) ===");
-        for key in param_keys.iter().take(20) {
-            println!("  {key}");
-        }
-
-        // Print some safetensor keys
-        let weights_path = std::path::Path::new(model_dir).join("model.safetensors");
-        let loaded = Array::load_safetensors(&weights_path).unwrap();
-        let mut weight_keys: Vec<_> = loaded.keys().cloned().collect();
-        weight_keys.sort();
-        println!("=== Safetensor weight keys (first 20) ===");
-        for key in weight_keys.iter().take(20) {
-            println!("  {key}");
-        }
-
-        // Find unmatched keys
-        let param_set: std::collections::HashSet<_> = param_keys.iter().collect();
-        let weight_set: std::collections::HashSet<_> = weight_keys.iter().collect();
-        let unloaded: Vec<_> = weight_set.difference(&param_set).collect();
-        let missing: Vec<_> = param_set.difference(&weight_set).collect();
-        println!(
-            "=== Weight keys NOT in model params ({}) ===",
-            unloaded.len()
-        );
-        for key in unloaded.iter().take(10) {
-            println!("  {key}");
-        }
-        println!(
-            "=== Model param keys NOT in weights ({}) ===",
-            missing.len()
-        );
-        for key in missing.iter().take(10) {
-            println!("  {key}");
-        }
-        println!(
-            "Total model params: {}, Total weight keys: {}",
-            param_keys.len(),
-            weight_keys.len()
-        );
-    }
-
-    #[test]
-    #[ignore = "requires local model files"]
-    fn test_load_tokenizer() {
-        let tokenizer = load_llama_tokenizer(CACHED_TEST_MODEL_DIR.as_str()).unwrap();
-
-        let _encoding = tokenizer.encode("Hello, world!", true).unwrap();
-    }
-
-    /// Regression guard for the quantised-checkpoint loader path: without
-    /// `try_into_quantized` before `load_safetensors`, the packed-uint32
-    /// weights overwrite the unquantised `Linear.weight` slot and the first
-    /// forward fires `[rms_norm] weight has K elements but x's last dim is D`.
+    /// End-to-end smoke through the unified `mlx_lm::load` +
+    /// `mlx_lm::generate` surface. Replaces the half-dozen pre-
+    /// unification tests that drove the now-private llama
+    /// `Generate` directly.
     #[test]
     #[ignore = "requires local quantised model files"]
-    fn quantized_llama_model_loads_and_forwards() {
-        use mlx_rs::module::Module;
-
-        let mut model = load_llama_model(CACHED_QUANT_TEST_MODEL_DIR.as_str()).unwrap();
-        let prompt = Array::from_slice(&[1i32, 2, 3, 4], &[1, 4]);
-        let mut cache: Vec<Option<KVCache>> = Vec::new();
-        let input = super::ModelInput {
-            inputs: &prompt,
-            mask: None,
-            cache: &mut cache,
+    fn quantized_llama_generates_through_unified_surface() {
+        let dir = CACHED_QUANT_TEST_MODEL_DIR.as_str();
+        let mut ctx = load(dir).expect("load");
+        let input = UserInput::text("Hello, world!");
+        let params = GenerateParams {
+            max_new_tokens: 8,
+            ..GenerateParams::default()
         };
-        let logits = Module::forward(&mut model, input).unwrap();
-        eval([&logits]).unwrap();
-        assert_eq!(logits.shape()[2], model.args.vocab_size);
-    }
-
-    #[test]
-    #[ignore = "requires local model files"]
-    fn test_load_and_run_llama_with_concat_cache() {
-        let tokenizer = load_llama_tokenizer(CACHED_TEST_MODEL_DIR.as_str()).unwrap();
-        let mut model = load_llama_model(CACHED_TEST_MODEL_DIR.as_str()).unwrap();
-
-        let prompt = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nWhat is the capital of France?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n";
-        let encoding = tokenizer.encode(prompt, false).unwrap();
-        let prompt_tokens = Array::from(encoding.get_ids()).index(NewAxis);
-        let mut cache = Vec::new();
-
-        let eos_token_id = 128001u32;
-        let eot_token_id = 128009u32;
-
-        let mut token_ids = Vec::new();
-        let generate = super::Generate::<KVCache>::new(&mut model, &mut cache, 0.0, &prompt_tokens);
-        for (token, _ntoks) in generate.zip(0..50) {
-            let token = token.unwrap();
-            eval([&token]).unwrap();
-            let token_id = token.item::<u32>();
-            print!("[{token_id}]");
-            if token_id == eos_token_id || token_id == eot_token_id {
-                break;
-            }
-            token_ids.push(token_id);
-        }
-        println!();
-
-        let output = tokenizer.decode(&token_ids, true).unwrap();
-        println!("Response: {output}");
-        println!("------");
+        let result = generate(&mut ctx, input, params, &mut |_, _| {
+            std::ops::ControlFlow::Continue(())
+        })
+        .expect("generate");
+        assert!(result.completion_tokens > 0, "no tokens produced");
+        assert!(!result.text.is_empty(), "decoded text empty");
     }
 }

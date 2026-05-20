@@ -255,7 +255,7 @@ fn list_shards(model_dir: &Path) -> Result<Vec<String>, Error> {
 /// The model is rebuilt as quantised first when the checkpoint declares
 /// `quantization_config`. Returns the loaded model and the list of
 /// fully-qualified sanitised paths that did not bind to a model parameter.
-pub fn load_language_model(
+pub(crate) fn load_language_model(
     cfg: &ModelConfig,
     model_dir: impl AsRef<Path>,
 ) -> Result<(LanguageModel, Vec<String>), Error> {
@@ -292,7 +292,7 @@ pub fn load_language_model(
 /// Load both the language model and the vision tower from the same
 /// checkpoint. Vision weights are bf16 (not quantised in chandra-ocr-2) so
 /// the vision module is not run through [`quantize_language_model`].
-pub fn load_full_model(
+pub(crate) fn load_full_model(
     cfg: &ModelConfig,
     model_dir: impl AsRef<Path>,
 ) -> Result<(LanguageModel, VisionModel, Vec<String>), Error> {

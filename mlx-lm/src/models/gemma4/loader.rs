@@ -2,28 +2,18 @@
 
 use std::path::Path;
 
-use tokenizers::Tokenizer;
-
 use crate::cache::{KVCache, RotatingKVCache};
 use crate::error::Error;
 use crate::models::gemma4::config::{Gemma4Config, LayerKind};
 use crate::models::gemma4::text::Model;
 use crate::models::gemma4::weights::load_gemma4_model_sanitized;
 
-pub fn load_gemma4_tokenizer(model_dir: impl AsRef<Path>) -> Result<Tokenizer, Error> {
-    crate::loader::load_tokenizer(model_dir)
-}
-
-pub fn get_gemma4_model_args(model_dir: impl AsRef<Path>) -> Result<Gemma4Config, Error> {
-    Gemma4Config::from_file(model_dir.as_ref().join("config.json"))
-}
-
 /// Loads a Gemma 4 checkpoint. mlx-community checkpoints carry the
 /// `language_model.model.layers.X` prefix and MoE expert weights in a
 /// fused `experts.gate_up_proj` layout that the generic `load_sharded`
 /// cannot interpret — both transforms live in
 /// `weights::load_gemma4_model_sanitized`.
-pub fn load_gemma4_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
+pub(crate) fn load_gemma4_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
     load_gemma4_model_sanitized(model_dir)
 }
 
@@ -31,7 +21,7 @@ pub fn load_gemma4_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
 /// underlying KV state of an earlier same-kind layer at forward time
 /// via `Gemma4TextModel::previous_kvs`; the cache vec only owns the
 /// upstream slots (`num_hidden_layers - num_kv_shared_layers`).
-pub fn make_gemma4_caches(args: &Gemma4Config) -> Vec<Option<Gemma4LayerCache>> {
+pub(crate) fn make_gemma4_caches(args: &Gemma4Config) -> Vec<Option<Gemma4LayerCache>> {
     let first_kv_shared = (args.num_hidden_layers - args.num_kv_shared_layers).max(0);
     let layer_types = args.layer_types_resolved();
     (0..args.num_hidden_layers as usize)

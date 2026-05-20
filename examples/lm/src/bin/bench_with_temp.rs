@@ -94,7 +94,9 @@ fn parse_args() -> Res<Args> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--bench-args" => bench_args = it.next().ok_or("--bench-args needs a value")?,
-            "--interval-ms" => interval_ms = it.next().ok_or("--interval-ms needs a value")?.parse()?,
+            "--interval-ms" => {
+                interval_ms = it.next().ok_or("--interval-ms needs a value")?.parse()?
+            }
             "--out" => out_prefix = PathBuf::from(it.next().ok_or("--out needs a value")?),
             "-h" | "--help" => {
                 eprintln!(
@@ -115,7 +117,11 @@ fn parse_args() -> Res<Args> {
     })
 }
 
-fn spawn_macmon(interval_ms: u64, tx: mpsc::Sender<Reading>, start: Instant) -> Res<std::process::Child> {
+fn spawn_macmon(
+    interval_ms: u64,
+    tx: mpsc::Sender<Reading>,
+    start: Instant,
+) -> Res<std::process::Child> {
     let mut child = Command::new("macmon")
         .args(["raw", "--interval", &interval_ms.to_string()])
         .stdout(Stdio::piped())
@@ -255,13 +261,21 @@ fn run_bench(
     while let Ok(ev) = ev_rx.try_recv() {
         events.push(ev);
     }
-    events.sort_by(|a, b| a.t_s.partial_cmp(&b.t_s).unwrap_or(std::cmp::Ordering::Equal));
+    events.sort_by(|a, b| {
+        a.t_s
+            .partial_cmp(&b.t_s)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     // Same cell may emit multiple "Benchmarking <X>" headers (warmup +
     // collect + analyze separately) — dedupe consecutive duplicates.
     events.dedup_by(|a, b| a.label == b.label);
 
     let mut mem_events: Vec<MlxMemEvent> = mem_rx.try_iter().collect();
-    mem_events.sort_by(|a, b| a.t_s.partial_cmp(&b.t_s).unwrap_or(std::cmp::Ordering::Equal));
+    mem_events.sort_by(|a, b| {
+        a.t_s
+            .partial_cmp(&b.t_s)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     Ok((events, mem_events))
 }
 
@@ -276,7 +290,10 @@ fn write_csv(
     for ev in events {
         writeln!(f, "# {:.2}\t{}", ev.t_s, ev.label)?;
     }
-    writeln!(f, "# mlx_mem stamps (t_s, tag, active_mb, cache_mb, peak_mb):")?;
+    writeln!(
+        f,
+        "# mlx_mem stamps (t_s, tag, active_mb, cache_mb, peak_mb):"
+    )?;
     for m in mem_events {
         writeln!(
             f,
@@ -305,9 +322,19 @@ fn render_svg(
         return Err("no readings to plot".into());
     }
     let t_max = readings.last().unwrap().t_s.max(1.0);
-    let temp_min = readings.iter().map(|r| r.cpu_c.min(r.gpu_c)).fold(f64::INFINITY, f64::min);
-    let temp_max = readings.iter().map(|r| r.cpu_c.max(r.gpu_c)).fold(f64::NEG_INFINITY, f64::max);
-    let pw_max = readings.iter().map(|r| r.sys_w).fold(0.0_f64, f64::max).max(1.0);
+    let temp_min = readings
+        .iter()
+        .map(|r| r.cpu_c.min(r.gpu_c))
+        .fold(f64::INFINITY, f64::min);
+    let temp_max = readings
+        .iter()
+        .map(|r| r.cpu_c.max(r.gpu_c))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let pw_max = readings
+        .iter()
+        .map(|r| r.sys_w)
+        .fold(0.0_f64, f64::max)
+        .max(1.0);
 
     let t_lo = (temp_min - 2.0).floor();
     let t_hi = (temp_max + 2.0).ceil();
@@ -383,7 +410,11 @@ fn render_svg(
         .x_label_area_size(30)
         .y_label_area_size(40)
         .build_cartesian_2d(0f64..t_max, 0f64..mem_max)?;
-    chart3.configure_mesh().x_desc("t (s)").y_desc("GB").draw()?;
+    chart3
+        .configure_mesh()
+        .x_desc("t (s)")
+        .y_desc("GB")
+        .draw()?;
     chart3.draw_series(LineSeries::new(
         readings.iter().map(|r| (r.t_s, r.ram_gb)),
         CYAN.stroke_width(2),
@@ -432,7 +463,10 @@ fn main() -> Res<()> {
     let (tx, rx) = mpsc::channel::<Reading>();
     let mut macmon = spawn_macmon(args.interval_ms, tx, start)?;
 
-    eprintln!("[bench_with_temp] sampling every {} ms — running bench…", args.interval_ms);
+    eprintln!(
+        "[bench_with_temp] sampling every {} ms — running bench…",
+        args.interval_ms
+    );
     let (events, mem_events) = run_bench(&args.bench_args, &log_path, start)?;
 
     // Give macmon a final tick then kill it.
@@ -441,7 +475,11 @@ fn main() -> Res<()> {
     let _ = macmon.wait();
 
     let mut readings: Vec<Reading> = rx.try_iter().collect();
-    readings.sort_by(|a, b| a.t_s.partial_cmp(&b.t_s).unwrap_or(std::cmp::Ordering::Equal));
+    readings.sort_by(|a, b| {
+        a.t_s
+            .partial_cmp(&b.t_s)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     eprintln!(
         "[bench_with_temp] {} readings, {} bench events, {} mlx_mem stamps, {:.1}s elapsed",
@@ -469,16 +507,23 @@ fn main() -> Res<()> {
         eprintln!(
             "[bench_with_temp] GPU temp: min {gmin:.1}°C  mean {gmean:.1}°C  max {gmax:.1}°C"
         );
-        eprintln!(
-            "[bench_with_temp] GPU power: mean {pmean:.1} W  peak {pmax:.1} W"
-        );
+        eprintln!("[bench_with_temp] GPU power: mean {pmean:.1} W  peak {pmax:.1} W");
         eprintln!(
             "[bench_with_temp] RAM: {rmin:.1}–{rmax:.1} GB (mean {rmean:.1})  |  swap: {smin:.1}–{smax:.1} GB"
         );
         if !mem_events.is_empty() {
-            let mlx_active_max = mem_events.iter().map(|m| m.active_mb).fold(0.0_f64, f64::max);
-            let mlx_active_min = mem_events.iter().map(|m| m.active_mb).fold(f64::INFINITY, f64::min);
-            let mlx_cache_max = mem_events.iter().map(|m| m.cache_mb).fold(0.0_f64, f64::max);
+            let mlx_active_max = mem_events
+                .iter()
+                .map(|m| m.active_mb)
+                .fold(0.0_f64, f64::max);
+            let mlx_active_min = mem_events
+                .iter()
+                .map(|m| m.active_mb)
+                .fold(f64::INFINITY, f64::min);
+            let mlx_cache_max = mem_events
+                .iter()
+                .map(|m| m.cache_mb)
+                .fold(0.0_f64, f64::max);
             let mlx_peak_max = mem_events.iter().map(|m| m.peak_mb).fold(0.0_f64, f64::max);
             eprintln!(
                 "[bench_with_temp] MLX active: {:.2}–{:.2} GB  cache peak: {:.2} GB  reported peak: {:.2} GB",
