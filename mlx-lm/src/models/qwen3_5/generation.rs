@@ -5,11 +5,18 @@
 //! `next()` and then decodes one token at a time, reusing the per-layer
 //! caches from [`make_caches`].
 
-use mlx_rs::{error::Exception, ops::indexing::IndexOp, Array};
+use mlx_rs::{
+    error::Exception,
+    module::Module,
+    ops::indexing::IndexOp,
+    quantization::Quantizable as QuantizableTrait,
+    Array,
+};
 
 use super::cache::{make_caches, LayerCache};
 use super::config::{ModelConfig, QWEN_CHAT_EOS_TOKEN_ID};
 use super::layer::LanguageModel;
+use super::text::Mlp;
 
 // Canonical sampler — re-exported at the historical path so chandra +
 // any future caller can `use qwen3_5::generation::{SamplingParams,
@@ -57,9 +64,16 @@ enum PrefillSeed {
     },
 }
 
-/// Iterator-style generator.
-pub struct Generate<'a> {
-    model: &'a mut LanguageModel,
+/// Iterator-style generator. Generic over the FFN type so the same
+/// generator drives both dense [`Mlp`] and MoE
+/// (`Qwen35MoeBlock`) language models.
+pub struct Generate<'a, F = Mlp>
+where
+    F: for<'x> Module<&'x Array, Output = Array, Error = Exception>
+        + QuantizableTrait<Quantized = F, QuantizationError = Exception>
+        + std::fmt::Debug,
+{
+    model: &'a mut LanguageModel<F>,
     caches: Vec<LayerCache>,
     stop: StopCriteria,
     params: SamplingParams,
@@ -77,11 +91,16 @@ pub struct Generate<'a> {
     finished: bool,
 }
 
-impl<'a> Generate<'a> {
+impl<'a, F> Generate<'a, F>
+where
+    F: for<'x> Module<&'x Array, Output = Array, Error = Exception>
+        + QuantizableTrait<Quantized = F, QuantizationError = Exception>
+        + std::fmt::Debug,
+{
     /// Build a new text-only generator. `prompt_ids` is a 1-D `[S]` `int32`
     /// array.
     pub fn new(
-        model: &'a mut LanguageModel,
+        model: &'a mut LanguageModel<F>,
         cfg: &ModelConfig,
         prompt_ids: Array,
         stop: StopCriteria,
@@ -108,7 +127,7 @@ impl<'a> Generate<'a> {
     /// `rope_delta` produced by
     /// [`super::multimodal::get_rope_index_single_batch`].
     pub fn with_inputs_embeds(
-        model: &'a mut LanguageModel,
+        model: &'a mut LanguageModel<F>,
         cfg: &ModelConfig,
         inputs_embeds: Array,
         position_ids: Array,
@@ -139,7 +158,7 @@ impl<'a> Generate<'a> {
     /// existing cache offset so an extending prefill keeps mrope
     /// monotonic.
     pub fn with_caches(
-        model: &'a mut LanguageModel,
+        model: &'a mut LanguageModel<F>,
         prompt_ids: Array,
         caches: Vec<LayerCache>,
         stop: StopCriteria,
@@ -166,7 +185,12 @@ impl<'a> Generate<'a> {
     }
 }
 
-impl<'a> Iterator for Generate<'a> {
+impl<'a, F> Iterator for Generate<'a, F>
+where
+    F: for<'x> Module<&'x Array, Output = Array, Error = Exception>
+        + QuantizableTrait<Quantized = F, QuantizationError = Exception>
+        + std::fmt::Debug,
+{
     type Item = Result<u32, Exception>;
 
     fn next(&mut self) -> Option<Self::Item> {

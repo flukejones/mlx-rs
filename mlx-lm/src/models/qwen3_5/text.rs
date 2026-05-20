@@ -60,12 +60,24 @@ impl Mlp {
         })
     }
 
+}
+
+impl Module<&Array> for Mlp {
+    type Output = Array;
+    type Error = Exception;
+
     /// SwiGLU forward: `down_proj(silu(gate_proj(x)) * up_proj(x))`.
-    pub fn forward(&mut self, x: &Array) -> Result<Array, Exception> {
+    fn forward(&mut self, x: &Array) -> Result<Array, Exception> {
         let gate = self.gate_proj.forward(x)?;
         let up = self.up_proj.forward(x)?;
         let activated = swiglu(&mut self.swiglu_cache, &gate, &up)?;
         self.down_proj.forward(&activated)
+    }
+
+    fn training_mode(&mut self, mode: bool) {
+        self.gate_proj.training_mode(mode);
+        self.down_proj.training_mode(mode);
+        self.up_proj.training_mode(mode);
     }
 }
 

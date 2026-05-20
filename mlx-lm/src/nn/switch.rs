@@ -7,12 +7,12 @@
 //!
 //! Compound types: two concrete shapes — [`PackedSwitchFfn`] for the
 //! gemma4 layout (one `gate_up_proj [E, 2H, D]` weight) and
-//! [`SplitSwitchFfn`] for qwen3.6-MoE (separate `gate_proj [E, H, D]`
-//! + `up_proj [E, H, D]`). Each is parameterised over a
+//! [`SplitSwitchFfn`] for qwen3.6-MoE (separate `gate_proj` and
+//! `up_proj`, each `[E, H, D]`). Each is parameterised over a
 //! [`SwitchActivation`] (geglu / swiglu). Type aliases per model live
 //! in the consuming module (e.g. `gemma4::GemmaSwitchGlu`).
 //!
-//! Fast path: both layouts share [`finish_with_combine`] which feeds
+//! Fast path: both layouts share [`dispatch_fused_combine`] which feeds
 //! the fused `gather_qmm_combine` Metal kernel after the activation
 //! step. The fused-down dispatch lives in one place.
 

@@ -16,7 +16,7 @@ use mlx_rs::{
     module::Module,
     nn,
     ops::{arange, broadcast_to, expand_dims},
-    quantization::MaybeQuantized,
+    quantization::{MaybeQuantized, Quantizable as QuantizableTrait},
     Array,
 };
 
@@ -26,13 +26,19 @@ use super::gated_delta_block::GatedDeltaNet;
 use super::text::{Attention, Mlp};
 
 /// One Qwen3.5 decoder layer: either linear-attention (GDN) or full-attention.
+/// Generic over the FFN `F`: defaults to dense [`Mlp`] for Qwen3.5/3.6
+/// dense; the MoE variants alias `DecoderLayer<Qwen35MoeBlock>`.
 ///
-/// The two block kinds are kept in `Option` fields rather than an enum so the
-/// `#[derive(ModuleParameters, Quantizable)]` macros can walk both paths in
-/// the weight loader. Exactly one of `self_attn` / `linear_attn` is populated
-/// for each layer.
+/// `self_attn` / `linear_attn` are kept in `Option` fields rather than an
+/// enum so the derived `ModuleParameters` / `Quantizable` walks both paths
+/// in the weight loader. Exactly one is populated per layer.
 #[derive(Debug, ModuleParameters, Quantizable)]
-pub struct DecoderLayer {
+pub struct DecoderLayer<F = Mlp>
+where
+    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+        + QuantizableTrait<Quantized = F, QuantizationError = Exception>
+        + std::fmt::Debug,
+{
     pub is_linear: bool,
 
     #[quantizable]
@@ -51,12 +57,26 @@ pub struct DecoderLayer {
 
     #[quantizable]
     #[param]
-    pub mlp: Mlp,
+    pub mlp: F,
 }
 
-impl DecoderLayer {
-    /// Build a layer of the right kind for the given index.
-    pub fn new(cfg: &TextConfig, layer_idx: usize) -> Result<Self, Exception> {
+impl<F> DecoderLayer<F>
+where
+    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+        + QuantizableTrait<Quantized = F, QuantizationError = Exception>
+        + std::fmt::Debug,
+{
+    /// Build a layer of the right kind for the given index. `make_ffn`
+    /// constructs the per-layer FFN (typically `Mlp::new` for dense or
+    /// `Qwen35MoeBlock::new` for the MoE variant).
+    pub fn new<MakeF>(
+        cfg: &TextConfig,
+        layer_idx: usize,
+        make_ffn: MakeF,
+    ) -> Result<Self, Exception>
+    where
+        MakeF: FnOnce(&TextConfig) -> Result<F, Exception>,
+    {
         let is_linear = layer_is_linear(cfg, layer_idx);
         let (self_attn, linear_attn) = if is_linear {
             (None, Some(GatedDeltaNet::new(cfg)?))
@@ -69,7 +89,7 @@ impl DecoderLayer {
         let post_attention_layernorm = nn::RmsNormBuilder::new(cfg.hidden_size)
             .eps(cfg.rms_norm_eps)
             .build()?;
-        let mlp = Mlp::new(cfg.hidden_size, cfg.intermediate_size)?;
+        let mlp = make_ffn(cfg)?;
         Ok(Self {
             is_linear,
             self_attn,
@@ -106,13 +126,11 @@ impl DecoderLayer {
             blk.forward(&normed, full_attn_mask, cache, position_ids)?
         };
         let h = x.add(&attn_out)?;
-        let mlp_out = self
-            .mlp
-            .forward(&self.post_attention_layernorm.forward(&h)?)?;
+        let mlp_out = self.mlp.forward(&self.post_attention_layernorm.forward(&h)?)?;
         h.add(&mlp_out)
     }
 
-    /// Toggle training mode on every quantisable parameter.
+    /// Toggle training mode on every parameter (attention/GDN, norms, FFN).
     pub fn training_mode(&mut self, mode: bool) {
         if let Some(blk) = self.self_attn.as_mut() {
             blk.training_mode(mode);
@@ -120,9 +138,7 @@ impl DecoderLayer {
         if let Some(blk) = self.linear_attn.as_mut() {
             blk.training_mode(mode);
         }
-        self.mlp.gate_proj.training_mode(mode);
-        self.mlp.down_proj.training_mode(mode);
-        self.mlp.up_proj.training_mode(mode);
+        self.mlp.training_mode(mode);
         self.input_layernorm.training_mode(mode);
         self.post_attention_layernorm.training_mode(mode);
     }
@@ -133,6 +149,17 @@ impl DecoderLayer {
         if let Some(blk) = self.self_attn.as_mut() {
             blk.set_use_steel_prefill(on);
         }
+    }
+}
+
+/// Source-compat alias for the dense (Mlp-FFN) layer.
+pub type DenseDecoderLayer = DecoderLayer<Mlp>;
+
+impl DecoderLayer<Mlp> {
+    /// Convenience constructor for the dense (Mlp-FFN) layer; mirrors
+    /// the pre-generic API.
+    pub fn new_dense(cfg: &TextConfig, layer_idx: usize) -> Result<Self, Exception> {
+        Self::new(cfg, layer_idx, |c| Mlp::new(c.hidden_size, c.intermediate_size))
     }
 }
 
@@ -151,9 +178,15 @@ fn layer_is_linear(cfg: &TextConfig, layer_idx: usize) -> bool {
     ((layer_idx as i32 + 1) % interval) != 0
 }
 
-/// Top-level decoder model: embeddings + layers + final norm.
+/// Top-level decoder model: embeddings + layers + final norm. Generic
+/// over the FFN type (defaults to dense [`Mlp`]).
 #[derive(Debug, ModuleParameters, Quantizable)]
-pub struct Qwen35Decoder {
+pub struct Qwen35Decoder<F = Mlp>
+where
+    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+        + QuantizableTrait<Quantized = F, QuantizationError = Exception>
+        + std::fmt::Debug,
+{
     pub vocab_size: i32,
     pub num_hidden_layers: i32,
 
@@ -163,18 +196,28 @@ pub struct Qwen35Decoder {
 
     #[quantizable]
     #[param]
-    pub layers: Vec<DecoderLayer>,
+    pub layers: Vec<DecoderLayer<F>>,
 
     #[param]
     pub norm: nn::RmsNorm,
 }
 
-impl Qwen35Decoder {
-    /// Build a freshly-initialised decoder from a [`TextConfig`].
-    pub fn new(cfg: &TextConfig) -> Result<Self, Exception> {
+impl<F> Qwen35Decoder<F>
+where
+    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+        + QuantizableTrait<Quantized = F, QuantizationError = Exception>
+        + std::fmt::Debug,
+{
+    /// Build a freshly-initialised decoder. `make_ffn` is called once per
+    /// layer to construct the FFN block (e.g. dense `Mlp::new` or MoE
+    /// `Qwen35MoeBlock::new`).
+    pub fn new<MakeF>(cfg: &TextConfig, mut make_ffn: MakeF) -> Result<Self, Exception>
+    where
+        MakeF: FnMut(&TextConfig) -> Result<F, Exception>,
+    {
         let embed_tokens = nn::Embedding::new(cfg.vocab_size, cfg.hidden_size)?;
         let layers = (0..cfg.num_hidden_layers as usize)
-            .map(|i| DecoderLayer::new(cfg, i))
+            .map(|i| DecoderLayer::<F>::new(cfg, i, &mut make_ffn))
             .collect::<Result<Vec<_>, _>>()?;
         let norm = nn::RmsNormBuilder::new(cfg.hidden_size)
             .eps(cfg.rms_norm_eps)
@@ -305,25 +348,50 @@ impl Qwen35Decoder {
     }
 }
 
+/// Source-compat alias for the dense (Mlp-FFN) decoder.
+pub type DenseQwen35Decoder = Qwen35Decoder<Mlp>;
+
+impl Qwen35Decoder<Mlp> {
+    /// Dense convenience constructor.
+    pub fn new_dense(cfg: &TextConfig) -> Result<Self, Exception> {
+        Self::new(cfg, |c| Mlp::new(c.hidden_size, c.intermediate_size))
+    }
+}
+
 /// LM-head wrapper. Optional `lm_head` linear; if absent, logits are computed
-/// by tying with `embed_tokens.as_linear`.
+/// by tying with `embed_tokens.as_linear`. Generic over the FFN type
+/// (defaults to dense [`Mlp`]).
 #[derive(Debug, ModuleParameters, Quantizable)]
-pub struct LanguageModel {
+pub struct LanguageModel<F = Mlp>
+where
+    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+        + QuantizableTrait<Quantized = F, QuantizationError = Exception>
+        + std::fmt::Debug,
+{
     pub cfg: TextConfig,
 
     #[quantizable]
     #[param]
-    pub model: Qwen35Decoder,
+    pub model: Qwen35Decoder<F>,
 
     #[quantizable]
     #[param]
     pub lm_head: Option<MaybeQuantized<nn::Linear>>,
 }
 
-impl LanguageModel {
-    /// Build a freshly-initialised language model.
-    pub fn new(cfg: TextConfig) -> Result<Self, Exception> {
-        let model = Qwen35Decoder::new(&cfg)?;
+impl<F> LanguageModel<F>
+where
+    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+        + QuantizableTrait<Quantized = F, QuantizationError = Exception>
+        + std::fmt::Debug,
+{
+    /// Build a freshly-initialised language model. `make_ffn` is called
+    /// once per decoder layer to construct the FFN block.
+    pub fn new<MakeF>(cfg: TextConfig, make_ffn: MakeF) -> Result<Self, Exception>
+    where
+        MakeF: FnMut(&TextConfig) -> Result<F, Exception>,
+    {
+        let model = Qwen35Decoder::<F>::new(&cfg, make_ffn)?;
         let lm_head = if !cfg.tie_word_embeddings {
             Some(MaybeQuantized::Original(
                 nn::LinearBuilder::new(cfg.hidden_size, cfg.vocab_size)
@@ -372,6 +440,16 @@ impl LanguageModel {
     /// Propagate the steel-prefill toggle to every full-attention layer.
     pub fn set_use_steel_prefill(&mut self, on: bool) {
         self.model.set_use_steel_prefill(on);
+    }
+}
+
+/// Source-compat alias for the dense (Mlp-FFN) language model.
+pub type DenseLanguageModel = LanguageModel<Mlp>;
+
+impl LanguageModel<Mlp> {
+    /// Dense convenience constructor; mirrors the pre-generic API.
+    pub fn new_dense(cfg: TextConfig) -> Result<Self, Exception> {
+        Self::new(cfg, |c| Mlp::new(c.hidden_size, c.intermediate_size))
     }
 }
 
@@ -438,7 +516,7 @@ mod tests {
             "linear_attention",
             "full_attention",
         ]);
-        let mut lm = LanguageModel::new(cfg.text_config.clone()).unwrap();
+        let mut lm = LanguageModel::new_dense(cfg.text_config.clone()).unwrap();
         let mut caches = make_caches(&cfg);
 
         // Token ids in [0, vocab_size).
@@ -473,7 +551,7 @@ mod tests {
     #[test]
     fn forward_accepts_inputs_embeds() {
         let cfg = synthetic_config(vec!["linear_attention", "full_attention"]);
-        let mut lm = LanguageModel::new(cfg.text_config.clone()).unwrap();
+        let mut lm = LanguageModel::new_dense(cfg.text_config.clone()).unwrap();
         let mut caches = make_caches(&cfg);
         let embeds =
             uniform::<_, f32>(0.0, 1.0, &[1, 3, cfg.text_config.hidden_size], None).unwrap();

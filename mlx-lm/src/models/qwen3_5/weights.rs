@@ -259,7 +259,7 @@ pub fn load_language_model(
     cfg: &ModelConfig,
     model_dir: impl AsRef<Path>,
 ) -> Result<(LanguageModel, Vec<String>), Error> {
-    let mut model = LanguageModel::new(cfg.text_config.clone()).map_err(Error::Exception)?;
+    let mut model = LanguageModel::new_dense(cfg.text_config.clone()).map_err(Error::Exception)?;
     if let Some(q) = cfg.effective_quantization() {
         quantize_language_model(&mut model, q)?;
     }
@@ -296,7 +296,7 @@ pub fn load_full_model(
     cfg: &ModelConfig,
     model_dir: impl AsRef<Path>,
 ) -> Result<(LanguageModel, VisionModel, Vec<String>), Error> {
-    let mut lm = LanguageModel::new(cfg.text_config.clone()).map_err(Error::Exception)?;
+    let mut lm = LanguageModel::new_dense(cfg.text_config.clone()).map_err(Error::Exception)?;
     if let Some(q) = cfg.effective_quantization() {
         quantize_language_model(&mut lm, q)?;
     }
@@ -338,7 +338,7 @@ pub fn load_full_model(
 fn quantize_language_model(model: &mut LanguageModel, q: &QuantizationConfig) -> Result<(), Error> {
     let original = std::mem::replace(
         model,
-        LanguageModel::new(model.cfg.clone()).map_err(Error::Exception)?,
+        LanguageModel::new_dense(model.cfg.clone()).map_err(Error::Exception)?,
     );
     let quantized = original
         .try_into_quantized(q.group_size, q.bits)
@@ -456,7 +456,7 @@ mod tests {
             }
         }"#;
         let cfg: ModelConfig = serde_json::from_str(cfg_json).unwrap();
-        let mut model = LanguageModel::new(cfg.text_config.clone()).unwrap();
+        let mut model = LanguageModel::new_dense(cfg.text_config.clone()).unwrap();
         // Quantize like the chandra checkpoint would.
         let q = QuantizationConfig {
             group_size: 64,
