@@ -899,7 +899,6 @@ impl DecoderLayer {
         let h = self.post_attention_layernorm.forward(&h)?;
         let h = clip_residual(x, &h)?;
 
-        let residual = h.clone();
         let ff_mid = if self.enable_moe {
             // h1 = post1(MLP(pre1(h)))
             let h1 = self.pre_feedforward_layernorm.forward(&h)?;
@@ -950,20 +949,20 @@ impl DecoderLayer {
             || self.per_layer_projection.is_none()
             || self.post_per_layer_input_norm.is_none();
         if pl_inactive && ff_out.dtype() != Dtype::Float16 {
-            let h = residual_add_scale(
+            let h_out = residual_add_scale(
                 &mut self.residual_scale_cache,
-                &residual,
+                &h,
                 &ff_out,
                 self.layer_scalar.as_ref(),
             )?;
             return Ok(AttentionOut {
-                h,
+                h: h_out,
                 shared_kv: kv_out,
                 offset: off_out,
             });
         }
 
-        let mut h = clip_residual(&residual, &ff_out)?;
+        let mut h = clip_residual(&h, &ff_out)?;
 
         // Per-layer input gating (E2B/E4B).
         if let (Some(gate_l), Some(proj_l), Some(norm_l), Some(pl_in)) = (

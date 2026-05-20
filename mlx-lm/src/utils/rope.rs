@@ -148,7 +148,7 @@ where
         // Pass 4-D `[B, N, T, D]` directly; old reshape zeroed all but
         // head-0 on decode (T=1).
         mlx_rs::fast::rope(
-            x.clone(),
+            x,
             self.dimensions,
             self.traditional,
             None::<f32>,
