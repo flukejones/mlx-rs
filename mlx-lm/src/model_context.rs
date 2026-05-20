@@ -14,7 +14,7 @@ use mlx_rs::{ops::indexing::IndexOp, transforms::async_eval, Array};
 use crate::error::Error;
 use crate::language_model::{LanguageModel, UserInputProcessor};
 use crate::lm_input::{LMInput, PrepareResult, Text};
-use crate::sampler::{sample_with, SamplingParams};
+use crate::sampler::{SamplerState, SamplingParams};
 use crate::user_input::UserInput;
 
 /// Sampling + stopping knobs handed to [`generate`].
@@ -161,11 +161,7 @@ impl IncrementalDecoder {
     }
 
     /// Push a token, return the new UTF-8 delta to stream.
-    fn push(
-        &mut self,
-        token: u32,
-        processor: &dyn UserInputProcessor,
-    ) -> Result<String, Error> {
+    fn push(&mut self, token: u32, processor: &dyn UserInputProcessor) -> Result<String, Error> {
         self.ids.push(token);
 
         let new_window = processor.decode(&self.ids[self.committed_tokens..])?;
@@ -239,14 +235,15 @@ pub fn generate(
         });
     }
 
-    let mut pending_id = sample_with(&initial_logits, &params.sampling)?;
+    let mut sampler = SamplerState::new(params.sampling.clone());
+    let mut pending_id = sampler.sample(&initial_logits)?;
     async_eval([&pending_id])?;
 
     for _ in 0..params.max_new_tokens {
         // Submit N+1 before syncing on N — overlap host coherence
         // sync with N+1 GPU compute.
         let next_logits = ctx.model.step(&pending_id)?.logits;
-        let next_pending = sample_with(&next_logits, &params.sampling)?;
+        let next_pending = sampler.sample(&next_logits)?;
         async_eval([&next_pending])?;
 
         let id_i32 = pending_id.item::<i32>();
@@ -286,10 +283,7 @@ pub fn generate(
 /// first-step logits. Multimodal inputs (`image`/`audio`/`video`
 /// set) bypass chunking — they go straight to `prepare`, which the
 /// VLM adapter handles with a single stitched forward pass.
-fn run_prefill(
-    model: &mut dyn LanguageModel,
-    mut input: LMInput,
-) -> Result<Array, Error> {
+fn run_prefill(model: &mut dyn LanguageModel, mut input: LMInput) -> Result<Array, Error> {
     let chunk_size = model.prefill_chunk_size();
     let is_multimodal = input.image.is_some() || input.audio.is_some() || input.video.is_some();
     let prompt_len = input.text.tokens.shape()[1];
@@ -577,5 +571,4 @@ mod tests {
             dec.committed_tokens,
         );
     }
-
 }

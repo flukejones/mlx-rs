@@ -22,7 +22,7 @@ pub use lm_input::{LMInput, LMOutput, PrepareResult, ProcessedAudio, ProcessedIm
 pub use model_context::{
     generate, load, FinishReason, GenerateParams, GenerateResult, ModelContext, TokenCallback,
 };
-pub use sampler::SamplingParams;
+pub use sampler::{SamplerState, SamplingParams};
 #[cfg(feature = "models-vision")]
 pub use user_input::Image;
 pub use user_input::{Audio, Prompt, UserInput, Video};

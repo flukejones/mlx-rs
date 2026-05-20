@@ -16,6 +16,6 @@ pub use crate::loader::{load_config, load_sharded, load_tokenizer, ShardIndex};
 
 pub use crate::nn::{ensure_cache_populated, AttentionInput, ModelInput, SwigluMlp};
 
-pub use crate::sampler::{sample, sample_with, top_p_sample, SamplingParams};
+pub use crate::sampler::{sample, sample_with, top_p_sample, SamplerState, SamplingParams};
 
 pub use crate::tri;

@@ -39,6 +39,14 @@ resolver = "2"
 debug = "line-tables-only"
 strip = "none"
 
+# Same shape as bench, applied to regular bins. `cargo build --profile profiling`
+# yields optimised binaries with line-table debug info for xctrace /
+# Instruments / samply symbolication.
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
+
 # Single source of truth for the upstream mlx version that mlx-sys
 # (cmake FetchContent) and mlx-lm (steel-attention preamble generator)
 # both consume.
