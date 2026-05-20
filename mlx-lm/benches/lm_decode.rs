@@ -24,6 +24,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use mlx_lm::lm_input::{LMInput, PrepareResult, Text};
 use mlx_lm::{load, ModelContext, SamplerState, SamplingParams};
 use mlx_rs::{
+    ops::indexing::IndexOp,
     transforms::{async_eval, eval},
     Array,
 };
@@ -168,14 +169,37 @@ fn make_lm_input(prompt: &Array) -> LMInput {
     }
 }
 
-/// One full `prepare` call (cache reset to drop any prior state) on
-/// `prompt`, eval-fenced.
+/// One full prefill (cache reset to drop any prior state) on
+/// `prompt`, eval-fenced. Mirrors the chunking that
+/// `mlx_lm::generate`'s `run_prefill` does — required for
+/// sliding-window adapters (gemma 4) whose `prepare` would otherwise
+/// build a `[L, L]` causal mask that the K-capped attention rejects.
 fn time_prefill(ctx: &mut ModelContext, prompt: &Array) -> Duration {
     ctx.model.reset();
+    let prompt_len = prompt.shape()[1];
+    let chunk_size = ctx.model.prefill_chunk_size();
     let t = Instant::now();
+    if let Some(window) = chunk_size {
+        if prompt_len > window {
+            let mut start = 0_i32;
+            while prompt_len - start > window {
+                let end = start + window;
+                let chunk = prompt.index((.., start..end));
+                ctx.model.prefill_chunk(&chunk).unwrap();
+                start = end;
+            }
+            let tail = prompt.index((.., start..prompt_len));
+            let res = ctx.model.prepare(make_lm_input(&tail)).unwrap();
+            match res {
+                PrepareResult::Logits(arr) => {
+                    eval([&arr]).unwrap();
+                }
+                PrepareResult::Primed => {}
+            }
+            return t.elapsed();
+        }
+    }
     let res = ctx.model.prepare(make_lm_input(prompt)).unwrap();
-    // Force eval so the prefill cost lands inside the timing
-    // window — `prepare` returns logits lazily on the GPU.
     match res {
         PrepareResult::Logits(arr) => {
             eval([&arr]).unwrap();
@@ -192,15 +216,41 @@ fn time_prefill(ctx: &mut ModelContext, prompt: &Array) -> Duration {
 /// `mlx_lm::generate` loop: every step's argmax is submitted to the
 /// GPU before the previous step's id is `.item()`-resolved, so the
 /// host's `.item()` block overlaps with the next step's compute.
-fn time_decode(ctx: &mut ModelContext, prompt: &Array, steps: i32) -> Duration {
+/// Cache-reset + chunked prefill of `prompt`, returning the seed
+/// logits the decode loop should sample from. Shared between greedy
+/// and sampled decode timers so both pick up the gemma-4 chunked
+/// prefill path.
+fn prefill_for_decode(ctx: &mut ModelContext, prompt: &Array) -> Array {
     ctx.model.reset();
-    let initial = match ctx.model.prepare(make_lm_input(prompt)).unwrap() {
+    let prompt_len = prompt.shape()[1];
+    let chunk_size = ctx.model.prefill_chunk_size();
+    let tail = if let Some(window) = chunk_size {
+        if prompt_len > window {
+            let mut start = 0_i32;
+            while prompt_len - start > window {
+                let end = start + window;
+                let chunk = prompt.index((.., start..end));
+                ctx.model.prefill_chunk(&chunk).unwrap();
+                start = end;
+            }
+            prompt.index((.., start..prompt_len))
+        } else {
+            prompt.clone()
+        }
+    } else {
+        prompt.clone()
+    };
+    match ctx.model.prepare(make_lm_input(&tail)).unwrap() {
         PrepareResult::Logits(arr) => arr,
         PrepareResult::Primed => {
             let seed = Array::from_slice::<i32>(&[0], &[1]);
             ctx.model.step(&seed).unwrap().logits
         }
-    };
+    }
+}
+
+fn time_decode(ctx: &mut ModelContext, prompt: &Array, steps: i32) -> Duration {
+    let initial = prefill_for_decode(ctx, prompt);
 
     // Submit the first sample, eval-fence it so the prefill graph
     // is fully resolved before timing starts. `pending` stays on
@@ -230,15 +280,7 @@ fn time_decode(ctx: &mut ModelContext, prompt: &Array, steps: i32) -> Duration {
 /// to exercise the cached scalar-array hot path. Same pipelining
 /// shape as [`time_decode`] (async_eval N+1 before syncing on N).
 fn time_decode_sampled(ctx: &mut ModelContext, prompt: &Array, steps: i32) -> Duration {
-    ctx.model.reset();
-    let initial = match ctx.model.prepare(make_lm_input(prompt)).unwrap() {
-        PrepareResult::Logits(arr) => arr,
-        PrepareResult::Primed => {
-            let seed = Array::from_slice::<i32>(&[0], &[1]);
-            ctx.model.step(&seed).unwrap().logits
-        }
-    };
-
+    let initial = prefill_for_decode(ctx, prompt);
     let mut sampler = SamplerState::new(SamplingParams {
         temperature: 0.1,
         top_p: Some(0.95),
