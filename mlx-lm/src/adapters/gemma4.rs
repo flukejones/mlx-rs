@@ -62,8 +62,8 @@ impl LanguageModel for Gemma4Adapter {
         Ok(PrepareResult::Logits(logits.index((.., -1, ..))))
     }
 
-    fn step(&mut self, last_token: i32) -> Result<LMOutput, Error> {
-        let inp = Array::from_slice(&[last_token], &[1, 1]);
+    fn step(&mut self, last_token: &Array) -> Result<LMOutput, Error> {
+        let inp = last_token.reshape(&[1, 1])?;
         let logits = self.model.forward(ModelInput {
             inputs: &inp,
             mask: None,

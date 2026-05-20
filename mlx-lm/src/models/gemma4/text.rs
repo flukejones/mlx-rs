@@ -137,7 +137,7 @@ impl LayerRope {
     pub fn forward_dynamic(&self, x: &Array, offset: &Array) -> Result<Array, Exception> {
         match self {
             Self::Plain(r) => fast::rope_dynamic(
-                x.clone(),
+                x,
                 r.dimensions,
                 r.traditional,
                 r.base,
@@ -146,7 +146,7 @@ impl LayerRope {
                 None,
             ),
             Self::Proportional(p) => fast::rope_dynamic(
-                x.clone(),
+                x,
                 p.dims,
                 p.traditional,
                 None,
@@ -454,8 +454,8 @@ impl Attention {
         };
         let h = fast::scaled_dot_product_attention(
             queries,
-            k_full.clone(),
-            v_full.clone(),
+            &k_full,
+            &v_full,
             self.scale,
             mask.map(fast::ScaledDotProductAttentionMask::Array),
             None,
@@ -884,8 +884,6 @@ impl DecoderLayer {
         offset: Option<i32>,
         per_layer_input: Option<&Array>,
     ) -> Result<AttentionOut, Exception> {
-        let residual = x.clone();
-
         let h_pre = self.input_layernorm.forward(x)?;
         let AttentionOut {
             h,
@@ -899,7 +897,7 @@ impl DecoderLayer {
             offset,
         })?;
         let h = self.post_attention_layernorm.forward(&h)?;
-        let h = clip_residual(&residual, &h)?;
+        let h = clip_residual(x, &h)?;
 
         let residual = h.clone();
         let ff_mid = if self.enable_moe {
@@ -974,13 +972,12 @@ impl DecoderLayer {
             self.post_per_layer_input_norm.as_mut(),
             per_layer_input,
         ) {
-            let residual_pl = h.clone();
             let g = gate_l.forward(&h)?;
             let g = gelu_approximate(&g)?;
             let g = g.multiply(pl_in)?;
             let g = proj_l.forward(&g)?;
             let g = norm_l.forward(&g)?;
-            h = residual_pl.add(&g)?;
+            h = h.add(&g)?;
         }
 
         h = h.multiply(self.layer_scalar.as_ref())?;

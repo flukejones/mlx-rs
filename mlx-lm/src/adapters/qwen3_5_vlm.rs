@@ -112,7 +112,7 @@ impl LanguageModel for Qwen35VlmAdapter {
         Ok(PrepareResult::Logits(logits))
     }
 
-    fn step(&mut self, last_token: i32) -> Result<LMOutput, Error> {
+    fn step(&mut self, last_token: &Array) -> Result<LMOutput, Error> {
         self.dense.step(last_token)
     }
 

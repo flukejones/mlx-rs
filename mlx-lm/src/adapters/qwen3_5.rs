@@ -92,8 +92,8 @@ impl LanguageModel for Qwen35DenseAdapter {
         Ok(PrepareResult::Logits(logits.index((.., -1, ..))))
     }
 
-    fn step(&mut self, last_token: i32) -> Result<LMOutput, Error> {
-        let inp = Array::from_slice(&[last_token], &[1, 1]);
+    fn step(&mut self, last_token: &Array) -> Result<LMOutput, Error> {
+        let inp = last_token.reshape(&[1, 1])?;
 
         // Multimodal path needs an explicit `[3,1,1]` mrope position
         // id so the rope keeps advancing past the image block. Pure

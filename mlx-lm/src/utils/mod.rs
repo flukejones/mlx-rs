@@ -78,7 +78,7 @@ fn index_out_of_bound_exception() -> Exception {
     reason = "local bindings mirror attention tensor names (Q, K, V)"
 )]
 pub(crate) fn quantized_scaled_dot_product_attention(
-    queries: Array,
+    queries: &Array,
     mut q_keys: QuantizedKeys,
     mut q_values: QuantizedValues,
     scale: f32,

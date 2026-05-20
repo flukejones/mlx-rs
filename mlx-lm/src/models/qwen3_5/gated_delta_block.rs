@@ -284,7 +284,7 @@ impl GatedDeltaNet {
             Some(cs) if cs.shape() == [b, history_len, self.conv_dim] => cs.clone(),
             _ => zeros::<f32>(&[b, history_len, self.conv_dim])?.as_dtype(mixed_qkv.dtype())?,
         };
-        let conv_input = concatenate_axis(&[conv_state, mixed_qkv.clone()], 1)?;
+        let conv_input = concatenate_axis(&[conv_state, mixed_qkv], 1)?;
 
         let conv_out = self.conv1d.forward(&conv_input)?;
         let conv_out = nn::silu(conv_out)?;

@@ -520,7 +520,7 @@ impl KeyValueCache for QuantizedKVCache {
             let (k_full, v_full) = self.update_and_fetch(keys, values)?;
             super::trait_def::assert_mask_matches_keys(mask, &k_full);
             return scaled_dot_product_attention(
-                queries.clone(),
+                queries,
                 k_full,
                 v_full,
                 scale,
@@ -533,13 +533,11 @@ impl KeyValueCache for QuantizedKVCache {
         let ((k_wq, k_s, k_b), (v_wq, v_s, v_b)) = self.append_quantised(keys, values)?;
 
         let q_dtype = queries.dtype();
-        let queries_for_sdpa = match self.rotation_for(q_dtype)? {
-            Some(pi) => {
-                let pi_t = pi.transpose_axes(&[1, 0])?;
-                queries.matmul(&pi_t)?
-            }
-            None => queries.clone(),
+        let rotated_q = match self.rotation_for(q_dtype)? {
+            Some(pi) => Some(queries.matmul(&pi.transpose_axes(&[1, 0])?)?),
+            None => None,
         };
+        let queries_for_sdpa: &Array = rotated_q.as_ref().unwrap_or(queries);
 
         let q_shape = queries_for_sdpa.shape();
         let head_dim = q_shape[q_shape.len() - 1];
@@ -555,7 +553,7 @@ impl KeyValueCache for QuantizedKVCache {
             steel_quant_attention_dispatch(
                 cached_steel_quant_attention_kernel(),
                 SteelQuantAttentionInputs {
-                    q: &queries_for_sdpa,
+                    q: queries_for_sdpa,
                     k_wq: &k_wq,
                     k_scales: &k_s,
                     k_biases: &k_b,
@@ -577,7 +575,7 @@ impl KeyValueCache for QuantizedKVCache {
             fused_qsdpa_decode(
                 cached_fused_qsdpa_kernel(),
                 FusedQsdpaInputs {
-                    q: &queries_for_sdpa,
+                    q: queries_for_sdpa,
                     k_wq: &k_wq,
                     k_scales: &k_s,
                     k_biases: &k_b,

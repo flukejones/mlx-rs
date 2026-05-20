@@ -135,7 +135,7 @@ impl MultimodalRope {
         let freqs_t = self.select_per_axis(&freqs)?;
 
         // [B, S, half] -> [B, S, rotary_dim]
-        let emb = concatenate_axis(&[freqs_t.clone(), freqs_t], -1)?;
+        let emb = concatenate_axis(&[&freqs_t, &freqs_t], -1)?;
         let cos = cos_op(&emb)?;
         let sin = sin_op(&emb)?;
         Ok((cos, sin))
@@ -219,7 +219,7 @@ fn apply_one(x: &Array, cos: &Array, sin: &Array, rotary_dim: i32) -> Result<Arr
     let x_rot = &parts[0];
     let x_pass = &parts[1];
     let rotated = rotate(x_rot, cos, sin, dtype)?;
-    concatenate_axis(&[rotated, x_pass.clone()], -1)
+    concatenate_axis(&[&rotated, x_pass], -1)
 }
 
 fn rotate(x: &Array, cos: &Array, sin: &Array, dtype: Dtype) -> Result<Array, Exception> {
@@ -233,7 +233,7 @@ fn rotate(x: &Array, cos: &Array, sin: &Array, dtype: Dtype) -> Result<Array, Ex
 fn rotate_half(x: &Array) -> Result<Array, Exception> {
     let halves = split(x, 2, -1)?;
     let neg_x2 = halves[1].negative()?;
-    concatenate_axis(&[neg_x2, halves[0].clone()], -1)
+    concatenate_axis(&[&neg_x2, &halves[0]], -1)
 }
 
 #[cfg(test)]

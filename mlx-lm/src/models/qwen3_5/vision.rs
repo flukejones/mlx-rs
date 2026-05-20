@@ -78,7 +78,7 @@ pub fn apply_vision_rope(tensor: &Array, freqs: &Array) -> Result<Array, Excepti
 fn rotate_half(x: &Array) -> Result<Array, Exception> {
     let halves = split(x, 2, -1)?;
     let neg_x2 = halves[1].negative()?;
-    concatenate_axis(&[neg_x2, halves[0].clone()], -1)
+    concatenate_axis(&[&neg_x2, &halves[0]], -1)
 }
 
 /// Vision patch-embedding Conv3d. Maps `[B*P, C*tps*ps*ps]` flat patches into
@@ -326,9 +326,9 @@ impl VisionAttention {
             // head_dim = 72 for chandra ViT — MLX SDPA falls back to
             // ops-composed at non-fused head dims.
             let out = scaled_dot_product_attention(
-                qc.clone(),
-                kc.clone(),
-                vc.clone(),
+                qc,
+                kc,
+                vc,
                 self.scale,
                 Option::<ScaledDotProductAttentionMask<'_>>::None,
                 None,
@@ -463,7 +463,7 @@ fn rot_pos_emb(
     // that tiling into the rotary table directly so the head_dim of the
     // returned tensor matches the tensor we're applying it to.
     let halves = concatenate_axis(&[h_emb, w_emb], -1)?;
-    concatenate_axis(&[halves.clone(), halves], -1)
+    concatenate_axis(&[&halves, &halves], -1)
 }
 
 /// Linear interpolation of the learned positional embedding table across an
@@ -532,7 +532,7 @@ fn fast_pos_embed_interpolate(
         // pe shape [h*w, hidden]. Tile across temporal axis, then reshape and
         // permute to merge-block order.
         let pe_t = if t > 1 {
-            let tiled: Vec<Array> = (0..t).map(|_| pe.clone()).collect();
+            let tiled: Vec<&Array> = (0..t).map(|_| &pe).collect();
             concatenate_axis(&tiled, 0)?
         } else {
             pe

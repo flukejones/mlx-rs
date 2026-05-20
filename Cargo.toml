@@ -32,6 +32,14 @@ members = [
 
 resolver = "2"
 
+# Bench binaries default to `release` with debuginfo stripped — leaves
+# Instruments / samply / xctrace showing raw addresses instead of
+# Rust fn names. Keep release optimisation, add line-table-only debug
+# info so symbolication works without bloating the binary much.
+[profile.bench]
+debug = "line-tables-only"
+strip = "none"
+
 # Single source of truth for the upstream mlx version that mlx-sys
 # (cmake FetchContent) and mlx-lm (steel-attention preamble generator)
 # both consume.

@@ -111,7 +111,7 @@ pub trait KeyValueCache {
         let (k_full, v_full) = self.update_and_fetch(keys, values)?;
         assert_mask_matches_keys(mask, &k_full);
         scaled_dot_product_attention(
-            queries.clone(),
+            queries,
             k_full,
             v_full,
             scale,

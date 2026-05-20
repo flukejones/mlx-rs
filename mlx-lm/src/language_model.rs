@@ -70,9 +70,14 @@ pub trait LanguageModel: Send {
     fn prepare(&mut self, input: LMInput) -> Result<PrepareResult, Error>;
 
     /// Produce one token's logits, given the previously-sampled
-    /// token id. The model is responsible for advancing its own
-    /// cursor / position state.
-    fn step(&mut self, last_token: i32) -> Result<LMOutput, Error>;
+    /// token as a `[1]` `int32` `Array` (lives on the GPU; the
+    /// driver passes the sampler's output directly so no host
+    /// materialisation or device upload happens per decode step).
+    ///
+    /// The model is responsible for advancing its own cursor /
+    /// position state and for reshaping `last_token` to `[1, 1]`
+    /// internally if needed.
+    fn step(&mut self, last_token: &mlx_rs::Array) -> Result<LMOutput, Error>;
 
     /// The model's text vocab size, used to validate sampled token
     /// ids before they're decoded.

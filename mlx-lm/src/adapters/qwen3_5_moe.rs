@@ -59,8 +59,8 @@ impl LanguageModel for Qwen35MoeAdapter {
         Ok(PrepareResult::Logits(logits.index((.., -1, ..))))
     }
 
-    fn step(&mut self, last_token: i32) -> Result<LMOutput, Error> {
-        let inp = Array::from_slice(&[last_token], &[1, 1]);
+    fn step(&mut self, last_token: &Array) -> Result<LMOutput, Error> {
+        let inp = last_token.reshape(&[1, 1])?;
         let logits = self
             .model
             .forward(Some(&inp), None, &mut self.cache, None)?;

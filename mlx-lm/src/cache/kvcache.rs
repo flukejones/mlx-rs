@@ -316,7 +316,7 @@ impl KeyValueCache for KVCache {
 
         super::trait_def::assert_mask_matches_keys(mask, &k_full);
         scaled_dot_product_attention(
-            queries.clone(),
+            queries,
             k_full,
             v_full,
             scale,

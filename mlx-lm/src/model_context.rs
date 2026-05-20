@@ -9,7 +9,7 @@
 use std::ops::ControlFlow;
 use std::path::Path;
 
-use mlx_rs::{ops::indexing::IndexOp, Array};
+use mlx_rs::{ops::indexing::IndexOp, transforms::async_eval, Array};
 
 use crate::error::Error;
 use crate::language_model::{LanguageModel, UserInputProcessor};
@@ -89,6 +89,38 @@ pub struct ModelContext {
     pub eos_ids: Vec<u32>,
 }
 
+impl ModelContext {
+    /// Release the loaded model + processor and unmap mlx-core's
+    /// buffer cache.
+    ///
+    /// Dropping a `ModelContext` (or letting it fall out of scope)
+    /// already releases every parameter `Array` via
+    /// `mlx_array_free`, returning the backing Metal buffers to
+    /// mlx-core's free-list pool. The pool is **kept alive** so
+    /// the next allocation can reuse buffers without paying
+    /// another Metal driver round-trip — correct for long-running
+    /// consumers (REPL, server) that re-use one model for the
+    /// session.
+    ///
+    /// Consumers that load + drop multiple distinct models
+    /// (multi-model dispatcher, bench harness, hot-swap server)
+    /// want the free-list pool to actually unmap between models
+    /// so peak resident memory is `max(models)`, not
+    /// `sum(models)`. Call this in that case.
+    ///
+    /// `self`-by-value statically prevents reusing the context
+    /// after unload.
+    pub fn unload(self) {
+        // Explicit drop is the same as letting `self` fall out
+        // of scope; named here so the ordering vs `clear_cache`
+        // is obvious — the parameter Arrays' refcounts must hit
+        // zero before `clear_cache` can release the buffers
+        // they were pinning.
+        drop(self);
+        mlx_rs::memory::clear_cache();
+    }
+}
+
 /// Detect the model family from `<dir>/config.json::model_type` and
 /// build the matching [`ModelContext`].
 pub fn load(dir: impl AsRef<Path>) -> Result<ModelContext, Error> {
@@ -100,6 +132,81 @@ pub fn load(dir: impl AsRef<Path>) -> Result<ModelContext, Error> {
         processor,
         eos_ids,
     })
+}
+
+/// Per-token streaming decoder. Sliding window of the last
+/// `WINDOW` tokens: decode the window each push, diff vs the
+/// prior decoded window to extract the new bytes, drain leading
+/// tokens into `committed` once the window overflows. Bounded
+/// work per token instead of the naive O(N²) full re-decode.
+struct IncrementalDecoder {
+    ids: Vec<u32>,
+    committed_tokens: usize,
+    committed: String,
+    window: String,
+}
+
+impl IncrementalDecoder {
+    /// Must be ≥ the longest BPE merge that can reach back into
+    /// earlier tokens. 4-5 in practice for Qwen / Llama / Gemma 4.
+    const WINDOW: usize = 8;
+
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            ids: Vec::with_capacity(cap),
+            committed_tokens: 0,
+            committed: String::new(),
+            window: String::new(),
+        }
+    }
+
+    /// Push a token, return the new UTF-8 delta to stream.
+    fn push(
+        &mut self,
+        token: u32,
+        processor: &dyn UserInputProcessor,
+    ) -> Result<String, Error> {
+        self.ids.push(token);
+
+        let new_window = processor.decode(&self.ids[self.committed_tokens..])?;
+        // BPE-merge fallback: if older bytes shifted, emit the
+        // whole window as a corrective re-render.
+        let delta: String = if new_window.starts_with(self.window.as_str()) {
+            new_window[self.window.len()..].to_owned()
+        } else {
+            new_window.clone()
+        };
+        self.window = new_window;
+
+        if self.ids.len() - self.committed_tokens > Self::WINDOW {
+            // Lead's byte contribution = decode(window) -
+            // decode(window without lead). Defer if it lands
+            // mid-codepoint (sub-glyph BPE token).
+            let lead_idx = self.committed_tokens;
+            let after_lead = processor.decode(&self.ids[lead_idx + 1..])?;
+            let mut lead_byte_len = self.window.len().saturating_sub(after_lead.len());
+            while lead_byte_len > 0 && !self.window.is_char_boundary(lead_byte_len) {
+                lead_byte_len -= 1;
+            }
+
+            if lead_byte_len > 0 {
+                let moved = self.window.drain(..lead_byte_len).collect::<String>();
+                self.committed.push_str(&moved);
+                self.committed_tokens += 1;
+            }
+        }
+
+        Ok(delta)
+    }
+
+    fn into_text(mut self) -> String {
+        self.committed.push_str(&self.window);
+        self.committed
+    }
+
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
 }
 
 /// Run one prompt → tokens loop on `ctx`. Streaming is per-token via
@@ -119,39 +226,54 @@ pub fn generate(
     let initial_logits = run_prefill(ctx.model.as_mut(), lm_input)?;
 
     let vocab = ctx.model.vocab_size();
-    let mut produced: Vec<u32> = Vec::new();
-    let mut decoded_prefix = String::new();
+    let cap = params.max_new_tokens.max(0) as usize;
+    let mut decoder = IncrementalDecoder::with_capacity(cap);
     let mut finish_reason = FinishReason::Length;
 
-    let mut next_logits = initial_logits;
+    if params.max_new_tokens == 0 {
+        return Ok(GenerateResult {
+            text: decoder.into_text(),
+            prompt_tokens,
+            completion_tokens: 0,
+            finish_reason: FinishReason::Length,
+        });
+    }
+
+    let mut pending_id = sample_with(&initial_logits, &params.sampling)?;
+    async_eval([&pending_id])?;
+
     for _ in 0..params.max_new_tokens {
-        let token = sample_token(&next_logits, &params.sampling, vocab)?;
+        // Submit N+1 before syncing on N — overlap host coherence
+        // sync with N+1 GPU compute.
+        let next_logits = ctx.model.step(&pending_id)?.logits;
+        let next_pending = sample_with(&next_logits, &params.sampling)?;
+        async_eval([&next_pending])?;
+
+        let id_i32 = pending_id.item::<i32>();
+        if id_i32 < 0 || id_i32 >= vocab {
+            return Err(Error::Shape(format!(
+                "sampler returned out-of-vocab id {id_i32} (vocab = {vocab})"
+            )));
+        }
+        let token = id_i32 as u32;
+        pending_id = next_pending;
 
         if ctx.eos_ids.contains(&token) || params.extra_stop_ids.contains(&token) {
             finish_reason = FinishReason::Stop;
             break;
         }
-        produced.push(token);
 
-        // BPE-incremental decode: re-decode the full id list, take
-        // the suffix beyond what we already streamed.
-        let full = ctx.processor.decode(&produced)?;
-        let delta = full
-            .strip_prefix(decoded_prefix.as_str())
-            .unwrap_or(full.as_str())
-            .to_owned();
-        decoded_prefix = full;
+        let delta = decoder.push(token, ctx.processor.as_ref())?;
         if matches!(on_token(token, &delta), ControlFlow::Break(())) {
             break;
         }
-
-        next_logits = ctx.model.step(token as i32)?.logits;
     }
 
+    let completion_tokens = decoder.len() as i32;
     Ok(GenerateResult {
-        text: decoded_prefix,
+        text: decoder.into_text(),
         prompt_tokens,
-        completion_tokens: produced.len() as i32,
+        completion_tokens,
         finish_reason,
     })
 }
@@ -203,23 +325,13 @@ fn run_prefill(
         PrepareResult::Primed => {
             // No prefill logits returned: drive one step against the
             // sentinel id 0 to get the first usable distribution.
-            Ok(model.step(0)?.logits)
+            // Allocates one `[1]` int32 array; this branch only
+            // fires on models that don't return prefill logits, so
+            // it's a one-shot.
+            let seed = Array::from_slice::<i32>(&[0], &[1]);
+            Ok(model.step(&seed)?.logits)
         }
     }
-}
-
-/// Sample one token id from a logits row, with an OOV check that
-/// surfaces a typed error if the sampler hands back an out-of-vocab
-/// id (which would corrupt the streaming decode).
-fn sample_token(logits: &Array, params: &SamplingParams, vocab: i32) -> Result<u32, Error> {
-    let id_arr = sample_with(logits, params)?;
-    let id = id_arr.item::<i32>();
-    if id < 0 || id >= vocab {
-        return Err(Error::Shape(format!(
-            "sampler returned out-of-vocab id {id} (vocab = {vocab})"
-        )));
-    }
-    Ok(id as u32)
 }
 
 /// Read the top-level `model_type` field from `<dir>/config.json`.
@@ -265,4 +377,211 @@ fn dispatch_load(model_type: &str, dir: &Path) -> Result<crate::adapters::Loaded
             format!("mlx_lm::load: unsupported model_type {other:?}").into(),
         )),
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+
+    use super::*;
+    use crate::lm_input::Text;
+
+    /// Test processor that decodes tokens via a fixed lookup table.
+    /// Tokens map to byte slices; `decode` concatenates them. This
+    /// lets the test simulate BPE-style merges (a token that
+    /// decodes differently in the presence of a neighbour) by
+    /// modelling each `decode` of a slice as plain concatenation
+    /// of the per-token byte slices — the simplest model that
+    /// still exposes O(N²) vs O(N) accounting.
+    struct FakeProcessor {
+        // Per-token decoded form.
+        pieces: Vec<&'static str>,
+    }
+
+    impl UserInputProcessor for FakeProcessor {
+        fn family(&self) -> &'static str {
+            "fake"
+        }
+        fn prepare(&mut self, _input: UserInput) -> Result<LMInput, Error> {
+            Ok(LMInput {
+                text: Text {
+                    tokens: Array::from_slice::<i32>(&[], &[1, 0]),
+                    mask: None,
+                },
+                image: None,
+                audio: None,
+                video: None,
+            })
+        }
+        fn decode(&self, ids: &[u32]) -> Result<String, Error> {
+            let mut out = String::new();
+            for &id in ids {
+                let id = id as usize;
+                if id < self.pieces.len() {
+                    out.push_str(self.pieces[id]);
+                }
+            }
+            Ok(out)
+        }
+    }
+
+    fn assert_incremental_matches_naive(pieces: &[&'static str], ids: &[u32]) {
+        let processor = FakeProcessor {
+            pieces: pieces.to_vec(),
+        };
+        let naive_full = processor.decode(ids).unwrap();
+        let mut dec = IncrementalDecoder::with_capacity(ids.len());
+        let mut streamed = String::new();
+        for &id in ids {
+            let delta = dec.push(id, &processor).unwrap();
+            streamed.push_str(&delta);
+        }
+        let final_text = dec.into_text();
+        assert_eq!(
+            streamed, final_text,
+            "concat of streamed deltas should equal final into_text()"
+        );
+        assert_eq!(
+            naive_full, final_text,
+            "incremental decode should match naive decode byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn incremental_matches_naive_ascii() {
+        let pieces = vec!["hello", " ", "world", ".", " ", "foo", " ", "bar"];
+        let ids: Vec<u32> = (0..pieces.len() as u32).collect();
+        assert_incremental_matches_naive(&pieces, &ids);
+    }
+
+    #[test]
+    fn incremental_matches_naive_long_run() {
+        // 1024 tokens — exercises the window-advance path
+        // repeatedly. Each id maps to a single-char piece so we
+        // can verify byte count exactly.
+        let pieces: Vec<&'static str> = "abcdefghijklmnopqrstuvwxyz0123456789"
+            .split("")
+            .filter(|s| !s.is_empty())
+            .collect();
+        let ids: Vec<u32> = (0..1024).map(|i| i % pieces.len() as u32).collect();
+        let processor = FakeProcessor {
+            pieces: pieces.clone(),
+        };
+        let mut dec = IncrementalDecoder::with_capacity(ids.len());
+        let mut streamed = String::new();
+        for &id in &ids {
+            streamed.push_str(&dec.push(id, &processor).unwrap());
+        }
+        let final_text = dec.into_text();
+        assert_eq!(streamed.len(), 1024);
+        assert_eq!(streamed, final_text);
+        assert_eq!(processor.decode(&ids).unwrap(), final_text);
+    }
+
+    #[test]
+    fn incremental_matches_naive_multibyte() {
+        // CJK + emoji tokens — multi-byte UTF-8. Window advance
+        // must move byte counts (not char counts) and never slice
+        // mid-byte.
+        let pieces = vec!["你", "好", "世", "界", "🎉", " ", "🍕", "!"];
+        let ids: Vec<u32> = (0..pieces.len() as u32).collect();
+        assert_incremental_matches_naive(&pieces, &ids);
+    }
+
+    #[test]
+    fn incremental_handles_empty_run() {
+        let processor = FakeProcessor { pieces: vec![] };
+        let dec = IncrementalDecoder::with_capacity(0);
+        assert_eq!(dec.into_text(), "");
+        let _ = processor;
+    }
+
+    /// Lead token is a sub-glyph byte fragment that only forms a
+    /// valid UTF-8 char when merged with the next token. `decode`
+    /// returns lossy UTF-8 so isolated continuation bytes become
+    /// U+FFFD. Regression: pre-fix this panicked at the
+    /// `String::drain(..lead_byte_len)` mid-codepoint split.
+    struct SubglyphProcessor {
+        bytes: Vec<&'static [u8]>,
+    }
+
+    impl UserInputProcessor for SubglyphProcessor {
+        fn family(&self) -> &'static str {
+            "subglyph"
+        }
+        fn prepare(&mut self, _input: UserInput) -> Result<LMInput, Error> {
+            Ok(LMInput {
+                text: Text {
+                    tokens: Array::from_slice::<i32>(&[], &[1, 0]),
+                    mask: None,
+                },
+                image: None,
+                audio: None,
+                video: None,
+            })
+        }
+        fn decode(&self, ids: &[u32]) -> Result<String, Error> {
+            let mut buf: Vec<u8> = Vec::new();
+            for &id in ids {
+                let id = id as usize;
+                if id < self.bytes.len() {
+                    buf.extend_from_slice(self.bytes[id]);
+                }
+            }
+            Ok(String::from_utf8_lossy(&buf).into_owned())
+        }
+    }
+
+    #[test]
+    fn incremental_does_not_panic_on_subglyph_token() {
+        // WINDOW=8 padding + a 3-byte ✓ split across the last two
+        // tokens. Push #9 triggers the commit-lead path. With the
+        // old `two.len() - next_alone.len()` heuristic, this
+        // panicked on `String::drain` at a non-char-boundary.
+        let pieces: Vec<&'static [u8]> = vec![
+            b"a",
+            b"a",
+            b"a",
+            b"a",
+            b"a",
+            b"a",
+            b"a",
+            b"a",
+            &[0xE2, 0x9C], // first 2 bytes of ✓ (U+2713)
+            &[0x93],       // last byte of ✓
+        ];
+        let processor = SubglyphProcessor { bytes: pieces };
+        let ids: Vec<u32> = (0..10).collect();
+        let mut dec = IncrementalDecoder::with_capacity(ids.len());
+        for &id in &ids {
+            dec.push(id, &processor).expect("push should not panic");
+        }
+        let final_text = dec.into_text();
+        assert!(
+            final_text.ends_with('\u{2713}'),
+            "✓ glyph not preserved: {final_text:?}"
+        );
+    }
+
+    #[test]
+    fn incremental_window_advances_across_long_response() {
+        // Verify committed_tokens actually advances past zero
+        // when ids.len() exceeds WINDOW. Without this the
+        // optimisation is dead.
+        let pieces: Vec<&'static str> = vec!["a"; 100];
+        let processor = FakeProcessor { pieces };
+        let mut dec = IncrementalDecoder::with_capacity(100);
+        for id in 0..100_u32 {
+            dec.push(id, &processor).unwrap();
+        }
+        // After 100 pushes with WINDOW=8, committed_tokens
+        // should be ~92 (100 - 8). Tolerate ±1 for the exact
+        // boundary semantics.
+        assert!(
+            dec.committed_tokens >= 100 - IncrementalDecoder::WINDOW - 1,
+            "committed_tokens did not advance: {} of 100",
+            dec.committed_tokens,
+        );
+    }
+
 }

@@ -23,7 +23,10 @@ use std::time::{Duration, Instant};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use mlx_lm::lm_input::{LMInput, PrepareResult, Text};
 use mlx_lm::{load, ModelContext};
-use mlx_rs::{transforms::eval, Array};
+use mlx_rs::{
+    transforms::{async_eval, eval},
+    Array,
+};
 
 const DECODE_TOKENS: i32 = 100;
 const SHORT_PROMPT_LEN: usize = 13;
@@ -185,35 +188,55 @@ fn time_prefill(ctx: &mut ModelContext, prompt: &Array) -> Duration {
 /// Decode-only timing: prefill outside the window, then `steps`
 /// consecutive `step` calls inside. Cache is reset before each
 /// iteration so the long-prompt cell measures the same hot-path each
-/// time.
+/// time. Pipelined async_eval mirrors the production
+/// `mlx_lm::generate` loop: every step's argmax is submitted to the
+/// GPU before the previous step's id is `.item()`-resolved, so the
+/// host's `.item()` block overlaps with the next step's compute.
 fn time_decode(ctx: &mut ModelContext, prompt: &Array, steps: i32) -> Duration {
     ctx.model.reset();
     let initial = match ctx.model.prepare(make_lm_input(prompt)).unwrap() {
         PrepareResult::Logits(arr) => arr,
-        PrepareResult::Primed => ctx.model.step(0).unwrap().logits,
+        PrepareResult::Primed => {
+            let seed = Array::from_slice::<i32>(&[0], &[1]);
+            ctx.model.step(&seed).unwrap().logits
+        }
     };
-    // Pick a stable next token (greedy argmax) to feed the decode
-    // loop, eval-fenced so the prefill graph is fully resolved
-    // before timing starts.
-    let last = mlx_rs::argmax_axis!(&initial, -1).unwrap();
-    eval([&last]).unwrap();
-    let mut tok = last.item::<i32>();
+
+    // Submit the first sample, eval-fence it so the prefill graph
+    // is fully resolved before timing starts. `pending` stays on
+    // device — the per-step `step(&pending)` reshapes it via a
+    // view, no host materialisation or device upload per token.
+    let mut pending = mlx_rs::argmax_axis!(&initial, -1).unwrap();
+    eval([&pending]).unwrap();
 
     let t = Instant::now();
-    let mut outputs = Vec::with_capacity(steps as usize);
     for _ in 0..steps {
-        let out = ctx.model.step(tok).unwrap();
-        let next = mlx_rs::argmax_axis!(&out.logits, -1).unwrap();
-        tok = next.item::<i32>();
-        outputs.push(out.logits);
+        // Submit step N+1's graph + argmax via async_eval before
+        // sync-waiting the prior step. Use vector eval rather than
+        // `.item()` — `.item()` reads the int back to host which
+        // forces an extra unified-memory coherence barrier on top
+        // of the graph eval, ~3 ms per call on M4 Max.
+        let logits = ctx.model.step(&pending).unwrap().logits;
+        let next = mlx_rs::argmax_axis!(&logits, -1).unwrap();
+        async_eval([&next]).unwrap();
+        eval([&pending]).unwrap();
+        pending = next;
     }
-    eval(outputs.iter()).unwrap();
+    eval([&pending]).unwrap();
     t.elapsed()
 }
 
 /// Generic per-family bench: prefill_short, prefill_long,
 /// decode_short, decode_long. `label` becomes the criterion group
 /// prefix (`<family>_decode_<label>`).
+///
+/// Model is loaded **inside** this fn and dropped + the mlx-core
+/// buffer cache cleared on return, so back-to-back `bench_one()`
+/// calls don't keep the prior model's weights or its allocator
+/// free-list in RAM. Important when chaining 35B + 27B + 26B
+/// cells in one bench run — without the explicit drop + cache
+/// clear, peak resident memory would be sum-of-models instead
+/// of max-of-models.
 fn bench_one(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
     let group_prefix = format!("{family}_decode_{label}");
     if bench_only_skip(&group_prefix) {
@@ -237,49 +260,57 @@ fn bench_one(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
     let long = synthetic_prompt(LONG_PROMPT_LEN);
     let decode_steps = DECODE_TOKENS - 1;
 
-    let mut group = c.benchmark_group(group_prefix);
-    group.sample_size(SAMPLE_SIZE);
-    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+    {
+        let mut group = c.benchmark_group(group_prefix.clone());
+        group.sample_size(SAMPLE_SIZE);
+        group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
 
-    for (label, prompt) in [
-        (
-            BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32),
-            &short,
-        ),
-        (
-            BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32),
-            &long,
-        ),
-    ] {
-        let prompt_len = prompt.shape().last().copied().unwrap_or(0) as u64;
-        group.throughput(Throughput::Elements(prompt_len));
-        group.bench_function(label, |b| {
-            b.iter_custom(|iters| {
-                let mut total = Duration::ZERO;
-                for _ in 0..iters {
-                    total += time_prefill(&mut ctx, prompt);
-                }
-                total
+        for (label, prompt) in [
+            (
+                BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32),
+                &short,
+            ),
+            (
+                BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32),
+                &long,
+            ),
+        ] {
+            let prompt_len = prompt.shape().last().copied().unwrap_or(0) as u64;
+            group.throughput(Throughput::Elements(prompt_len));
+            group.bench_function(label, |b| {
+                b.iter_custom(|iters| {
+                    let mut total = Duration::ZERO;
+                    for _ in 0..iters {
+                        total += time_prefill(&mut ctx, prompt);
+                    }
+                    total
+                });
             });
-        });
+        }
+
+        group.throughput(Throughput::Elements(decode_steps as u64));
+        for (label, prompt) in [
+            (BenchmarkId::new("decode_short", decode_steps), &short),
+            (BenchmarkId::new("decode_long", decode_steps), &long),
+        ] {
+            group.bench_function(label, |b| {
+                b.iter_custom(|iters| {
+                    let mut total = Duration::ZERO;
+                    for _ in 0..iters {
+                        total += time_decode(&mut ctx, prompt, decode_steps);
+                    }
+                    total
+                });
+            });
+        }
+        group.finish();
     }
 
-    group.throughput(Throughput::Elements(decode_steps as u64));
-    for (label, prompt) in [
-        (BenchmarkId::new("decode_short", decode_steps), &short),
-        (BenchmarkId::new("decode_long", decode_steps), &long),
-    ] {
-        group.bench_function(label, |b| {
-            b.iter_custom(|iters| {
-                let mut total = Duration::ZERO;
-                for _ in 0..iters {
-                    total += time_decode(&mut ctx, prompt, decode_steps);
-                }
-                total
-            });
-        });
-    }
-    group.finish();
+    // Release the model + unmap mlx-core's buffer cache so peak
+    // RAM in a multi-model run is max-of-models, not sum.
+    ctx.unload();
+    mlx_rs::memory::reset_peak_memory();
+    log_mlx_mem(&format!("{group_prefix}/post_unload"));
 }
 
 #[derive(Debug, PartialEq, Eq)]
