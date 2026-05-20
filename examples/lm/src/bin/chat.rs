@@ -27,8 +27,12 @@ use mlx_lm::{
             cache::{make_caches as make_qwen35_caches, LayerCache as Qwen35LayerCache},
             generation::{Generate as Qwen35Generate, StopCriteria as Qwen35StopCriteria},
             layer::LanguageModel as Qwen35Model,
+            text::Mlp as Qwen35Mlp,
             weights::load_language_model as load_qwen35_lm,
             ModelConfig as Qwen35Config, SamplingParams as Qwen35SamplingParams,
+        },
+        qwen3_5_moe::{
+            load_qwen3_5_moe_model, Qwen35MoeBlock, Qwen35MoeLanguageModel,
         },
     },
 };
@@ -305,7 +309,12 @@ enum Backend {
         cache: Vec<Option<Gemma4LayerCache>>,
     },
     Qwen35 {
-        model: Box<Qwen35Model>,
+        model: Box<Qwen35Model<Qwen35Mlp>>,
+        cfg: Qwen35Config,
+        cache: Vec<Qwen35LayerCache>,
+    },
+    Qwen35Moe {
+        model: Box<Qwen35MoeLanguageModel>,
         cfg: Qwen35Config,
         cache: Vec<Qwen35LayerCache>,
     },
@@ -338,6 +347,16 @@ impl Backend {
                     cache,
                 })
             }
+            "qwen3_5_moe" | "qwen3_5_moe_text" | "qwen3_5_moeforconditionalgeneration" => {
+                let cfg = Qwen35Config::from_file(model_dir.join("config.json"))?;
+                let cache = make_qwen35_caches(&cfg);
+                let model = load_qwen3_5_moe_model(model_dir)?;
+                Ok(Backend::Qwen35Moe {
+                    model: Box::new(model),
+                    cfg,
+                    cache,
+                })
+            }
             other => Err(format!("unsupported model family: {other}").into()),
         }
     }
@@ -348,7 +367,7 @@ impl Backend {
             Backend::Gemma4 { cfg, cache, .. } => {
                 *cache = make_gemma4_caches(cfg);
             }
-            Backend::Qwen35 { cfg, cache, .. } => {
+            Backend::Qwen35 { cfg, cache, .. } | Backend::Qwen35Moe { cfg, cache, .. } => {
                 *cache = make_qwen35_caches(cfg);
             }
         }
@@ -431,6 +450,31 @@ impl Backend {
                 let owned = std::mem::take(cache);
                 let mut gen =
                     Qwen35Generate::with_caches(model.as_mut(), prompt_1d, owned, stop, params);
+                for (n, token) in gen.by_ref().enumerate() {
+                    if interrupted.load(Ordering::SeqCst) {
+                        cancelled = true;
+                        break;
+                    }
+                    let id = token.map_err(|e| format!("{e:?}"))?;
+                    if eos_ids.contains(&id) || n + 1 >= max_tokens {
+                        break;
+                    }
+                    on_token(id);
+                    ids.push(id);
+                }
+                *cache = gen.into_caches();
+            }
+            Backend::Qwen35Moe { model, cache, .. } => {
+                let prompt_1d = Array::from(prompt_tokens);
+                let stop = Qwen35StopCriteria {
+                    max_new_tokens: max_tokens as i32,
+                    eos_ids: eos_ids.to_vec(),
+                };
+                let params = Qwen35SamplingParams { temperature: temp, top_p: None };
+                let owned = std::mem::take(cache);
+                let mut gen = Qwen35Generate::<Qwen35MoeBlock>::with_caches(
+                    model.as_mut(), prompt_1d, owned, stop, params,
+                );
                 for (n, token) in gen.by_ref().enumerate() {
                     if interrupted.load(Ordering::SeqCst) {
                         cancelled = true;
