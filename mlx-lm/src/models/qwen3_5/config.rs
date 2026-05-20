@@ -54,6 +54,10 @@ fn default_rope_type() -> String {
 pub struct TextConfig {
     pub model_type: String,
     pub hidden_size: i32,
+    /// Dense MLP intermediate size. Absent on MoE variants
+    /// (Qwen3.6-35B-A3B etc.) which use [`Self::moe_intermediate_size`]
+    /// for the routed experts instead.
+    #[serde(default)]
     pub intermediate_size: i32,
     pub num_hidden_layers: i32,
     pub num_attention_heads: i32,
@@ -103,6 +107,28 @@ pub struct TextConfig {
     /// Optional explicit EOS token. May be a single id or a list of ids.
     #[serde(default)]
     pub eos_token_id: Option<EosTokenId>,
+
+    // ── MoE fields (Qwen3.6-35B-A3B; absent on dense checkpoints) ──
+    /// Number of routed experts. `0` on dense checkpoints; `is_moe()`
+    /// gates on this.
+    #[serde(default)]
+    pub num_experts: i32,
+    /// Top-k routing fan-out per token.
+    #[serde(default)]
+    pub num_experts_per_tok: i32,
+    /// Inner hidden width per routed expert.
+    #[serde(default)]
+    pub moe_intermediate_size: i32,
+    /// Inner hidden width of the always-on dense shared expert.
+    #[serde(default)]
+    pub shared_expert_intermediate_size: i32,
+}
+
+impl TextConfig {
+    /// True for MoE variants (any non-zero `num_experts`).
+    pub fn is_moe(&self) -> bool {
+        self.num_experts > 0
+    }
 }
 
 fn default_full_attention_interval() -> i32 {
@@ -421,6 +447,44 @@ mod tests {
         let q = cfg.effective_quantization().unwrap();
         assert_eq!(q.bits, 4);
         assert_eq!(q.group_size, 64);
+    }
+
+    /// Qwen3.6-35B-A3B is the MoE sibling of Qwen3.6-27B. Same
+    /// `qwen3_5_moe_text` schema with `num_experts`,
+    /// `num_experts_per_tok`, `moe_intermediate_size`, and
+    /// `shared_expert_intermediate_size`; `intermediate_size` is absent
+    /// (no dense MLP). The q4 checkpoint also ships per-tensor
+    /// quantisation overrides for `mlp.gate` + `mlp.shared_expert_gate`.
+    #[test]
+    fn parses_qwen3_6_35b_a3b_config() {
+        let json = include_str!("../../../tests/fixtures/qwen3_6_35b_a3b/config.json");
+        let cfg: ModelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.text_config.num_hidden_layers, 40);
+        assert_eq!(cfg.text_config.hidden_size, 2048);
+        assert_eq!(cfg.text_config.intermediate_size, 0); // absent, defaults to 0
+        assert!(cfg.text_config.is_moe());
+        assert_eq!(cfg.text_config.num_experts, 256);
+        assert_eq!(cfg.text_config.num_experts_per_tok, 8);
+        assert_eq!(cfg.text_config.moe_intermediate_size, 512);
+        assert_eq!(cfg.text_config.shared_expert_intermediate_size, 512);
+        assert_eq!(cfg.text_config.num_attention_heads, 16);
+        assert_eq!(cfg.text_config.num_key_value_heads, 2);
+        assert_eq!(cfg.text_config.head_dim, 256);
+        assert_eq!(cfg.text_config.linear_num_value_heads, 32);
+        assert_eq!(cfg.text_config.layer_types.len(), 40);
+        assert!(!cfg.text_config.tie_word_embeddings);
+
+        let q = cfg.effective_quantization().unwrap();
+        assert_eq!(q.bits, 4);
+        assert_eq!(q.group_size, 64);
+        // Per-tensor quant overrides: router + shared-expert gate at 8b.
+        let (gs, bits) = q.for_path("language_model.model.layers.0.mlp.gate");
+        assert_eq!((gs, bits), (64, 8));
+        let (gs, bits) = q.for_path("language_model.model.layers.0.mlp.shared_expert_gate");
+        assert_eq!((gs, bits), (64, 8));
+        // Body fallback for non-override paths.
+        let (gs, bits) = q.for_path("language_model.model.layers.0.self_attn.q_proj");
+        assert_eq!((gs, bits), (64, 4));
     }
 
     #[test]

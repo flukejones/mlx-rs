@@ -104,7 +104,7 @@ pub enum Bucketed {
     Other(String),
 }
 
-fn bucket_key(key: String) -> Bucketed {
+pub fn bucket_key(key: String) -> Bucketed {
     if let Some(rest) = key.strip_prefix("language_model.") {
         return Bucketed::LanguageModel(rest.to_owned());
     }
