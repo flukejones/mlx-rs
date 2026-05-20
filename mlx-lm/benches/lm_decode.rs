@@ -32,6 +32,14 @@ use mlx_rs::{
 const DECODE_TOKENS: i32 = 100;
 const SHORT_PROMPT_LEN: usize = 13;
 const LONG_PROMPT_LEN: usize = 1024;
+/// 2× LONG_PROMPT_LEN, sized to **exceed** the gemma 4 26B-A4B and
+/// 31B sliding-window cap (1024 tokens) so `prefill_xlong` always
+/// takes the chunked-prefill path in `time_prefill`. The 1024-token
+/// `prefill_long` cell sits exactly on the boundary
+/// (`prompt_len > window` is false at equality), so it never
+/// exercises the chunk-advance code on those models — see
+/// `LanguageModel::prefill_chunk` + `time_prefill`'s loop.
+const XLONG_PROMPT_LEN: usize = 2048;
 const SAMPLE_SIZE: usize = 10;
 const MEASUREMENT_SECS: u64 = 20;
 
@@ -332,6 +340,7 @@ fn bench_one(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
 
     let short = synthetic_prompt(SHORT_PROMPT_LEN);
     let long = synthetic_prompt(LONG_PROMPT_LEN);
+    let xlong = synthetic_prompt(XLONG_PROMPT_LEN);
     let decode_steps = DECODE_TOKENS - 1;
 
     {
@@ -347,6 +356,10 @@ fn bench_one(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
             (
                 BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32),
                 &long,
+            ),
+            (
+                BenchmarkId::new("prefill_xlong", XLONG_PROMPT_LEN as i32),
+                &xlong,
             ),
         ] {
             let prompt_len = prompt.shape().last().copied().unwrap_or(0) as u64;
@@ -434,7 +447,12 @@ fn bench_decode(c: &mut Criterion) {
         "26b_a4b_it_q8",
         "mlx-community/gemma-4-26b-a4b-it-8bit",
     );
-    bench_one(c, "gemma4", "31b_it_q4", "mlx-community/gemma-4-31b-it-4bit");
+    bench_one(
+        c,
+        "gemma4",
+        "31b_it_q4",
+        "mlx-community/gemma-4-31b-it-4bit",
+    );
 }
 
 criterion_group!(benches, bench_decode);
