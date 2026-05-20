@@ -28,7 +28,7 @@ use crate::activations::{
 use crate::cache::KeyValueCache;
 use crate::models::gemma4::config::{Gemma4Config, LayerKind};
 use crate::models::gemma4::rope::ProportionalRope;
-use crate::models::gemma4::switch_layers::SwitchGLU;
+use crate::models::gemma4::GemmaSwitchGlu;
 use crate::nn::ensure_cache_populated;
 use crate::utils::create_attention_mask;
 use crate::utils::rope::FloatOrString;
@@ -672,12 +672,12 @@ impl Router {
     }
 }
 
-/// Sparse MoE wrapping `SwitchGLU`. Each token's top-k expert outputs
+/// Sparse MoE wrapping `GemmaSwitchGlu`. Each token's top-k expert outputs
 /// are weighted by the router's softmaxed scores and summed.
 #[derive(Debug, ModuleParameters)]
 pub struct Experts {
     #[param]
-    pub switch_glu: SwitchGLU,
+    pub switch_glu: GemmaSwitchGlu,
 }
 
 impl Experts {
@@ -687,7 +687,7 @@ impl Experts {
         num_experts: i32,
     ) -> Result<Self, Exception> {
         Ok(Self {
-            switch_glu: SwitchGLU::new(hidden_size, moe_intermediate, num_experts, false)?,
+            switch_glu: GemmaSwitchGlu::new(hidden_size, moe_intermediate, num_experts, false)?,
         })
     }
 

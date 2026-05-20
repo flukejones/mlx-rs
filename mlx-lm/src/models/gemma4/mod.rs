@@ -5,7 +5,6 @@ pub mod config;
 pub mod generation;
 pub mod loader;
 pub mod rope;
-pub mod switch_layers;
 pub mod text;
 pub mod weights;
 
@@ -21,3 +20,9 @@ pub use text::{
     ModelInput, RmsNormNoScale,
 };
 pub use weights::{load_gemma4_model_sanitized, load_sanitized_gemma4_weights};
+
+/// Gemma 4 routed-expert FFN: gelu-approx activation + packed
+/// `gate_up_proj` layout. Concrete alias of
+/// [`crate::nn::switch::PackedSwitchFfn`].
+pub type GemmaSwitchGlu =
+    crate::nn::switch::PackedSwitchFfn<crate::nn::switch::GegluActivation>;

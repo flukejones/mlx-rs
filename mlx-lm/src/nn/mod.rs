@@ -5,6 +5,7 @@
 pub mod attention_input;
 pub mod model_input;
 pub mod swiglu_mlp;
+pub mod switch;
 
 pub use attention_input::AttentionInput;
 pub use model_input::ModelInput;
