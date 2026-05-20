@@ -40,6 +40,7 @@ use mlx_lm::models::{
         layer::LanguageModel as Qwen3_5LanguageModel,
         weights::load_language_model,
     },
+    qwen3_5_moe::{load_qwen3_5_moe_model, Qwen35MoeBlock, Qwen35MoeLanguageModel},
 };
 use mlx_rs::{
     ops::indexing::{IndexOp, NewAxis},
@@ -608,6 +609,102 @@ fn maybe_bench_qwen3_5(c: &mut Criterion, family: &str, label: &str, repo_id: &s
     group.finish();
 }
 
+/// Qwen3.6-MoE (35B-A3B) decode bench. Mirrors `maybe_bench_qwen3_5`
+/// but loads via `qwen3_5_moe::load_qwen3_5_moe_model` and uses
+/// `LanguageModel<Qwen35MoeBlock>` as the generic specialisation.
+fn maybe_bench_qwen3_5_moe(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
+    if bench_only_skip(&format!("{family}_decode_{label}")) {
+        return;
+    }
+    let Some(dir) = ensure_model(repo_id) else {
+        return;
+    };
+
+    let cfg = match Qwen3_5Config::from_file(dir.join("config.json")) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("skipping {family} {label}: config parse failed: {e:?}");
+            return;
+        }
+    };
+    let mut model = match load_qwen3_5_moe_model(&dir) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skipping {family} {label}: load failed: {e:?}");
+            return;
+        }
+    };
+
+    let short = Array::from_slice(QWEN3_5_SHORT_PROMPT, &[QWEN3_5_SHORT_PROMPT.len() as i32]);
+    let mut long_ids = Vec::with_capacity(LONG_PROMPT_LEN);
+    long_ids.extend_from_slice(QWEN3_5_SHORT_PROMPT);
+    let filler = QWEN3_5_SHORT_PROMPT[1];
+    while long_ids.len() < LONG_PROMPT_LEN {
+        long_ids.push(filler);
+    }
+    long_ids.truncate(LONG_PROMPT_LEN);
+    let long = Array::from_slice(&long_ids, &[long_ids.len() as i32]);
+
+    let warm = Qwen3_5Generate::<Qwen35MoeBlock>::new(
+        &mut model,
+        &cfg,
+        short.clone(),
+        StopCriteria {
+            max_new_tokens: WARMUP_TOKENS,
+            eos_ids: vec![],
+        },
+        SamplingParams::default(),
+    );
+    let tokens: Vec<u32> = warm.map(|r| r.unwrap()).collect();
+    let ids: Vec<i32> = tokens.iter().map(|&t| t as i32).collect();
+    if !ids.is_empty() {
+        let arr = Array::from_slice(&ids, &[ids.len() as i32]);
+        eval([&arr]).unwrap();
+    }
+
+    let decode_steps = DECODE_TOKENS - 1;
+    let mut group = c.benchmark_group(format!("{family}_decode_{label}"));
+    group.throughput(Throughput::Elements(decode_steps as u64));
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
+
+    let time_decode =
+        |model: &mut Qwen35MoeLanguageModel, prompt: &Array, steps: i32| -> Duration {
+            let mut iter = Qwen3_5Generate::<Qwen35MoeBlock>::new(
+                model,
+                &cfg,
+                prompt.clone(),
+                StopCriteria {
+                    max_new_tokens: steps + 1,
+                    eos_ids: vec![],
+                },
+                SamplingParams::default(),
+            );
+            let _first = iter.next().expect("at least one token").unwrap();
+            let t = Instant::now();
+            for tok in iter.by_ref().take(steps as usize) {
+                let _ = tok.unwrap();
+            }
+            Instant::now() - t
+        };
+
+    for (id, prompt) in [
+        (BenchmarkId::new("decode_short", decode_steps), &short),
+        (BenchmarkId::new("decode_long", decode_steps), &long),
+    ] {
+        group.bench_function(id, |b| {
+            b.iter_custom(|iters| {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    total += time_decode(&mut model, prompt, decode_steps);
+                }
+                total
+            });
+        });
+    }
+    group.finish();
+}
+
 /// Which cells to register. Trimmed = end-to-end decode only; Full = all
 /// llama + qwen3 size × precision combinations. Default trimmed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -754,6 +851,18 @@ fn bench_decode(c: &mut Criterion) {
     maybe_bench_qwen3_5(c, "qwen3_5", "9b_q8", "mlx-community/Qwen3.5-9B-8bit");
     maybe_bench_qwen3_5(c, "qwen3_6", "27b_q4", "mlx-community/Qwen3.6-27B-4bit");
     maybe_bench_qwen3_5(c, "qwen3_6", "27b_q8", "mlx-community/Qwen3.6-27B-8bit");
+    maybe_bench_qwen3_5_moe(
+        c,
+        "qwen3_6_moe",
+        "35b_a3b_q4",
+        "mlx-community/Qwen3.6-35B-A3B-4bit",
+    );
+    maybe_bench_qwen3_5_moe(
+        c,
+        "qwen3_6_moe",
+        "35b_a3b_q8",
+        "lmstudio-community/Qwen3.6-35B-A3B-MLX-8bit",
+    );
 
     // Gemma 4 (dense + MoE; per-layer-input gating).
     maybe_bench_gemma4(c, "e2b_it_q8", "mlx-community/gemma-4-e2b-it-8bit");
