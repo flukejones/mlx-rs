@@ -98,6 +98,12 @@ pub struct TextConfig {
     /// If true, full-attention layers add a sigmoid gate on the attention
     /// output (`output = o_proj(attn_out * sigmoid(gate))`). Always true for
     /// Qwen3.5.
+    ///
+    /// Qwen 3.6 configs also carry `output_gate_type: "swish"` — vestigial,
+    /// HF transformers and Python mlx_lm both unconditionally compute
+    /// `output * sigmoid(gate)` regardless of that string. Field is silently
+    /// dropped by serde here; do not re-parse without confirming the
+    /// reference path actually branches on it.
     #[serde(default = "default_attn_output_gate")]
     pub attn_output_gate: bool,
 
