@@ -13,6 +13,7 @@
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use mlx_lm::chat_template::ChatMessage;
 use mlx_lm::{generate, load, GenerateParams, ModelContext, SamplingParams, UserInput};
@@ -23,6 +24,14 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, BoxError>;
 
 const DEFAULT_MAX_TOKENS: i32 = 1024;
+
+// ANSI colour codes for the REPL prompt + assistant turn + stats.
+// `eprintln!`/`println!` writes them through; terminals that don't
+// support ANSI render them as text — the rest of the output stays
+// readable.
+const C_BOT: &str = "\x1b[1;32m";
+const C_DIM: &str = "\x1b[2m";
+const C_RESET: &str = "\x1b[0m";
 
 struct Args {
     model: PathBuf,
@@ -108,8 +117,8 @@ fn main() -> Result<()> {
             extra_stop_ids: Vec::new(),
         };
 
-        let result = run_turn(&mut ctx, user_input, params);
-        match result {
+        let outcome = run_turn(&mut ctx, user_input, params);
+        match outcome {
             Ok(text) => {
                 history.push(ChatMessage::assistant(text));
             }
@@ -125,12 +134,51 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Run one generation turn:
+/// - colour the assistant's streamed output in bot-green
+/// - measure prefill (start → first token delta) and decode
+///   (first delta → end) wall-clock independently, print per-phase
+///   token rates after the turn closes
 fn run_turn(ctx: &mut ModelContext, input: UserInput, params: GenerateParams) -> Result<String> {
     let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(C_BOT.as_bytes());
+    let _ = stdout.flush();
+
+    let t_start = Instant::now();
+    let mut t_first: Option<Instant> = None;
     let result = generate(ctx, input, params, &mut |_, delta| {
+        if t_first.is_none() {
+            t_first = Some(Instant::now());
+        }
         let _ = stdout.write_all(delta.as_bytes());
         let _ = stdout.flush();
         std::ops::ControlFlow::Continue(())
     })?;
+    let t_end = Instant::now();
+
+    let _ = stdout.write_all(C_RESET.as_bytes());
+    let _ = stdout.write_all(b"\n");
+    let _ = stdout.flush();
+    drop(stdout);
+
+    let t_first = t_first.unwrap_or(t_end);
+    let prefill_s = (t_first - t_start).as_secs_f64();
+    let decode_s = (t_end - t_first).as_secs_f64();
+    let prefill_tps = if prefill_s > 0.0 {
+        result.prompt_tokens as f64 / prefill_s
+    } else {
+        0.0
+    };
+    let decode_steps = result.completion_tokens.saturating_sub(1);
+    let decode_tps = if decode_s > 0.0 {
+        decode_steps as f64 / decode_s
+    } else {
+        0.0
+    };
+    eprintln!(
+        "{C_DIM}[prefill: {n_prompt} tok in {prefill_s:.2}s ({prefill_tps:.1} tok/s) | \
+         decode: {decode_steps} tok in {decode_s:.2}s ({decode_tps:.1} tok/s)]{C_RESET}",
+        n_prompt = result.prompt_tokens,
+    );
     Ok(result.text)
 }
