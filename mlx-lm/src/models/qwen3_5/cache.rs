@@ -44,7 +44,7 @@ impl LinearAttnCache {
 
 /// One slot in the per-layer cache list. Each Qwen3.5 layer holds exactly one
 /// of these and uses it for the full duration of a generation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum LayerCache {
     /// Cache for a full-attention (GQA) layer.
     FullAttention(KVCache),
@@ -106,6 +106,14 @@ pub fn make_caches(config: &crate::models::qwen3_5::ModelConfig) -> Vec<LayerCac
     (0..n)
         .map(|i| LayerCache::for_layer(config.is_linear_layer(i)))
         .collect()
+}
+
+/// Build per-layer caches for the MTP head. MTP layers are always
+/// self_attn (verified against `Qwen/Qwen3.6-35B-A3B` checkpoint
+/// shape), so every slot is a `KVCache`.
+pub fn make_mtp_caches(config: &crate::models::qwen3_5::ModelConfig) -> Vec<LayerCache> {
+    let n = config.text_config.mtp_num_hidden_layers.max(0) as usize;
+    (0..n).map(|_| LayerCache::for_layer(false)).collect()
 }
 
 #[cfg(test)]

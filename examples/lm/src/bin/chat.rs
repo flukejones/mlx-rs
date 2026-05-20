@@ -114,7 +114,7 @@ fn main() -> Result<()> {
                 temperature: args.temperature,
                 top_p: args.top_p,
             },
-            extra_stop_ids: Vec::new(),
+            ..GenerateParams::default()
         };
 
         let outcome = run_turn(&mut ctx, user_input, params);

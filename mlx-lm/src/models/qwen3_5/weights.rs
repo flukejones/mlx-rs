@@ -12,7 +12,8 @@
 //!   floating-point 1-D tensor — the Python implementation does the same to
 //!   recover the standard RMSNorm parameterisation from the centred form
 //!   stored in the checkpoint.
-//! - `mtp.*` (multi-token-prediction) keys are skipped.
+//! - `mtp.*` keys are routed to the `MtpHead` parameter walk (when the
+//!   model was constructed with `mtp_num_hidden_layers > 0`).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -34,6 +35,9 @@ const NORM_SUFFIXES: &[&str] = &[
     ".q_norm.weight",
     ".k_norm.weight",
     "model.norm.weight",
+    "mtp.pre_fc_norm_hidden.weight",
+    "mtp.pre_fc_norm_embedding.weight",
+    "mtp.norm.weight",
 ];
 
 /// `model.safetensors.index.json` schema.
@@ -80,6 +84,9 @@ fn sanitize_key(key: &str) -> String {
     }
     if let Some(rest) = key.strip_prefix("lm_head") {
         return format!("language_model.lm_head{rest}");
+    }
+    if let Some(rest) = key.strip_prefix("mtp.") {
+        return format!("language_model.mtp.{rest}");
     }
     key.to_owned()
 }
@@ -168,7 +175,7 @@ fn is_float(dtype: Dtype) -> bool {
 ///
 /// Returns a flat map keyed by the **fully-qualified** sanitised path
 /// (`language_model.model.layers.0.self_attn.q_proj.weight`,
-/// `vision_tower.patch_embed.proj.weight`, ...) with `mtp.*` filtered out.
+/// `vision_tower.patch_embed.proj.weight`, `language_model.mtp.*`, ...).
 /// Caller buckets the result into the LM / vision-tower parameter walks.
 pub fn load_sanitized_weights(
     model_dir: impl AsRef<Path>,
@@ -181,9 +188,6 @@ pub fn load_sanitized_weights(
         let is_mlx_format = safetensors_is_mlx_format(&path)?;
         let loaded = Array::load_safetensors(&path).map_err(Error::LoadWeights)?;
         for (k, v) in loaded {
-            if k.contains("mtp.") {
-                continue;
-            }
             let san_k = sanitize_key(&k);
             let san_v = sanitize_value(&san_k, v, is_mlx_format)?;
             raw.insert(san_k, san_v);
@@ -300,7 +304,10 @@ pub(crate) fn load_full_model(
     if let Some(q) = cfg.effective_quantization() {
         quantize_language_model(&mut lm, q)?;
     }
-    let mut vision = VisionModel::new(&cfg.vision_config).map_err(Error::Exception)?;
+    let vision_cfg = cfg.vision_config.as_ref().ok_or_else(|| {
+        Error::Other("qwen3_5 load_full_model: config has no vision_config".into())
+    })?;
+    let mut vision = VisionModel::new(vision_cfg).map_err(Error::Exception)?;
     let weights = load_sanitized_weights(model_dir)?;
 
     let mut leftover = Vec::new();

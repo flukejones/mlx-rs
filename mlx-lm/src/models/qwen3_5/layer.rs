@@ -15,7 +15,7 @@ use mlx_rs::{
     macros::{ModuleParameters, Quantizable},
     module::Module,
     nn,
-    ops::{arange, broadcast_to, expand_dims},
+    ops::{arange, broadcast_to, concatenate_axis, expand_dims},
     quantization::{MaybeQuantized, Quantizable as QuantizableTrait},
     Array,
 };
@@ -167,6 +167,140 @@ impl DecoderLayer<Mlp> {
     }
 }
 
+impl<F> DecoderLayer<F>
+where
+    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+        + QuantizableTrait<Quantized = F, QuantizationError = Exception>
+        + std::fmt::Debug,
+{
+    /// Force a `self_attn` layer regardless of the `layer_types` pattern.
+    /// MTP heads in Qwen 3.6 always use standard QKV attention even when
+    /// the corresponding main-decoder position would have been a linear
+    /// (Mamba-style) layer.
+    pub fn new_self_attn<MakeF>(cfg: &TextConfig, make_ffn: MakeF) -> Result<Self, Exception>
+    where
+        MakeF: FnOnce(&TextConfig) -> Result<F, Exception>,
+    {
+        let input_layernorm = nn::RmsNormBuilder::new(cfg.hidden_size)
+            .eps(cfg.rms_norm_eps)
+            .build()?;
+        let post_attention_layernorm = nn::RmsNormBuilder::new(cfg.hidden_size)
+            .eps(cfg.rms_norm_eps)
+            .build()?;
+        let mlp = make_ffn(cfg)?;
+        Ok(Self {
+            is_linear: false,
+            self_attn: Some(Attention::new(cfg)?),
+            linear_attn: None,
+            input_layernorm,
+            post_attention_layernorm,
+            mlp,
+        })
+    }
+}
+
+/// Qwen 3.6 MTP head (Multi-Token Prediction). Takes the prior decoder's
+/// last hidden state `h_t` plus the embedding of `token[t+1]`, normalises
+/// them independently, concatenates, projects 2H→H, runs through one
+/// self-attention decoder layer, and outputs logits for `token[t+2]` via
+/// the shared `lm_head`.
+///
+/// Weight layout (verified against `Qwen/Qwen3.6-35B-A3B`):
+///   `mtp.pre_fc_norm_hidden.weight`        [H]
+///   `mtp.pre_fc_norm_embedding.weight`     [H]
+///   `mtp.fc.weight`                        [H, 2H]
+///   `mtp.layers.0.*`                       full self-attn DecoderLayer
+///   `mtp.norm.weight`                      [H]
+#[derive(Debug, ModuleParameters, Quantizable)]
+pub struct MtpHead<F = Mlp>
+where
+    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+        + QuantizableTrait<Quantized = F, QuantizationError = Exception>
+        + std::fmt::Debug,
+{
+    #[param]
+    pub pre_fc_norm_hidden: nn::RmsNorm,
+    #[param]
+    pub pre_fc_norm_embedding: nn::RmsNorm,
+    #[quantizable]
+    #[param]
+    pub fc: MaybeQuantized<nn::Linear>,
+    #[quantizable]
+    #[param]
+    pub layers: Vec<DecoderLayer<F>>,
+    #[param]
+    pub norm: nn::RmsNorm,
+}
+
+impl<F> MtpHead<F>
+where
+    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+        + QuantizableTrait<Quantized = F, QuantizationError = Exception>
+        + std::fmt::Debug,
+{
+    pub fn new<MakeF>(cfg: &TextConfig, mut make_ffn: MakeF) -> Result<Self, Exception>
+    where
+        MakeF: FnMut(&TextConfig) -> Result<F, Exception>,
+    {
+        let h = cfg.hidden_size;
+        let pre_fc_norm_hidden = nn::RmsNormBuilder::new(h).eps(cfg.rms_norm_eps).build()?;
+        let pre_fc_norm_embedding = nn::RmsNormBuilder::new(h).eps(cfg.rms_norm_eps).build()?;
+        let fc = nn::LinearBuilder::new(2 * h, h).bias(false).build()?;
+        let n = cfg.mtp_num_hidden_layers.max(0) as usize;
+        let mut layers = Vec::with_capacity(n);
+        for _ in 0..n {
+            layers.push(DecoderLayer::<F>::new_self_attn(cfg, &mut make_ffn)?);
+        }
+        let norm = nn::RmsNormBuilder::new(h).eps(cfg.rms_norm_eps).build()?;
+        Ok(Self {
+            pre_fc_norm_hidden,
+            pre_fc_norm_embedding,
+            fc: MaybeQuantized::Original(fc),
+            layers,
+            norm,
+        })
+    }
+
+    /// Run the MTP head. `h_t` is the main decoder's *pre*-final-norm
+    /// hidden at the last committed slot; `embed_next` is the
+    /// embedding of the sampled `token[t+1]`. The head re-norms both
+    /// inputs via its own `pre_fc_norm_*` weights, so passing the
+    /// post-norm hidden would double-normalise. Returns the post-norm
+    /// hidden ready for the shared `lm_head`.
+    pub fn forward(
+        &mut self,
+        h_t: &Array,
+        embed_next: &Array,
+        caches: &mut [LayerCache],
+        position_ids: Option<&Array>,
+    ) -> Result<Array, Exception> {
+        let h_n = self.pre_fc_norm_hidden.forward(h_t)?;
+        let e_n = self.pre_fc_norm_embedding.forward(embed_next)?;
+        let combined = concatenate_axis(&[e_n, h_n], -1)?;
+        let mut h = self.fc.forward(&combined)?;
+        for (layer, cache) in self.layers.iter_mut().zip(caches.iter_mut()) {
+            h = layer.forward(&h, None, None, Some(cache), position_ids)?;
+        }
+        self.norm.forward(&h)
+    }
+
+    pub fn training_mode(&mut self, mode: bool) {
+        self.pre_fc_norm_hidden.training_mode(mode);
+        self.pre_fc_norm_embedding.training_mode(mode);
+        self.fc.training_mode(mode);
+        for layer in &mut self.layers {
+            layer.training_mode(mode);
+        }
+        self.norm.training_mode(mode);
+    }
+
+    pub fn set_use_steel_prefill(&mut self, on: bool) {
+        for layer in &mut self.layers {
+            layer.set_use_steel_prefill(on);
+        }
+    }
+}
+
 fn layer_is_linear(cfg: &TextConfig, layer_idx: usize) -> bool {
     if !cfg.layer_types.is_empty() {
         return cfg
@@ -294,6 +428,48 @@ where
         self.norm.forward(&h)
     }
 
+    /// Like [`Self::forward`] but returns the **pre-final-norm** hidden
+    /// state alongside the post-norm one. The MTP head consumes the
+    /// pre-norm hidden (it applies its own pre_fc_norm_hidden); the
+    /// lm_head projection uses the post-norm.
+    pub fn forward_pre_and_post_norm(
+        &mut self,
+        inputs: Option<&Array>,
+        inputs_embeds: Option<&Array>,
+        caches: &mut [LayerCache],
+        position_ids: Option<&Array>,
+    ) -> Result<(Array, Array), Exception> {
+        let mut h = if let Some(e) = inputs_embeds {
+            e.clone()
+        } else {
+            let ids = inputs.ok_or_else(|| {
+                Exception::custom("Qwen35Decoder::forward: needs either inputs or inputs_embeds")
+            })?;
+            self.embed_tokens.forward(ids)?
+        };
+        if caches.len() != self.layers.len() {
+            return Err(Exception::custom(format!(
+                "Qwen35Decoder::forward: expected {} caches, got {}",
+                self.layers.len(),
+                caches.len()
+            )));
+        }
+        let full_attn_mask = Self::build_full_attn_mask(&h, caches)?;
+        let full_attn_mask_ref = full_attn_mask.as_ref();
+        let ssm_mask_ref: Option<&Array> = None;
+        for (layer, cache) in self.layers.iter_mut().zip(caches.iter_mut()) {
+            h = layer.forward(
+                &h,
+                full_attn_mask_ref,
+                ssm_mask_ref,
+                Some(cache),
+                position_ids,
+            )?;
+        }
+        let post = self.norm.forward(&h)?;
+        Ok((h, post))
+    }
+
     /// Build the additive causal mask the full-attention layers need.
     ///
     /// Mirrors `mlx_lm.models.base.create_attention_mask` for the hybrid
@@ -381,6 +557,12 @@ where
     #[quantizable]
     #[param]
     pub lm_head: Option<MaybeQuantized<nn::Linear>>,
+
+    /// MTP head (Qwen 3.6 self-speculative decode). Present iff the
+    /// checkpoint ships `mtp.*` weights AND `cfg.mtp_num_hidden_layers > 0`.
+    #[quantizable]
+    #[param]
+    pub mtp: Option<MtpHead<F>>,
 }
 
 impl<F> LanguageModel<F>
@@ -390,12 +572,13 @@ where
         + std::fmt::Debug,
 {
     /// Build a freshly-initialised language model. `make_ffn` is called
-    /// once per decoder layer to construct the FFN block.
-    pub fn new<MakeF>(cfg: TextConfig, make_ffn: MakeF) -> Result<Self, Exception>
+    /// once per decoder layer (and once more per MTP layer when the
+    /// config enables an MTP head) to construct the FFN block.
+    pub fn new<MakeF>(cfg: TextConfig, mut make_ffn: MakeF) -> Result<Self, Exception>
     where
         MakeF: FnMut(&TextConfig) -> Result<F, Exception>,
     {
-        let model = Qwen35Decoder::<F>::new(&cfg, make_ffn)?;
+        let model = Qwen35Decoder::<F>::new(&cfg, &mut make_ffn)?;
         let lm_head = if !cfg.tie_word_embeddings {
             Some(MaybeQuantized::Original(
                 nn::LinearBuilder::new(cfg.hidden_size, cfg.vocab_size)
@@ -405,10 +588,16 @@ where
         } else {
             None
         };
+        let mtp = if cfg.mtp_num_hidden_layers > 0 {
+            Some(MtpHead::<F>::new(&cfg, &mut make_ffn)?)
+        } else {
+            None
+        };
         Ok(Self {
             cfg,
             model,
             lm_head,
+            mtp,
         })
     }
 
@@ -420,16 +609,50 @@ where
         caches: &mut [LayerCache],
         position_ids: Option<&Array>,
     ) -> Result<Array, Exception> {
-        let hidden = self
-            .model
-            .forward(inputs, inputs_embeds, caches, position_ids)?;
+        let (_, logits) =
+            self.forward_hidden_and_logits(inputs, inputs_embeds, caches, position_ids)?;
+        Ok(logits)
+    }
+
+    /// Like [`Self::forward`] but also returns the **pre-final-norm**
+    /// hidden state. The MTP head consumes this pre-norm hidden (it
+    /// applies its own `pre_fc_norm_hidden` on top); the lm_head
+    /// projection uses the post-norm (returned alongside as logits).
+    pub fn forward_hidden_and_logits(
+        &mut self,
+        inputs: Option<&Array>,
+        inputs_embeds: Option<&Array>,
+        caches: &mut [LayerCache],
+        position_ids: Option<&Array>,
+    ) -> Result<(Array, Array), Exception> {
+        let (pre_norm, post_norm) =
+            self.model
+                .forward_pre_and_post_norm(inputs, inputs_embeds, caches, position_ids)?;
+        let logits = self.apply_lm_head(&post_norm)?;
+        Ok((pre_norm, logits))
+    }
+
+    /// Project a hidden state to vocab logits via the LM head (tied
+    /// embed lookup or untied `lm_head` linear, whichever the cfg
+    /// selected).
+    pub fn apply_lm_head(&mut self, hidden: &Array) -> Result<Array, Exception> {
         if let Some(head) = self.lm_head.as_mut() {
-            head.forward(&hidden)
+            head.forward(hidden)
         } else {
             match &mut self.model.embed_tokens {
-                MaybeQuantized::Original(e) => e.as_linear(&hidden),
-                MaybeQuantized::Quantized(q) => q.as_linear(&hidden),
+                MaybeQuantized::Original(e) => e.as_linear(hidden),
+                MaybeQuantized::Quantized(q) => q.as_linear(hidden),
             }
+        }
+    }
+
+    /// Embed token ids via the (possibly quantised) `embed_tokens` table.
+    /// Needed by the MTP head — it consumes `embed(token_t+1)` as one of
+    /// its two inputs.
+    pub fn embed_tokens(&mut self, ids: &Array) -> Result<Array, Exception> {
+        match &mut self.model.embed_tokens {
+            MaybeQuantized::Original(e) => e.forward(ids),
+            MaybeQuantized::Quantized(q) => q.forward(ids),
         }
     }
 

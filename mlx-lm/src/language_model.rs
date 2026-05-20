@@ -115,6 +115,25 @@ pub trait LanguageModel: Send {
             "prefill_chunk called on a model with no prefill_chunk_size override".into(),
         ))
     }
+
+    /// True iff this model has an MTP head loaded — i.e.
+    /// [`Self::try_mtp_decode_greedy`] will return `Some` on every call.
+    /// Default `false`.
+    fn has_mtp(&self) -> bool {
+        false
+    }
+
+    /// MTP self-speculative greedy step. `Ok(None)` on models without
+    /// an MTP head (the default); `Ok(Some((tokens, next_pending)))`
+    /// returns 1 or 2 just-committed token ids plus the next
+    /// not-yet-committed pending token (a `[1]` int32 array). Greedy
+    /// argmax sampling is baked in.
+    fn try_mtp_decode_greedy(
+        &mut self,
+        _last_token: &mlx_rs::Array,
+    ) -> Result<Option<(Vec<u32>, mlx_rs::Array)>, Error> {
+        Ok(None)
+    }
 }
 
 /// Convenience for text-only models: a processor that does nothing

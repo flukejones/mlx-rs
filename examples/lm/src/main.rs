@@ -27,7 +27,7 @@ fn main() -> anyhow::Result<()> {
             temperature: 0.2,
             top_p: None,
         },
-        extra_stop_ids: Vec::new(),
+        ..GenerateParams::default()
     };
 
     let mut stdout = std::io::stdout().lock();

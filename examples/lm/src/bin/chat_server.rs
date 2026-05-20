@@ -259,7 +259,7 @@ async fn chat_completions(
     let params = GenerateParams {
         max_new_tokens: max_tokens,
         sampling: SamplingParams { temperature, top_p },
-        extra_stop_ids: Vec::new(),
+        ..GenerateParams::default()
     };
 
     if stream {

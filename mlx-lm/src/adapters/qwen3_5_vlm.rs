@@ -95,7 +95,13 @@ impl LanguageModel for Qwen35VlmAdapter {
         // so flatten the input ids first.
         let s = input_ids.shape()[1];
         let host_ids: Vec<i32> = input_ids.reshape(&[s])?.as_slice::<i32>().to_vec();
-        let merge = cfg.vision_config.spatial_merge_size;
+        let merge = cfg
+            .vision_config
+            .as_ref()
+            .ok_or_else(|| {
+                mlx_rs::error::Exception::custom("vlm prepare_inputs: config has no vision_config")
+            })?
+            .spatial_merge_size;
         let (t_pos, h_pos, w_pos, rope_delta) = get_rope_index_single_batch(
             &host_ids,
             image.grids.as_slice(),
@@ -167,7 +173,16 @@ impl UserInputProcessor for Qwen35Processor {
             });
         }
 
-        let merge = self.cfg.vision_config.spatial_merge_size;
+        let merge = self
+            .cfg
+            .vision_config
+            .as_ref()
+            .ok_or_else(|| {
+                Error::Other(
+                    "vlm processor: config has no vision_config; not a VLM checkpoint".into(),
+                )
+            })?
+            .spatial_merge_size;
         let mut grids: Vec<[i32; 3]> = Vec::with_capacity(input.images.len());
         let mut pixel_arrays: Vec<Array> = Vec::with_capacity(input.images.len());
         let mut expected_pad_total = 0_usize;

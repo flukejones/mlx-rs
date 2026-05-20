@@ -68,6 +68,7 @@ fn parse_args() -> Result<Args> {
 }
 
 fn main() -> Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let args = parse_args()?;
     eprintln!("[loading {}]", args.model.display());
     let mut ctx = load(&args.model)?;
@@ -83,7 +84,7 @@ fn main() -> Result<()> {
             temperature: args.temperature,
             top_p: args.top_p,
         },
-        extra_stop_ids: Vec::new(),
+        ..GenerateParams::default()
     };
 
     let mut stdout = std::io::stdout().lock();

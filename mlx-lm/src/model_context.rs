@@ -31,6 +31,12 @@ pub struct GenerateParams {
     /// default; useful for stop-on-newline or stop-on-`</answer>`
     /// style early exits.
     pub extra_stop_ids: Vec<u32>,
+
+    /// Force the non-MTP per-token path even on models that ship an
+    /// MTP head. Default `false` — MTP runs whenever
+    /// [`LanguageModel::has_mtp`] returns true. Set `true` to A/B
+    /// against the speculative path (parity tests use this).
+    pub disable_mtp: bool,
 }
 
 impl Default for GenerateParams {
@@ -39,6 +45,7 @@ impl Default for GenerateParams {
             max_new_tokens: 256,
             sampling: SamplingParams::default(),
             extra_stop_ids: Vec::new(),
+            disable_mtp: false,
         }
     }
 }
@@ -239,30 +246,51 @@ pub fn generate(
     let mut pending_id = sampler.sample(&initial_logits)?;
     async_eval([&pending_id])?;
 
-    for _ in 0..params.max_new_tokens {
-        // Submit N+1 before syncing on N — overlap host coherence
-        // sync with N+1 GPU compute.
-        let next_logits = ctx.model.step(&pending_id)?.logits;
-        let next_pending = sampler.sample(&next_logits)?;
-        async_eval([&next_pending])?;
+    // MTP runs whenever the model ships an MTP head and the caller
+    // hasn't opted out via `GenerateParams::disable_mtp`. The current
+    // adapter only handles greedy (`temperature == 0.0`); sampled
+    // requests fall back to the per-token path. Greedy + MTP is
+    // byte-identical to greedy + non-MTP (parity test gates this).
+    let use_mtp = params.sampling.temperature == 0.0
+        && ctx.model.has_mtp()
+        && !params.disable_mtp;
 
-        let id_i32 = pending_id.item::<i32>();
-        if id_i32 < 0 || id_i32 >= vocab {
-            return Err(Error::Shape(format!(
-                "sampler returned out-of-vocab id {id_i32} (vocab = {vocab})"
-            )));
-        }
-        let token = id_i32 as u32;
-        pending_id = next_pending;
+    if use_mtp {
+        run_mtp_loop(
+            ctx,
+            &pending_id,
+            &params,
+            &mut decoder,
+            &mut finish_reason,
+            on_token,
+            vocab,
+        )?;
+    } else {
+        for _ in 0..params.max_new_tokens {
+            // Submit N+1 before syncing on N — overlap host coherence
+            // sync with N+1 GPU compute.
+            let next_logits = ctx.model.step(&pending_id)?.logits;
+            let next_pending = sampler.sample(&next_logits)?;
+            async_eval([&next_pending])?;
 
-        if ctx.eos_ids.contains(&token) || params.extra_stop_ids.contains(&token) {
-            finish_reason = FinishReason::Stop;
-            break;
-        }
+            let id_i32 = pending_id.item::<i32>();
+            if id_i32 < 0 || id_i32 >= vocab {
+                return Err(Error::Shape(format!(
+                    "sampler returned out-of-vocab id {id_i32} (vocab = {vocab})"
+                )));
+            }
+            let token = id_i32 as u32;
+            pending_id = next_pending;
 
-        let delta = decoder.push(token, ctx.processor.as_ref())?;
-        if matches!(on_token(token, &delta), ControlFlow::Break(())) {
-            break;
+            if ctx.eos_ids.contains(&token) || params.extra_stop_ids.contains(&token) {
+                finish_reason = FinishReason::Stop;
+                break;
+            }
+
+            let delta = decoder.push(token, ctx.processor.as_ref())?;
+            if matches!(on_token(token, &delta), ControlFlow::Break(())) {
+                break;
+            }
         }
     }
 
@@ -273,6 +301,53 @@ pub fn generate(
         completion_tokens,
         finish_reason,
     })
+}
+
+/// Greedy MTP loop. Each iteration calls `try_mtp_decode_greedy` which
+/// returns 1 or 2 just-committed token ids plus the next
+/// not-yet-committed pending. EOS / stop-ids / callback-break are
+/// checked per token within the returned batch.
+fn run_mtp_loop(
+    ctx: &mut ModelContext,
+    initial_pending: &Array,
+    params: &GenerateParams,
+    decoder: &mut IncrementalDecoder,
+    finish_reason: &mut FinishReason,
+    on_token: &mut TokenCallback<'_>,
+    vocab: i32,
+) -> Result<(), Error> {
+    let mut pending = initial_pending.clone();
+    let mut budget = params.max_new_tokens;
+    while budget > 0 {
+        let (tokens, next_pending) =
+            ctx.model.try_mtp_decode_greedy(&pending)?.ok_or_else(|| {
+                Error::Other("MTP loop on a model that no longer reports has_mtp".into())
+            })?;
+        if tokens.is_empty() {
+            return Err(Error::Other("MTP returned zero tokens".into()));
+        }
+        pending = next_pending;
+        for token in tokens.iter().copied() {
+            if token >= vocab as u32 {
+                return Err(Error::Shape(format!(
+                    "MTP returned out-of-vocab id {token} (vocab = {vocab})"
+                )));
+            }
+            if ctx.eos_ids.contains(&token) || params.extra_stop_ids.contains(&token) {
+                *finish_reason = FinishReason::Stop;
+                return Ok(());
+            }
+            let delta = decoder.push(token, ctx.processor.as_ref())?;
+            if matches!(on_token(token, &delta), ControlFlow::Break(())) {
+                return Ok(());
+            }
+            budget -= 1;
+            if budget == 0 {
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Run the prefill phase. When the model exposes a non-`None`

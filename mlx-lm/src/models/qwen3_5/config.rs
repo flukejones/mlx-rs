@@ -128,6 +128,14 @@ pub struct TextConfig {
     /// Inner hidden width of the always-on dense shared expert.
     #[serde(default)]
     pub shared_expert_intermediate_size: i32,
+
+    // ── MTP (Multi-Token Prediction) fields ──
+    /// Number of MTP layers (0 disables).
+    #[serde(default)]
+    pub mtp_num_hidden_layers: i32,
+    /// If false, the MTP head shares `embed_tokens` with the main decoder.
+    #[serde(default)]
+    pub mtp_use_dedicated_embeddings: bool,
 }
 
 impl TextConfig {
@@ -214,7 +222,11 @@ pub use crate::quantization::QuantizationConfig;
 pub struct ModelConfig {
     pub model_type: String,
     pub text_config: TextConfig,
-    pub vision_config: VisionConfig,
+    /// Text-only MoE checkpoints (e.g. mlx-lm convert output) omit this
+    /// entirely; the VLM adapter requires it and errors at its own
+    /// load_context if absent.
+    #[serde(default)]
+    pub vision_config: Option<VisionConfig>,
 
     #[serde(default = "default_image_token_id")]
     pub image_token_id: u32,
@@ -389,11 +401,16 @@ mod tests {
         assert_eq!(cfg.text_config.rope_parameters.rope_theta, 10_000_000.0);
         assert!(cfg.text_config.rope_parameters.mrope_interleaved);
 
-        assert_eq!(cfg.vision_config.depth, 24);
-        assert_eq!(cfg.vision_config.hidden_size, 1024);
-        assert_eq!(cfg.vision_config.out_hidden_size, 2560);
-        assert_eq!(cfg.vision_config.num_heads, 16);
-        assert!(cfg.vision_config.deepstack_visual_indexes.is_empty());
+        assert_eq!(cfg.vision_config.as_ref().unwrap().depth, 24);
+        assert_eq!(cfg.vision_config.as_ref().unwrap().hidden_size, 1024);
+        assert_eq!(cfg.vision_config.as_ref().unwrap().out_hidden_size, 2560);
+        assert_eq!(cfg.vision_config.as_ref().unwrap().num_heads, 16);
+        assert!(cfg
+            .vision_config
+            .as_ref()
+            .unwrap()
+            .deepstack_visual_indexes
+            .is_empty());
 
         assert_eq!(cfg.image_token_id, 248056);
         assert_eq!(cfg.vision_start_token_id, 248053);
@@ -427,7 +444,7 @@ mod tests {
         let cfg = ModelConfig::from_file(&path).expect("parse chandra q8 config");
         assert_eq!(cfg.text_config.num_hidden_layers, 32);
         assert_eq!(cfg.text_config.layer_types.len(), 32);
-        assert_eq!(cfg.vision_config.depth, 24);
+        assert_eq!(cfg.vision_config.as_ref().unwrap().depth, 24);
         assert_eq!(cfg.image_token_id, 248056);
         assert!(cfg.effective_quantization().is_some());
     }
