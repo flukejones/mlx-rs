@@ -313,34 +313,12 @@ fn bench_one(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
     log_mlx_mem(&format!("{group_prefix}/post_unload"));
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum BenchSet {
-    Trimmed,
-    Full,
-}
-
-fn bench_set() -> BenchSet {
-    match std::env::var("MLX_LM_BENCH_SET").as_deref() {
-        Ok("full" | "all") => BenchSet::Full,
-        _ => BenchSet::Trimmed,
-    }
-}
-
 fn bench_decode(c: &mut Criterion) {
     eprintln!("lm_decode cache root: {}", bench_cache_root().display());
-    let set = bench_set();
-    eprintln!("lm_decode bench set: {set:?} (override with MLX_LM_BENCH_SET={{trimmed,full}})");
 
     bench_one(c, "qwen3_5", "4b_q8", "mlx-community/Qwen3.5-4B-MLX-8bit");
     bench_one(c, "qwen3_5", "9b_q8", "mlx-community/Qwen3.5-9B-8bit");
     bench_one(c, "qwen3_6", "27b_q4", "mlx-community/Qwen3.6-27B-4bit");
-    bench_one(c, "qwen3_6", "27b_q8", "mlx-community/Qwen3.6-27B-8bit");
-    bench_one(
-        c,
-        "qwen3_6_moe",
-        "35b_a3b_q4",
-        "mlx-community/Qwen3.6-35B-A3B-4bit",
-    );
     bench_one(
         c,
         "qwen3_6_moe",
@@ -366,21 +344,7 @@ fn bench_decode(c: &mut Criterion) {
         "26b_a4b_it_q8",
         "mlx-community/gemma-4-26b-a4b-it-8bit",
     );
-    bench_one(
-        c,
-        "gemma4",
-        "31b_it_q8",
-        "mlx-community/gemma-4-31b-it-8bit",
-    );
-
-    if set == BenchSet::Full {
-        bench_one(
-            c,
-            "gemma4",
-            "26b_a4b_it_q4",
-            "mlx-community/gemma-4-26b-a4b-it-4bit",
-        );
-    }
+    bench_one(c, "gemma4", "31b_it_q4", "mlx-community/gemma-4-31b-it-4bit");
 }
 
 criterion_group!(benches, bench_decode);

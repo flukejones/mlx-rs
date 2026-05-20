@@ -196,7 +196,6 @@ fn run_bench(
         .arg("lm_decode")
         .args(bench_args.split_whitespace())
         .env("MLX_LM_BENCH_NO_DOWNLOAD", "1")
-        .env("MLX_LM_BENCH_SET", "trimmed")
         .current_dir(workspace_root())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

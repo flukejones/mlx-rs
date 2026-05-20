@@ -1,7 +1,7 @@
-//! Qwen3.6-27B (qwen3_5 architecture) smoke tests against the
-//! unified `mlx_lm::load` surface, covering both q4 and q8
-//! checkpoints. `#[ignore]`-gated — both need the matching
-//! checkpoint on disk under `$HOME/.cache/mlx-rs-bench/`.
+//! Qwen3.6-27B (qwen3_5 architecture) smoke test against the
+//! unified `mlx_lm::load` surface, q4 checkpoint. `#[ignore]`-gated
+//! — needs the matching checkpoint on disk under
+//! `$HOME/.cache/mlx-rs-bench/`.
 
 #![allow(clippy::missing_assert_message, reason = "test code")]
 
