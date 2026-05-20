@@ -26,7 +26,6 @@ members = [
   "mlx-tests",
   "xtask",
   "examples/lm",
-  "examples/mistral",
   "examples/mnist",
 ]
 

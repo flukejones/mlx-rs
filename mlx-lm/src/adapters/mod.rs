@@ -1,6 +1,6 @@
 //! Per-family [`crate::LanguageModel`] adapters.
 //!
-//! Each family's concrete model type ([`crate::models::llama::Model`],
+//! Each family's concrete model type ([`crate::models::gemma4::Model`],
 //! [`crate::models::qwen3_5::LanguageModel`], etc.) plus its concrete
 //! cache type get wrapped in an adapter struct in this module. The
 //! adapter implements [`crate::LanguageModel`] so the rest of the
@@ -10,8 +10,6 @@
 //! *only* driver of its family's prefill/decode primitives.
 
 pub(crate) mod gemma4;
-pub(crate) mod llama;
-pub(crate) mod qwen3;
 pub(crate) mod qwen3_5;
 pub(crate) mod qwen3_5_moe;
 pub(crate) mod qwen3_5_vlm;

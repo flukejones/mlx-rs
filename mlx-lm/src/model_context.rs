@@ -352,20 +352,14 @@ fn detect_model_type(dir: &Path) -> Result<String, Error> {
 /// the family-to-adapter mapping.
 fn dispatch_load(model_type: &str, dir: &Path) -> Result<crate::adapters::LoadedContext, Error> {
     match model_type {
-        // Llama / Llama-3 / TinyLlama family.
-        "llama" => crate::adapters::llama::load_context(dir),
-
-        // Qwen3 dense (1.7B, 8B, etc.).
-        "qwen3" => crate::adapters::qwen3::load_context(dir),
-
         // Gemma 4 family (text + MoE, no vision tower in this crate).
         "gemma4" | "gemma4_text" | "gemma4textmodel" | "gemma4forcausallm" => {
             crate::adapters::gemma4::load_context(dir)
         }
 
-        // Qwen3.5 / Qwen3.6 dense + VL. The VLM probe inside
-        // `qwen3_5_vlm::load_context` looks at
-        // `preprocessor_config.json` to decide dense vs VLM.
+        // Qwen3.5 / Qwen3.6 dense + VL (incl. chandra-ocr-2).
+        // The VLM probe inside `qwen3_5_vlm::load_context` looks
+        // at `preprocessor_config.json` to decide dense vs VLM.
         "qwen3_5" | "qwen3_5_text" | "qwen3_5forconditionalgeneration" => {
             crate::adapters::qwen3_5_vlm::load_context(dir)
         }

@@ -1,18 +1,16 @@
 use std::borrow::Cow;
 
 use crate::{
-    array,
     builder::Builder,
     error::Exception,
     module::{Module, UnaryModule},
-    ops::{arange, expand_dims, matmul, softmax_axis},
+    ops::{matmul, softmax_axis},
     quantization::MaybeQuantized,
-    Array, ArrayElement, FromScalar,
+    Array,
 };
 use dyn_clone::DynClone;
 use mlx_internal_macros::{generate_builder, Buildable, Builder};
 use mlx_macros::{ModuleParameters, Quantizable};
-use num_traits::bounds::LowerBounded;
 
 use crate::{
     error::{MultiHeadAttentionBuildError, TransformerBulidError},
@@ -138,30 +136,6 @@ impl MultiHeadAttention {
     /// Default value for the `bias` field
     pub const DEFAULT_BIAS: bool = false;
 
-    /// Creates an `[N, N]` additive causal mask for a fresh (uncached)
-    /// forward pass — no offset support.
-    ///
-    /// Decoder models with a KV cache must use a mask whose key axis
-    /// covers `cache.offset() + L`, otherwise the SDPA broadcast against
-    /// the concatenated K/V will fail at the second turn. Prefer
-    /// `mlx_lm::utils::create_attention_mask(&h, cache)`, which threads
-    /// `cache.offset()` through correctly.
-    #[deprecated(
-        note = "for cached decoders use mlx_lm::utils::create_attention_mask; \
-                this `[N, N]` form silently drops cache.offset() and breaks multi-turn"
-    )]
-    pub fn create_additive_causal_mask<T>(n: i32) -> Result<Array, Exception>
-    where
-        T: ArrayElement + LowerBounded,
-        Array: FromScalar<T>,
-    {
-        let indices = arange::<_, T>(0, n, 1)?;
-        let left = expand_dims(&indices, 1)?;
-        let right = expand_dims(&indices, 0)?;
-        let mask = left.lt(right)?;
-        let mask = mask.as_type::<T>()?.multiply(array!(T::min_value()))?; // TODO: replace with f32::MIN?
-        Ok(mask)
-    }
 }
 
 generate_builder! {

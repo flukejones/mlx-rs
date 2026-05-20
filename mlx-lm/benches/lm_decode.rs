@@ -331,28 +331,6 @@ fn bench_decode(c: &mut Criterion) {
     let set = bench_set();
     eprintln!("lm_decode bench set: {set:?} (override with MLX_LM_BENCH_SET={{trimmed,full}})");
 
-    bench_one(c, "qwen3", "large_bf16", "mlx-community/Qwen3-1.7B-bf16");
-    bench_one(c, "qwen3", "large_q8", "mlx-community/Qwen3-1.7B-8bit");
-    bench_one(c, "qwen3", "large_q4", "mlx-community/Qwen3-1.7B-4bit");
-    bench_one(
-        c,
-        "llama",
-        "small_bf16",
-        "mlx-community/Llama-3.2-1B-Instruct-bf16",
-    );
-    bench_one(
-        c,
-        "llama",
-        "small_q8",
-        "mlx-community/Llama-3.2-1B-Instruct-8bit",
-    );
-    bench_one(
-        c,
-        "llama",
-        "small_q4",
-        "mlx-community/Llama-3.2-1B-Instruct-4bit",
-    );
-
     bench_one(c, "qwen3_5", "4b_q8", "mlx-community/Qwen3.5-4B-MLX-8bit");
     bench_one(c, "qwen3_5", "9b_q8", "mlx-community/Qwen3.5-9B-8bit");
     bench_one(c, "qwen3_6", "27b_q4", "mlx-community/Qwen3.6-27B-4bit");
@@ -401,27 +379,6 @@ fn bench_decode(c: &mut Criterion) {
             "gemma4",
             "26b_a4b_it_q4",
             "mlx-community/gemma-4-26b-a4b-it-4bit",
-        );
-        bench_one(c, "qwen3", "small_bf16", "mlx-community/Qwen3-0.6B-bf16");
-        bench_one(c, "qwen3", "small_q8", "mlx-community/Qwen3-0.6B-8bit");
-        bench_one(c, "qwen3", "small_q4", "mlx-community/Qwen3-0.6B-4bit");
-        bench_one(
-            c,
-            "llama",
-            "large_bf16",
-            "mlx-community/Llama-3.2-3B-Instruct-bf16",
-        );
-        bench_one(
-            c,
-            "llama",
-            "large_q8",
-            "mlx-community/Llama-3.2-3B-Instruct-8bit",
-        );
-        bench_one(
-            c,
-            "llama",
-            "large_q4",
-            "mlx-community/Llama-3.2-3B-Instruct-4bit",
         );
     }
 }

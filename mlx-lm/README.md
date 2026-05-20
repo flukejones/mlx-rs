@@ -1,8 +1,11 @@
 # mlx-lm
 
-Decoder-language-model glue on top of `mlx-rs`: qwen3, qwen3.5 (hybrid
-SSM + attention), llama 3.2. Provides the KV cache machinery, sampling
-loop, prompt-cache save/load, and a few model loaders.
+Decoder-language-model glue on top of `mlx-rs`: gemma 4 (dense + MoE +
+per-layer-input), qwen 3.5 / 3.6 (hybrid SSM + attention + VL),
+qwen 3.5-MoE / 3.6-MoE (35B-A3B). Provides the KV cache machinery,
+sampling loop, prompt-cache save/load, sliding-window prefill
+chunking, the unified `UserInput` / `LMInput` / `LanguageModel`
+surface, and the `mlx_lm::load` / `mlx_lm::generate` entry points.
 
 ## KV cache variants
 
@@ -120,14 +123,20 @@ cache variants round-trip.
 
 ## Models
 
-- `models::qwen3` — Qwen3 base (0.6B / 1.7B / …)
-- `models::llama` — Llama 3.2 (1B / 3B)
-- `models::qwen3_5` — Qwen3.5 hybrid SSM + attention (4B / 9B);
-  includes vision tower
+- `models::gemma4` — Gemma 4 dense + MoE + per-layer-input
+  (E2B / E4B / 26B-A4B / 31B). Sliding-window attention every
+  Nth layer; chunked prefill when prompt > window.
+- `models::qwen3_5` — Qwen 3.5 / 3.6 hybrid SSM + attention
+  (4B / 9B / 27B). Includes the vision tower (Qwen 3.5-VL,
+  Qwen 3.6-VL, chandra-ocr-2).
+- `models::qwen3_5_moe` — Qwen 3.6-MoE (35B-A3B) atop the
+  qwen3_5 hybrid spine with switch-FFN experts and per-tensor
+  quantisation overrides.
 
-Each exposes `load_*_model(&Path)` and a `Generate<C: KeyValueCache>`
-streaming iterator. Qwen3.5 also has `Generate::with_caches(...)` for
-callers that build their own per-layer cache list.
+All loaders are private. Consumers use
+`mlx_lm::load(&Path) -> ModelContext` +
+`mlx_lm::generate(&mut ctx, UserInput, GenerateParams, on_token)`.
+Family dispatch happens inside `load` via `config.json::model_type`.
 
 ## Benchmarks
 
