@@ -6,9 +6,13 @@ version = "0.0.1"
 [dependencies]
 mlx-rs.workspace = true
 mlx-lm.workspace = true
+mlx-lm-convert = { path = "../../mlx-lm-convert" }
 mlx-lm-utils.workspace = true
 
 anyhow = "1"
+argh = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
 axum = { version = "0.8", default-features = false, features = ["json", "http1", "tokio"] }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 ctrlc = "3"
