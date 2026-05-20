@@ -462,6 +462,7 @@ mod tests {
             group_size: 64,
             bits: 8,
             mode: "affine".to_owned(),
+            overrides: HashMap::new(),
         };
         quantize_language_model(&mut model, &q).unwrap();
         let params = model.parameters_mut().flatten();
