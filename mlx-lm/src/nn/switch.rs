@@ -12,9 +12,10 @@
 //! [`SwitchActivation`] (geglu / swiglu). Type aliases per model live
 //! in the consuming module (e.g. `gemma4::GemmaSwitchGlu`).
 //!
-//! Fast path: both layouts share [`dispatch_fused_combine`] which feeds
-//! the fused `gather_qmm_combine` Metal kernel after the activation
-//! step. The fused-down dispatch lives in one place.
+//! Down + combine runs as two upstream ops (`gather_qmm` then
+//! `(weights * y).sum(-2)`). A hand-fused Metal kernel was tried and
+//! benched 10% slower than the two-launch path on gemma 4 26B-A4B q8
+//! (mlx-core 0.31.2 on M4 Max); dropped.
 
 use std::sync::OnceLock;
 
@@ -29,7 +30,6 @@ use mlx_rs::quantization::{MaybeQuantized, Quantizable};
 use mlx_rs::Array;
 
 use crate::activations::{geglu, swiglu, GegluCache, SwigluCache};
-use crate::fused_kernels::{gather_qmm_combine, GatherQmmCombineInputs};
 
 /// Index-count threshold below which `gather_qmm` runs without
 /// pre-sorting by expert id. Argsort + take_axis costs more than the
@@ -217,37 +217,8 @@ impl SwitchActivation for SwigluActivation {
 
 // ─── Shared finish path (fused down + combine) ────────────────────
 
-/// Fused-down dispatch: take an already-activated `[..., K, 1, H]`
-/// tensor, squeeze, and feed the fused Metal kernel. Returns
-/// `Some(out)` on the fast path or `None` when `down_proj` is dense
-/// (caller takes the 2-launch fallback).
-fn dispatch_fused_combine(
-    activated: &Array,
-    down_proj: &MaybeQuantized<SwitchLinear>,
-    indices: &Array,
-    top_k_weights: &Array,
-) -> Result<Option<Array>, Exception> {
-    let activated_3d = activated.squeeze_axes(&[-2])?;
-    match down_proj {
-        MaybeQuantized::Quantized(q) => {
-            let inputs = GatherQmmCombineInputs {
-                activated: &activated_3d,
-                weights: top_k_weights,
-                wq: q.inner.weight.as_ref(),
-                scales: q.scales.as_ref(),
-                biases: q.biases.as_ref(),
-                indices,
-                group_size: q.group_size,
-                bits: q.bits,
-            };
-            gather_qmm_combine(inputs).map(Some)
-        }
-        MaybeQuantized::Original(_) => Ok(None),
-    }
-}
-
 /// Apply the down_proj + sum-combine in the 2-launch path. Shared
-/// between both layouts' fallback branches.
+/// between both layouts.
 fn combine_with_weights(
     activated: &Array,
     down_proj: &MaybeQuantized<SwitchLinear>,
@@ -357,11 +328,6 @@ impl<A: SwitchActivation> PackedSwitchFfn<A> {
         let parts = mlx_rs::ops::split_sections(&gate_up, &[self.hidden_dims], -1)?;
         let activated = self.activation.activate(&parts[0], &parts[1])?;
 
-        if let Some(out) =
-            dispatch_fused_combine(&activated, &self.down_proj, indices, top_k_weights)?
-        {
-            return Ok(out);
-        }
         combine_with_weights(&activated, &self.down_proj, indices, top_k_weights, false)
     }
 
@@ -492,11 +458,6 @@ impl<A: SwitchActivation> SplitSwitchFfn<A> {
         let up = apply_proj(&self.up_proj, &x_exp, indices, false)?;
         let activated = self.activation.activate(&gate, &up)?;
 
-        if let Some(out) =
-            dispatch_fused_combine(&activated, &self.down_proj, indices, top_k_weights)?
-        {
-            return Ok(out);
-        }
         combine_with_weights(&activated, &self.down_proj, indices, top_k_weights, false)
     }
 

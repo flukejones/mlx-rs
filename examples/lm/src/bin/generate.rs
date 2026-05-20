@@ -87,15 +87,32 @@ fn main() -> Result<()> {
     };
 
     let mut stdout = std::io::stdout().lock();
+    let t_start = std::time::Instant::now();
+    let mut t_first: Option<std::time::Instant> = None;
     let result = generate(&mut ctx, input, params, &mut |_, delta| {
+        if t_first.is_none() {
+            t_first = Some(std::time::Instant::now());
+        }
         let _ = stdout.write_all(delta.as_bytes());
         let _ = stdout.flush();
         std::ops::ControlFlow::Continue(())
     })?;
+    let t_end = std::time::Instant::now();
     println!();
+    let t_first = t_first.unwrap_or(t_end);
+    let prefill_s = (t_first - t_start).as_secs_f64();
+    let decode_s = (t_end - t_first).as_secs_f64();
+    let prefill_tps = result.prompt_tokens as f64 / prefill_s;
+    let decode_tps = (result.completion_tokens.saturating_sub(1)) as f64 / decode_s.max(1e-9);
     eprintln!(
-        "[prompt tokens={} completion={} finish={:?}]",
-        result.prompt_tokens, result.completion_tokens, result.finish_reason
+        "[prompt tokens={} completion={} finish={:?} | prefill {:.2}s ({:.1} tok/s) | decode {:.2}s ({:.1} tok/s)]",
+        result.prompt_tokens,
+        result.completion_tokens,
+        result.finish_reason,
+        prefill_s,
+        prefill_tps,
+        decode_s,
+        decode_tps
     );
     Ok(())
 }

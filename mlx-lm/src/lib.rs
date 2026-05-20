@@ -3,7 +3,6 @@ pub(crate) mod adapters;
 pub mod cache;
 pub mod chat_template;
 pub mod error;
-pub mod fused_kernels;
 pub mod language_model;
 pub mod lm_input;
 pub mod loader;
