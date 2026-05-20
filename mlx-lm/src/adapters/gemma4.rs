@@ -54,9 +54,8 @@ impl LanguageModel for Gemma4Adapter {
         debug_assert!(input.audio.is_none());
         debug_assert!(input.video.is_none());
 
-        let input_arr = input.text.tokens;
         let logits = self.model.forward(ModelInput {
-            inputs: &input_arr,
+            inputs: &input.text.tokens,
             mask: None,
             cache: &mut self.cache,
         })?;
@@ -77,6 +76,30 @@ impl LanguageModel for Gemma4Adapter {
 
     fn vocab_size(&self) -> i32 {
         self.vocab_size
+    }
+
+    /// Gemma 4's sliding-attention layers cap each forward pass at
+    /// `sliding_window` K/V positions. Prompts longer than that
+    /// must be chunked through [`Self::prefill_chunk`]; otherwise
+    /// the sliding cache rotates earlier prefill tokens out of
+    /// reach of the queries that need them, and SDPA fails the
+    /// `[N, K_len]` mask/K shape match.
+    fn prefill_chunk_size(&self) -> Option<i32> {
+        Some(self.args.sliding_window)
+    }
+
+    /// One prefill step: feed the chunk into the model, advance the
+    /// per-layer caches, discard the logits. Cache state carries
+    /// forward across calls (the rotating cache's early-return
+    /// branch keeps the prior window snapshot in scope for each new
+    /// chunk's queries).
+    fn prefill_chunk(&mut self, tokens: &Array) -> Result<(), Error> {
+        let _ = self.model.forward(ModelInput {
+            inputs: tokens,
+            mask: None,
+            cache: &mut self.cache,
+        })?;
+        Ok(())
     }
 }
 

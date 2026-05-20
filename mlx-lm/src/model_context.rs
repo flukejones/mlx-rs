@@ -9,11 +9,11 @@
 use std::ops::ControlFlow;
 use std::path::Path;
 
-use mlx_rs::Array;
+use mlx_rs::{ops::indexing::IndexOp, Array};
 
 use crate::error::Error;
 use crate::language_model::{LanguageModel, UserInputProcessor};
-use crate::lm_input::PrepareResult;
+use crate::lm_input::{LMInput, PrepareResult, Text};
 use crate::sampler::{sample_with, SamplingParams};
 use crate::user_input::UserInput;
 
@@ -116,14 +116,7 @@ pub fn generate(
     let lm_input = ctx.processor.prepare(input)?;
     let prompt_tokens = lm_input.text.tokens.shape()[1];
 
-    let initial_logits = match ctx.model.prepare(lm_input)? {
-        PrepareResult::Logits(arr) => arr,
-        PrepareResult::Primed => {
-            // No prefill logits returned: drive one step against the
-            // sentinel id 0 to get the first usable distribution.
-            ctx.model.step(0)?.logits
-        }
-    };
+    let initial_logits = run_prefill(ctx.model.as_mut(), lm_input)?;
 
     let vocab = ctx.model.vocab_size();
     let mut produced: Vec<u32> = Vec::new();
@@ -161,6 +154,58 @@ pub fn generate(
         completion_tokens: produced.len() as i32,
         finish_reason,
     })
+}
+
+/// Run the prefill phase. When the model exposes a non-`None`
+/// [`LanguageModel::prefill_chunk_size`] and the prompt exceeds it
+/// (gemma4's sliding cache), feed all but the trailing chunk
+/// through [`LanguageModel::prefill_chunk`], then drive the tail
+/// through the normal [`LanguageModel::prepare`] to get the
+/// first-step logits. Multimodal inputs (`image`/`audio`/`video`
+/// set) bypass chunking — they go straight to `prepare`, which the
+/// VLM adapter handles with a single stitched forward pass.
+fn run_prefill(
+    model: &mut dyn LanguageModel,
+    mut input: LMInput,
+) -> Result<Array, Error> {
+    let chunk_size = model.prefill_chunk_size();
+    let is_multimodal = input.image.is_some() || input.audio.is_some() || input.video.is_some();
+    let prompt_len = input.text.tokens.shape()[1];
+
+    if let Some(window) = chunk_size {
+        if !is_multimodal && prompt_len > window {
+            // Feed every chunk except the last through prefill_chunk;
+            // the tail (≤ window tokens) goes through prepare so its
+            // logits seed the sampler.
+            let tokens = input.text.tokens;
+            let mut start = 0_i32;
+            while prompt_len - start > window {
+                let end = start + window;
+                let chunk = tokens.index((.., start..end));
+                model.prefill_chunk(&chunk)?;
+                start = end;
+            }
+            let tail = tokens.index((.., start..prompt_len));
+            input = LMInput {
+                text: Text {
+                    tokens: tail,
+                    mask: None,
+                },
+                image: None,
+                audio: None,
+                video: None,
+            };
+        }
+    }
+
+    match model.prepare(input)? {
+        PrepareResult::Logits(arr) => Ok(arr),
+        PrepareResult::Primed => {
+            // No prefill logits returned: drive one step against the
+            // sentinel id 0 to get the first usable distribution.
+            Ok(model.step(0)?.logits)
+        }
+    }
 }
 
 /// Sample one token id from a logits row, with an OOV check that

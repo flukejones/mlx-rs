@@ -77,6 +77,39 @@ pub trait LanguageModel: Send {
     /// The model's text vocab size, used to validate sampled token
     /// ids before they're decoded.
     fn vocab_size(&self) -> i32;
+
+    /// Maximum number of prompt tokens this model's KV cache can
+    /// hold in a single forward pass. `Some(W)` for sliding-window
+    /// caches (gemma4); `None` for unbounded caches.
+    ///
+    /// When `Some(W)` and the rendered prompt exceeds `W` tokens,
+    /// [`crate::generate`] splits the prefill into chunks of size
+    /// `W` and calls [`Self::prefill_chunk`] on every chunk except
+    /// the last. The trailing chunk goes through the normal
+    /// [`Self::prepare`] / [`Self::step`] path so its logits seed
+    /// the first sampled token.
+    fn prefill_chunk_size(&self) -> Option<i32> {
+        None
+    }
+
+    /// Ingest one prefill chunk and advance the KV cache without
+    /// returning logits. Called by [`crate::generate`] only when
+    /// [`Self::prefill_chunk_size`] returns `Some(W)` and the
+    /// prompt is longer than `W`.
+    ///
+    /// `tokens` is a `[1, chunk_len]` int32 view into the prompt;
+    /// `chunk_len <= prefill_chunk_size().unwrap()`. The
+    /// implementation should append the chunk to its KV cache and
+    /// discard the logits.
+    ///
+    /// Default impl returns an error — only models that opted into
+    /// chunked prefill (by overriding [`Self::prefill_chunk_size`])
+    /// need to implement it.
+    fn prefill_chunk(&mut self, _tokens: &mlx_rs::Array) -> Result<(), Error> {
+        Err(Error::Other(
+            "prefill_chunk called on a model with no prefill_chunk_size override".into(),
+        ))
+    }
 }
 
 /// Convenience for text-only models: a processor that does nothing
