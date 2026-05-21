@@ -7,7 +7,6 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 license.workspace = true
-documentation.workspace = true
 description = "Rust implementation of mlx-lm"
 
 [dependencies]
@@ -25,7 +24,14 @@ minijinja.workspace = true
 minijinja-contrib.workspace = true
 anyhow = "1"
 log.workspace = true
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff", "webp", "gif"], optional = true }
+image = { version = "0.25", default-features = false, features = [
+  "png",
+  "jpeg",
+  "bmp",
+  "tiff",
+  "webp",
+  "gif",
+], optional = true }
 
 [features]
 default = ["models-vision"]

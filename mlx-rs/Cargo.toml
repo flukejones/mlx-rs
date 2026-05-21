@@ -7,16 +7,11 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 license.workspace = true
-documentation.workspace = true
 description = "Unofficial rust wrapper for Apple's mlx machine learning library."
 readme = "README.md"
 
 [package.metadata.docs.rs]
-targets = [
-  "aarch64-apple-darwin",
-  "aarch64-apple-ios",
-  "aarch64-apple-ios-sim",
-]
+targets = ["aarch64-apple-darwin", "aarch64-apple-ios", "aarch64-apple-ios-sim"]
 
 [dependencies]
 mlx-sys.workspace = true
@@ -38,7 +33,9 @@ itertools.workspace = true
 
 # optional dependencies
 safetensors = { workspace = true, optional = true }
-bytemuck = { workspace = true, optional = true, features = ["extern_crate_std"] }
+bytemuck = { workspace = true, optional = true, features = [
+  "extern_crate_std",
+] }
 
 [dev-dependencies]
 pretty_assertions.workspace = true

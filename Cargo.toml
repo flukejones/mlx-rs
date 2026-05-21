@@ -1,19 +1,19 @@
 [workspace.package]
 # All but mlx-sys should follow the same version. mlx-sys should follow
 # the version of mlx-c.
-version = "0.26.0"
+version = "0.27.0"
 edition = "2021"
 authors = [
+  "Luke Jones <luke@ljones.dev>",
   "Minghua Wu <michael.wu1107@gmail.com>",
   "David Chavez <david@dcvz.io>",
 ]
 
-repository = "https://github.com/oxideai/mlx-rs"
+repository = "https://github.com/flukejones/mlx-rs"
 keywords = ["mlx", "deep-learning", "machine-learning"]
 categories = ["science"]
 license = "MIT OR Apache-2.0"
-documentation = "https://oxideai.github.io/mlx-rs/mlx_rs/"
-rust-version = "1.85.0"
+rust-version = "1.95.0"
 
 [workspace]
 members = [
@@ -58,9 +58,9 @@ sha = "68cf2fddd8de5edd8ab3d926391772b2e2cedad8" # mlx-c #114
 [workspace.dependencies]
 # workspace local dependencies
 mlx-sys = { version = "=0.2.0", path = "mlx-sys" }
-mlx-macros = { version = "0.26", path = "mlx-macros" }
-mlx-internal-macros = { version = "0.26", path = "mlx-internal-macros" }
-mlx-rs = { version = "0.26", path = "mlx-rs" }
+mlx-macros = { version = "0.27", path = "mlx-macros" }
+mlx-internal-macros = { version = "0.27", path = "mlx-internal-macros" }
+mlx-rs = { version = "0.27", path = "mlx-rs" }
 mlx-lm = { version = "0.0.1", path = "mlx-lm" }
 mlx-lm-utils = { version = "0.0.1", path = "mlx-lm-utils" }
 
@@ -219,7 +219,7 @@ too_long_first_doc_paragraph = "allow"
 trait_duplication_in_bounds = "warn"
 transmute_ptr_to_ptr = "deny"
 unchecked_time_subtraction = "warn"
-undocumented_unsafe_blocks = "allow"        # excessive warnings
+undocumented_unsafe_blocks = "allow"       # excessive warnings
 unimplemented = "warn"
 uninhabited_references = "warn"
 uninlined_format_args = "warn"
