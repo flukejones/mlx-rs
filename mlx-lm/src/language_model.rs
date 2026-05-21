@@ -117,20 +117,32 @@ pub trait LanguageModel: Send {
     }
 
     /// True iff this model has an MTP head loaded — i.e.
-    /// [`Self::try_mtp_decode_greedy`] will return `Some` on every call.
+    /// [`Self::try_mtp_decode`] will return `Some` on every call.
     /// Default `false`.
     fn has_mtp(&self) -> bool {
         false
     }
 
-    /// MTP self-speculative greedy step. `Ok(None)` on models without
-    /// an MTP head (the default); `Ok(Some((tokens, next_pending)))`
-    /// returns 1 or 2 just-committed token ids plus the next
-    /// not-yet-committed pending token (a `[1]` int32 array). Greedy
-    /// argmax sampling is baked in.
-    fn try_mtp_decode_greedy(
+    /// MTP self-speculative step. Returns 1 or 2 just-committed
+    /// token ids plus the next not-yet-committed pending token (a
+    /// `[1]` int32 array).
+    ///
+    /// `Ok(None)` is reserved for the default impl on models without
+    /// an MTP head. Callers that gate on [`Self::has_mtp`] before
+    /// calling can treat `None` as unreachable (defence-in-depth
+    /// against `has_mtp()` returning a stale value).
+    ///
+    /// Sampling: `sampler` is the same [`crate::sampler::SamplerState`]
+    /// the non-MTP loop uses for this `generate()` call. At
+    /// `temperature == 0.0` the adapter takes the greedy fast path
+    /// (argmax + accept-if-equal); at `temperature > 0` it runs
+    /// Leviathan-2023 rejection sampling against the verify
+    /// distribution so the output distribution matches what the
+    /// non-MTP path would have produced.
+    fn try_mtp_decode(
         &mut self,
         _last_token: &mlx_rs::Array,
+        _sampler: &mut crate::sampler::SamplerState,
     ) -> Result<Option<(Vec<u32>, mlx_rs::Array)>, Error> {
         Ok(None)
     }

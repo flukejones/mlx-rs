@@ -247,19 +247,18 @@ pub fn generate(
     async_eval([&pending_id])?;
 
     // MTP runs whenever the model ships an MTP head and the caller
-    // hasn't opted out via `GenerateParams::disable_mtp`. The current
-    // adapter only handles greedy (`temperature == 0.0`); sampled
-    // requests fall back to the per-token path. Greedy + MTP is
-    // byte-identical to greedy + non-MTP (parity test gates this).
-    let use_mtp = params.sampling.temperature == 0.0
-        && ctx.model.has_mtp()
-        && !params.disable_mtp;
+    // hasn't opted out via `GenerateParams::disable_mtp`. Greedy + MTP
+    // is byte-identical to greedy + non-MTP (parity test gates this).
+    // Sampled MTP uses Leviathan-2023 rejection sampling so the
+    // output distribution matches the non-MTP per-step path.
+    let use_mtp = ctx.model.has_mtp() && !params.disable_mtp;
 
     if use_mtp {
         run_mtp_loop(
             ctx,
             &pending_id,
             &params,
+            &mut sampler,
             &mut decoder,
             &mut finish_reason,
             on_token,
@@ -303,14 +302,21 @@ pub fn generate(
     })
 }
 
-/// Greedy MTP loop. Each iteration calls `try_mtp_decode_greedy` which
-/// returns 1 or 2 just-committed token ids plus the next
-/// not-yet-committed pending. EOS / stop-ids / callback-break are
-/// checked per token within the returned batch.
+/// MTP self-speculative decode loop. Each iteration calls
+/// `try_mtp_decode` which returns 1 or 2 just-committed token ids
+/// plus the next not-yet-committed pending. The adapter handles
+/// the accept rule (argmax compare at temp=0, Leviathan rejection
+/// sampling at temp>0) internally. EOS / stop-ids / callback-break
+/// are checked per token within the returned batch.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors generate()'s state — each param is independent"
+)]
 fn run_mtp_loop(
     ctx: &mut ModelContext,
     initial_pending: &Array,
     params: &GenerateParams,
+    sampler: &mut SamplerState,
     decoder: &mut IncrementalDecoder,
     finish_reason: &mut FinishReason,
     on_token: &mut TokenCallback<'_>,
@@ -320,9 +326,11 @@ fn run_mtp_loop(
     let mut budget = params.max_new_tokens;
     while budget > 0 {
         let (tokens, next_pending) =
-            ctx.model.try_mtp_decode_greedy(&pending)?.ok_or_else(|| {
-                Error::Other("MTP loop on a model that no longer reports has_mtp".into())
-            })?;
+            ctx.model
+                .try_mtp_decode(&pending, sampler)?
+                .ok_or_else(|| {
+                    Error::Other("MTP loop on a model that no longer reports has_mtp".into())
+                })?;
         if tokens.is_empty() {
             return Err(Error::Other("MTP returned zero tokens".into()));
         }

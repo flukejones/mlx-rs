@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 use mlx_lm::chat_template::ChatMessage;
-use mlx_lm::{generate, load, GenerateParams, UserInput};
+use mlx_lm::{generate, load, GenerateParams, SamplingParams, UserInput};
 
 const Q8_PATH: &str = ".cache/mlx-rs-bench/lmstudio-community/Qwen3.6-35B-A3B-MLX-8bit";
 const Q8_MTP_PATH: &str = ".cache/mlx-rs-bench/mlx-community/Qwen3.6-35B-A3B-q8-mtp";
@@ -91,6 +91,71 @@ fn mtp_greedy_matches_non_mtp_greedy_q8() {
         non_mtp, with_mtp,
         "greedy MTP diverged from greedy non-MTP:\n  non-mtp: {non_mtp:?}\n  with-mtp: {with_mtp:?}"
     );
+}
+
+/// Sampled (temp > 0, top-p) generation through the MTP path. The
+/// gate no longer requires `temperature == 0` — the adapter runs
+/// Leviathan-2023 rejection sampling so the output distribution
+/// matches the non-MTP per-step path. Exact bit-parity against the
+/// non-MTP run is *not* expected (RNG draws happen in different
+/// places). Smoke: assert >0 tokens and non-empty text. Early-EOS
+/// is legitimate under sampling once `<|im_end|>` is in the stop
+/// set, so we can't assert the full budget was used.
+#[test]
+#[ignore = "requires mlx-community/Qwen3.6-35B-A3B-q8-mtp on disk"]
+fn mtp_sampled_q8_produces_text() {
+    let dir = home().join(Q8_MTP_PATH);
+    let mut ctx = load(&dir).expect("load");
+
+    let input = UserInput::text("The capital of France is");
+    let params = GenerateParams {
+        max_new_tokens: 32,
+        sampling: SamplingParams {
+            temperature: 0.7,
+            top_p: Some(0.95),
+        },
+        ..GenerateParams::default()
+    };
+    let result = generate(&mut ctx, input, params, &mut |_, _| {
+        std::ops::ControlFlow::Continue(())
+    })
+    .expect("generate");
+    assert!(
+        result.completion_tokens > 0,
+        "sampled MTP produced 0 tokens ({:?})",
+        result.finish_reason
+    );
+    assert!(!result.text.is_empty(), "sampled MTP text empty");
+}
+
+/// MTP path under sampling without top-p. Exercises the no-mask
+/// branch of `mtp_step_sampled` (the union-mask code is skipped
+/// when `params.top_p.is_none()`).
+#[test]
+#[ignore = "requires mlx-community/Qwen3.6-35B-A3B-q8-mtp on disk"]
+fn mtp_sampled_no_top_p_q8_produces_text() {
+    let dir = home().join(Q8_MTP_PATH);
+    let mut ctx = load(&dir).expect("load");
+
+    let input = UserInput::text("Write a haiku about Rust:");
+    let params = GenerateParams {
+        max_new_tokens: 24,
+        sampling: SamplingParams {
+            temperature: 1.0,
+            top_p: None,
+        },
+        ..GenerateParams::default()
+    };
+    let result = generate(&mut ctx, input, params, &mut |_, _| {
+        std::ops::ControlFlow::Continue(())
+    })
+    .expect("generate");
+    assert!(
+        result.completion_tokens > 0,
+        "sampled MTP (no top-p) produced 0 tokens ({:?})",
+        result.finish_reason
+    );
+    assert!(!result.text.is_empty(), "sampled MTP (no top-p) text empty");
 }
 
 /// Same parity check via the chat-template path. The chat input goes

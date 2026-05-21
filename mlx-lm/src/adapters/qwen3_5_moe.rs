@@ -6,9 +6,10 @@
 
 use std::path::Path;
 
-use mlx_rs::ops::concatenate_axis;
-use mlx_rs::ops::indexing::IndexOp;
-use mlx_rs::{argmax_axis, Array};
+use mlx_rs::ops::indexing::{take_along_axis, IndexOp};
+use mlx_rs::ops::{concatenate_axis, exp, log, maximum, r#where, sum_axis};
+use mlx_rs::random::uniform;
+use mlx_rs::{argmax_axis, categorical, Array};
 
 use crate::adapters::LoadedContext;
 use crate::chat_template::ChatTemplate;
@@ -20,6 +21,7 @@ use crate::models::qwen3_5::cache::{make_caches, make_mtp_caches, LayerCache};
 use crate::models::qwen3_5::config::ModelConfig;
 use crate::models::qwen3_5::layer::LanguageModel as Qwen35LanguageModel;
 use crate::models::qwen3_5_moe::{load_qwen3_5_moe_model, Qwen35MoeBlock};
+use crate::sampler::{top_p_keep_mask, SamplerState};
 
 pub(crate) struct Qwen35MoeAdapter {
     model: Qwen35LanguageModel<Qwen35MoeBlock>,
@@ -92,18 +94,23 @@ impl LanguageModel for Qwen35MoeAdapter {
         self.model.mtp.is_some()
     }
 
-    fn try_mtp_decode_greedy(
+    fn try_mtp_decode(
         &mut self,
         last_token: &Array,
+        sampler: &mut SamplerState,
     ) -> Result<Option<(Vec<u32>, Array)>, Error> {
         if self.model.mtp.is_none() {
             return Ok(None);
         }
-        mtp_step(self, last_token).map(Some)
+        if sampler.params().temperature == 0.0 {
+            mtp_step_greedy(self, last_token).map(Some)
+        } else {
+            mtp_step_sampled(self, last_token, sampler).map(Some)
+        }
     }
 }
 
-/// One speculative step.
+/// Greedy speculative step (temperature = 0).
 ///
 /// Inputs:
 /// - `last_token`: candidate for the next-to-commit slot. Its KV is
@@ -131,14 +138,13 @@ impl LanguageModel for Qwen35MoeAdapter {
 ///      forward on `last_token` to commit just its slot. Emit
 ///      `[last_token]`. New `prev_hidden` is the hidden at the
 ///      committed slot. Next pending = `corrected`.
-fn mtp_step(
+fn mtp_step_greedy(
     adapter: &mut Qwen35MoeAdapter,
     last_token: &Array,
 ) -> Result<(Vec<u32>, Array), Error> {
-    let prev_hidden = adapter
-        .prev_hidden
-        .clone()
-        .ok_or_else(|| Error::Other("mtp_step: prev_hidden unset; call prepare first".into()))?;
+    let prev_hidden = adapter.prev_hidden.clone().ok_or_else(|| {
+        Error::Other("mtp_step_greedy: prev_hidden unset; call prepare first".into())
+    })?;
 
     let last_token_2d = last_token.reshape(&[1, 1])?;
     let last_host = last_token.item::<i32>();
@@ -180,6 +186,153 @@ fn mtp_step(
     )?;
     adapter.prev_hidden = Some(rehidden.index((.., -1..)));
     Ok((vec![last_u32], verify_first_id))
+}
+
+/// Sampled speculative step (temperature > 0).
+///
+/// Same prepare/forward shape as `mtp_step_greedy`, but the accept
+/// rule is full Leviathan-2023 rejection sampling so the output
+/// distribution matches what the non-MTP per-step path would have
+/// drawn from. Cross-checked against AirRunner's mlx-lm MTP fork.
+///
+/// 1. MTP forward → `draft_logits` ([1, vocab]).
+/// 2. Build a shared *union* top-p keep mask from
+///    `draft_logits` ∪ `verify_logits[0]` (when top-p is set, else
+///    no mask) so the per-side log-probs share a domain.
+/// 3. Scale + mask + log_softmax both distributions:
+///    `draft_lp = log_softmax((draft_logits / temp) ∧ keep)`,
+///    `verify_lp_0 = log_softmax((verify_logits[0] / temp) ∧ keep)`.
+/// 4. Sample `d ~ draft_lp` (categorical on the masked scaled
+///    logits, by `exp(log_softmax) = softmax`).
+/// 5. Two-token verify forward `[last_token, d]`.
+/// 6. Accept iff `verify_lp_0[d] - draft_lp[d] >= log(u)` for
+///    `u ~ U(0, 1)`.
+///    - Accept: emit `[last_token, d]`, sample bonus next-pending
+///      from `verify_logits[1]` via the caller's `SamplerState`.
+///    - Reject: roll back caches, sample `corrected` from the
+///      residual `r = max(0, exp(verify_lp_0) - exp(draft_lp))`
+///      (fall back to `verify_lp_0` if `r.sum() == 0`), re-run a
+///      single forward on `last_token` to commit its slot, emit
+///      `[last_token]`, next pending = `corrected`.
+fn mtp_step_sampled(
+    adapter: &mut Qwen35MoeAdapter,
+    last_token: &Array,
+    sampler: &mut SamplerState,
+) -> Result<(Vec<u32>, Array), Error> {
+    let prev_hidden = adapter.prev_hidden.clone().ok_or_else(|| {
+        Error::Other("mtp_step_sampled: prev_hidden unset; call prepare first".into())
+    })?;
+
+    let last_token_2d = last_token.reshape(&[1, 1])?;
+    let last_host = last_token.item::<i32>();
+    let last_u32 = host_id_to_u32(last_host, adapter.vocab_size)?;
+
+    let top_p = sampler.params().top_p;
+
+    let draft_logits = run_mtp(adapter, &prev_hidden, &last_token_2d)?;
+
+    // Snapshot caches before the 2-token verify forward so reject can
+    // roll back both.
+    let cache_snapshot = adapter.cache.clone();
+    let mtp_snapshot = adapter.mtp_cache.clone();
+
+    // Verify forward first, so we have `verify_logits[0]` available
+    // to build the *union* top-p mask. The verify pass uses a
+    // placeholder draft `d=0` for now and we'll re-issue after
+    // sampling the real `d` — except we can't, since the cache is
+    // already advanced. Instead: sample `d` from draft_logits using
+    // just the draft-side mask, do verify with the real `d`, then
+    // do the accept test with the union mask.
+    let draft_only_mask = if let Some(p) = top_p {
+        Some(top_p_keep_mask(&draft_logits, p)?)
+    } else {
+        None
+    };
+    let draft_lp_for_sample = sampler.masked_log_probs(&draft_logits, draft_only_mask.as_ref())?;
+    // `categorical!` samples from logits proportional to exp(x). The
+    // log-probs ARE logits up to an additive constant that softmax
+    // absorbs, so sampling from them directly is equivalent to
+    // sampling from the scaled+masked distribution.
+    let draft_id = categorical!(&draft_lp_for_sample)?.reshape(&[1])?;
+    let draft_host = draft_id.item::<i32>();
+
+    let pair = concatenate_axis(&[&last_token_2d, &draft_id.reshape(&[1, 1])?], 1)?;
+    let (verify_hidden, verify_logits) =
+        adapter
+            .model
+            .forward_hidden_and_logits(Some(&pair), None, &mut adapter.cache, None)?;
+    let verify_first = verify_logits.index((.., 0, ..));
+
+    // Now build the union mask over both sides and re-derive
+    // log-probs the accept test will use. Without top-p the mask is
+    // None and both distributions span the full vocab.
+    let keep_mask = if let Some(p) = top_p {
+        let verify_mask = top_p_keep_mask(&verify_first, p)?;
+        let draft_mask = draft_only_mask
+            .as_ref()
+            .expect("top_p_keep_mask was built above when top_p is Some");
+        Some(draft_mask.logical_or(&verify_mask)?)
+    } else {
+        None
+    };
+    let draft_lp = sampler.masked_log_probs(&draft_logits, keep_mask.as_ref())?;
+    let verify_lp_0 = sampler.masked_log_probs(&verify_first, keep_mask.as_ref())?;
+
+    let draft_id_2d = draft_id.reshape(&[1, 1])?;
+    let lp_v = take_along_axis(&verify_lp_0, &draft_id_2d, -1)?.reshape(&[])?;
+    let lp_d = take_along_axis(&draft_lp, &draft_id_2d, -1)?.reshape(&[])?;
+    let log_ratio = lp_v.subtract(&lp_d)?;
+    let u = uniform::<_, f32>(0.0_f32, 1.0_f32, &[], None)?;
+    let log_u = log(&u)?.as_dtype(log_ratio.dtype())?;
+    let accept = log_ratio.ge(&log_u)?.item::<bool>();
+
+    if accept {
+        adapter.prev_hidden = Some(verify_hidden.index((.., -1..)));
+        let draft_u32 = host_id_to_u32(draft_host, adapter.vocab_size)?;
+        // Bonus next-pending from verify_logits[1]: same sampler the
+        // main loop would have used, so top-p/temp apply identically.
+        let next_logits = verify_logits.index((.., 1, ..));
+        let next_pending = sampler.sample(&next_logits)?;
+        return Ok((vec![last_u32, draft_u32], next_pending));
+    }
+
+    // Reject. Restore caches and re-run a single forward on
+    // `last_token` to commit only its slot.
+    adapter.cache = cache_snapshot;
+    adapter.mtp_cache = mtp_snapshot;
+
+    let p_v = exp(&verify_lp_0)?;
+    let p_d = exp(&draft_lp)?;
+    let zero = Array::from_f32(0.0).as_dtype(p_v.dtype())?;
+    let residual = maximum(&p_v.subtract(&p_d)?, &zero)?;
+    let z = sum_axis(&residual, -1, true)?;
+    // Host sync on z: the residual either has non-zero mass (sample
+    // from it) or sums to zero (degenerate case where the union
+    // top-p mask collapsed the support — fall back to verify). The
+    // branch is cheap and only fires on the reject path.
+    let z_host = z.reshape(&[])?.item::<f32>();
+    let corrected = if z_host > 0.0 {
+        // Sample from residual. Pass log(residual) to `categorical!`
+        // so it samples proportional to residual probs. residual
+        // has exact zeros where verify-prob <= draft-prob; replace
+        // those with `0` (so `log` produces -inf) to mask them out.
+        let mask = residual.gt(&zero)?;
+        let safe = r#where(&mask, &residual, &zero)?;
+        let log_r = log(&safe)?;
+        categorical!(&log_r)?.reshape(&[1])?
+    } else {
+        // Fallback: sample from verify distribution directly.
+        categorical!(&verify_lp_0)?.reshape(&[1])?
+    };
+
+    let (rehidden, _) = adapter.model.forward_hidden_and_logits(
+        Some(&last_token_2d),
+        None,
+        &mut adapter.cache,
+        None,
+    )?;
+    adapter.prev_hidden = Some(rehidden.index((.., -1..)));
+    Ok((vec![last_u32], corrected))
 }
 
 /// Drive the MTP head for one draft step. Returns the projected logits

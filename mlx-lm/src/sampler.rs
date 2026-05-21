@@ -1,6 +1,7 @@
 use mlx_rs::{
     argmax_axis, array, categorical,
     error::Exception,
+    nn::log_softmax,
     ops::{
         argsort_axis, cumsum,
         indexing::{take_along_axis, Ellipsis, IndexOp, NewAxis},
@@ -107,6 +108,42 @@ impl SamplerState {
         }
     }
 
+    /// Read access to the sampling knobs the state was built from.
+    /// MTP rejection-sampling needs the temperature + top-p values
+    /// to drive its own masked log-prob computation.
+    pub fn params(&self) -> &SamplingParams {
+        &self.params
+    }
+
+    /// Apply temperature scaling and (optionally) a shared top-p
+    /// keep mask, then return `log_softmax` of the result. Caches
+    /// the `inv_temp` scalar against `logits.dtype()` so repeated
+    /// calls in one decode loop don't re-allocate. Caller is
+    /// responsible for building the keep mask via
+    /// [`top_p_keep_mask`] (or its union across draft + verify).
+    ///
+    /// Errors at `temperature == 0.0`: `1/temp` would be `inf` and
+    /// silently propagate NaN through `log_softmax`. Greedy callers
+    /// must branch separately and never reach this path.
+    pub fn masked_log_probs(
+        &mut self,
+        logits: &Array,
+        keep_mask: Option<&Array>,
+    ) -> Result<Array, Exception> {
+        if self.params.temperature == 0.0 {
+            return Err(Exception::custom(
+                "masked_log_probs: temperature must be > 0; greedy callers go through the argmax path",
+            ));
+        }
+        let dtype = logits.dtype();
+        self.bind(dtype)?;
+        let inv_temp = self
+            .inv_temp
+            .as_ref()
+            .expect("inv_temp populated by bind()");
+        masked_temp_log_probs(logits, keep_mask, inv_temp)
+    }
+
     fn bind(&mut self, dtype: Dtype) -> Result<(), Exception> {
         if self.bound_dtype == Some(dtype) {
             return Ok(());
@@ -164,6 +201,55 @@ pub fn top_p_sample(logits: &Array, p: f32) -> Result<Array, Exception> {
     token.squeeze_axes(&[-1])
 }
 
+/// Build a vocab-positional keep mask (`[1, vocab]` bool) for top-p
+/// at threshold `p` over the given logits. Slot `i` is `true` iff
+/// token id `i` belongs to the smallest descending-probability set
+/// whose preceding cumulative mass is below `p` — i.e. the same set
+/// [`top_p_sample`] keeps, but indexed by vocab id rather than sort
+/// position. The MTP rejection-sampling path needs this to apply a
+/// shared keep mask to both the draft and verify distributions
+/// before computing the accept ratio.
+pub(crate) fn top_p_keep_mask(logits: &Array, p: f32) -> Result<Array, Exception> {
+    let probs = softmax_axis(logits, -1, true)?;
+    let neg = probs.negative()?;
+    let order = argsort_axis(&neg, -1)?;
+    let sorted_probs = take_along_axis(&probs, &order, -1)?;
+    let csum = cumsum(&sorted_probs, -1, false, false)?;
+    let prev = csum.subtract(&sorted_probs)?;
+    let keep_sorted = prev.lt(Array::from_f32(p))?;
+    // argsort(order) is the inverse permutation: it tells us, for each
+    // vocab id, which sort position it ended up at. take_along_axis
+    // with that pulls the keep flag for each vocab id back into
+    // vocab-positional order.
+    let inverse = argsort_axis(&order, -1)?;
+    take_along_axis(&keep_sorted, &inverse, -1)
+}
+
+/// Log-probabilities over a single distribution after temperature
+/// scaling and (optional) top-p masking. `[1, vocab]` in, same shape
+/// out; ids masked out by top-p get `-inf`. Caller can `exp` the
+/// result to recover the probability distribution, or sample from it
+/// via `categorical!` on the same masked logits scaled by `1/temp`.
+///
+/// Used by the MTP rejection-sampling path: both the draft and the
+/// verify side are passed through this helper with the *same*
+/// `keep_mask` (the union of the two per-side top-p masks) so the
+/// resulting log-probs are directly comparable in the accept ratio.
+pub(crate) fn masked_temp_log_probs(
+    logits: &Array,
+    keep_mask: Option<&Array>,
+    inv_temp: &Array,
+) -> Result<Array, Exception> {
+    let scaled = multiply(logits, inv_temp)?;
+    let masked = if let Some(mask) = keep_mask {
+        let neg_inf = Array::from_f32(f32::NEG_INFINITY).as_dtype(scaled.dtype())?;
+        r#where(mask, &scaled, &neg_inf)?
+    } else {
+        scaled
+    };
+    log_softmax(&masked, -1)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test code")]
@@ -218,6 +304,49 @@ mod tests {
             let tok = state.sample(&logits).unwrap();
             assert_eq!(tok.item::<u32>(), 3);
         }
+    }
+
+    #[test]
+    fn top_p_keep_mask_keeps_only_top_token() {
+        // Probs ~ [0.0, ~0.99, ~0.0]: only id=1 should be kept at p=0.5.
+        let logits = Array::from_slice(&[-10.0_f32, 5.0, -10.0], &[1, 3]);
+        let mask = top_p_keep_mask(&logits, 0.5).unwrap();
+        let m: &[bool] = mask.as_slice();
+        assert_eq!(m, &[false, true, false]);
+    }
+
+    #[test]
+    fn top_p_keep_mask_keeps_full_distribution_at_p_one() {
+        let logits = Array::from_slice(&[0.1_f32, 0.5, 0.3, 0.05, 0.05], &[1, 5]);
+        let mask = top_p_keep_mask(&logits, 1.0).unwrap();
+        let m: &[bool] = mask.as_slice();
+        assert_eq!(m, &[true, true, true, true, true]);
+    }
+
+    #[test]
+    fn masked_temp_log_probs_matches_log_softmax_without_mask() {
+        let logits = Array::from_slice(&[0.1_f32, 1.0, 0.3], &[1, 3]);
+        let inv_temp = Array::from_f32(1.0_f32 / 0.7);
+        let got = masked_temp_log_probs(&logits, None, &inv_temp).unwrap();
+        let expected =
+            log_softmax(logits.multiply(Array::from_f32(1.0_f32 / 0.7)).unwrap(), -1).unwrap();
+        let g: &[f32] = got.as_slice();
+        let e: &[f32] = expected.as_slice();
+        for (a, b) in g.iter().zip(e.iter()) {
+            assert!((a - b).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn masked_temp_log_probs_zeroes_excluded_ids() {
+        let logits = Array::from_slice(&[-10.0_f32, 5.0, -10.0], &[1, 3]);
+        let inv_temp = Array::from_f32(1.0_f32);
+        let mask = Array::from_slice(&[false, true, false], &[1, 3]);
+        let lp = masked_temp_log_probs(&logits, Some(&mask), &inv_temp).unwrap();
+        let v: &[f32] = lp.as_slice();
+        assert!(v[0].is_infinite() && v[0] < 0.0);
+        assert!((v[1] - 0.0).abs() < 1e-5);
+        assert!(v[2].is_infinite() && v[2] < 0.0);
     }
 
     #[test]
