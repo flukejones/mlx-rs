@@ -12,7 +12,9 @@ default:
 install-hooks:
 	chmod +x .githooks/commit-msg .githooks/pre-commit .githooks/pre-push
 	git config core.hooksPath .githooks
-	@echo "git core.hooksPath -> .githooks (pre-commit + pre-push run cargo clippy --workspace -- -D warnings)"
+	@echo "git core.hooksPath -> .githooks"
+	@echo "  pre-commit: rustfmt staged-only (auto-folded into commit) + cargo clippy --workspace -- -D warnings"
+	@echo "  pre-push:   cargo clippy --workspace -- -D warnings"
 
 # --- check / fmt / lint ---
 
