@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 
+use mlx_lm::chat_template::ChatMessage;
 use mlx_lm::{generate, load, GenerateParams, UserInput};
 
 const Q8_PATH: &str = ".cache/mlx-rs-bench/lmstudio-community/Qwen3.6-35B-A3B-MLX-8bit";
@@ -89,5 +90,39 @@ fn mtp_greedy_matches_non_mtp_greedy_q8() {
     assert_eq!(
         non_mtp, with_mtp,
         "greedy MTP diverged from greedy non-MTP:\n  non-mtp: {non_mtp:?}\n  with-mtp: {with_mtp:?}"
+    );
+}
+
+/// Same parity check via the chat-template path. The chat input goes
+/// through `ChatTemplate::render` + tokeniser before reaching the
+/// model, so the prompt is longer and includes role markers — exercises
+/// the MTP loop's interaction with prompt prefix length / starting
+/// hidden state, not just raw-text decode.
+#[test]
+#[ignore = "requires mlx-community/Qwen3.6-35B-A3B-q8-mtp on disk"]
+fn mtp_greedy_matches_non_mtp_greedy_q8_chat() {
+    let dir = home().join(Q8_MTP_PATH);
+    let mut ctx = load(&dir).expect("load");
+
+    fn run(ctx: &mut mlx_lm::ModelContext, disable_mtp: bool) -> String {
+        let input = UserInput::chat(vec![ChatMessage::user("Write a haiku about Rust.")]);
+        let params = GenerateParams {
+            max_new_tokens: 32,
+            disable_mtp,
+            ..GenerateParams::default()
+        };
+        generate(ctx, input, params, &mut |_, _| {
+            std::ops::ControlFlow::Continue(())
+        })
+        .expect("generate")
+        .text
+    }
+
+    let non_mtp = run(&mut ctx, true);
+    let with_mtp = run(&mut ctx, false);
+
+    assert_eq!(
+        non_mtp, with_mtp,
+        "greedy MTP diverged from greedy non-MTP (chat input):\n  non-mtp: {non_mtp:?}\n  with-mtp: {with_mtp:?}"
     );
 }
