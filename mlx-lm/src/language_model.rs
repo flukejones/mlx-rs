@@ -201,9 +201,12 @@ impl UserInputProcessor for TextOnlyProcessor {
             });
         }
 
+        let template_kwargs = input.template_kwargs;
         let rendered = match input.prompt {
             crate::user_input::Prompt::Text(s) => s,
-            crate::user_input::Prompt::Chat(msgs) => self.chat_template.render(&msgs, true)?,
+            crate::user_input::Prompt::Chat(msgs) => {
+                self.chat_template.render(&msgs, true, &template_kwargs)?
+            }
         };
 
         let enc = self
@@ -231,6 +234,8 @@ impl UserInputProcessor for TextOnlyProcessor {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test code")]
+    use std::collections::HashMap;
+
     use super::*;
     use crate::chat_template::{ChatMessage, ChatTemplate};
     use crate::user_input::{Audio, UserInput};
@@ -263,6 +268,7 @@ mod tests {
                 sample_rate: 16_000,
             }],
             videos: Vec::new(),
+            template_kwargs: HashMap::new(),
         };
         let err = p.prepare(input).unwrap_err();
         assert!(matches!(
@@ -285,6 +291,7 @@ mod tests {
             images: vec![Image::Decoded(DynamicImage::new_rgb8(1, 1))],
             audios: Vec::new(),
             videos: Vec::new(),
+            template_kwargs: HashMap::new(),
         };
         let err = p.prepare(input).unwrap_err();
         assert!(matches!(

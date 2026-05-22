@@ -6,6 +6,7 @@
 
 #![allow(clippy::missing_assert_message, reason = "test code")]
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use mlx_lm::chat_template::ChatMessage;
@@ -63,6 +64,7 @@ fn text_only_rejects_image_input() {
         images: vec![mlx_lm::Image::Decoded(image::DynamicImage::new_rgb8(1, 1))],
         audios: Vec::new(),
         videos: Vec::new(),
+        template_kwargs: HashMap::new(),
     };
     let params = GenerateParams {
         max_new_tokens: 4,

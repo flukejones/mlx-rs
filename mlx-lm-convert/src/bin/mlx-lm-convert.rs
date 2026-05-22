@@ -7,9 +7,9 @@
 //! demand.
 //!
 //! Usage:
-//!     convert --src /Volumes/backup/full-models/Qwen/Qwen3.6-35B-A3B \
-//!             --dst ~/.cache/mlx-rs-bench/mlx-community/Qwen3.6-35B-A3B-q8-mtp \
-//!             [--bits 8] [--group-size 64] [--verify]
+//!     mlx-lm-convert --src /Volumes/backup/full-models/Qwen/Qwen3.6-35B-A3B \
+//!                    --dst ~/.cache/mlx-rs-bench/mlx-community/Qwen3.6-35B-A3B-q8-mtp \
+//!                    [--bits 8] [--group-size 64] [--verify]
 
 #![allow(clippy::print_stderr, reason = "CLI binary logs to stderr")]
 #![allow(clippy::print_stdout, reason = "CLI binary prints to stdout")]

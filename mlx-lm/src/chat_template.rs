@@ -7,6 +7,7 @@
 //! plain-string form (llama-family) and the parts-list form
 //! (qwen3-vl / qwen3.5 multimodal).
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use minijinja::{context, Environment, Value};
@@ -126,10 +127,14 @@ impl ChatTemplate {
     /// Render `messages` through the template.
     /// `add_generation_prompt`: true for inference (appends
     /// assistant turn-start), false for fine-tune data prep.
+    /// `kwargs`: extra named values exposed to the template (e.g.
+    /// `enable_thinking` for qwen3.6's reasoning gate). Empty map
+    /// means "template defaults apply".
     pub fn render(
         &self,
         messages: &[ChatMessage],
         add_generation_prompt: bool,
+        kwargs: &HashMap<String, serde_json::Value>,
     ) -> Result<String, Error> {
         let mut env = Environment::new();
         env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
@@ -139,9 +144,15 @@ impl ChatTemplate {
             .get_template("chat")
             .map_err(|e| Error::Other(format!("loading chat template: {e}").into()))?;
         let messages_value = Value::from_serialize(messages);
+        // Bridge serde_json::Value -> minijinja::Value via
+        // from_serialize so the kwargs appear as ordinary template
+        // names (qwen's template checks `enable_thinking` with
+        // `is defined` / `== false`).
+        let kwargs_value = Value::from_serialize(kwargs);
         let ctx = context! {
             messages => messages_value,
             add_generation_prompt => add_generation_prompt,
+            ..kwargs_value
         };
         tmpl.render(ctx)
             .map_err(|e| Error::Other(format!("rendering chat template: {e}").into()))
@@ -168,10 +179,16 @@ mod tests {
         {% endfor %}\
         {% if add_generation_prompt %}assistant={% endif %}";
 
+    fn empty_kwargs() -> HashMap<String, serde_json::Value> {
+        HashMap::new()
+    }
+
     #[test]
     fn renders_plain_user_message() {
         let tmpl = ChatTemplate::from_source(TINY_TMPL);
-        let out = tmpl.render(&[ChatMessage::user("Hello")], true).unwrap();
+        let out = tmpl
+            .render(&[ChatMessage::user("Hello")], true, &empty_kwargs())
+            .unwrap();
         assert!(out.contains("user=Hello"), "got: {out}");
         assert!(out.ends_with("assistant="), "got: {out}");
     }
@@ -180,7 +197,11 @@ mod tests {
     fn renders_parts_list_user_message() {
         let tmpl = ChatTemplate::from_source(TINY_TMPL);
         let out = tmpl
-            .render(&[ChatMessage::user_with_image("What is this?")], true)
+            .render(
+                &[ChatMessage::user_with_image("What is this?")],
+                true,
+                &empty_kwargs(),
+            )
             .unwrap();
         assert!(
             out.contains("user=<image><text>What is this?"),
@@ -200,6 +221,7 @@ mod tests {
                     ChatMessage::user("Again"),
                 ],
                 true,
+                &empty_kwargs(),
             )
             .unwrap();
         assert!(out.contains("system=be helpful"), "got: {out}");
@@ -207,5 +229,36 @@ mod tests {
         assert!(out.contains("assistant=Hello!"), "got: {out}");
         assert!(out.contains("user=Again"), "got: {out}");
         assert!(out.ends_with("assistant="), "got: {out}");
+    }
+
+    #[test]
+    fn template_kwargs_are_exposed_to_jinja() {
+        // Mini template that checks `enable_thinking` like qwen does.
+        let src = "\
+            {% if enable_thinking is defined and enable_thinking %}thinking-on\
+            {% elif enable_thinking is defined %}thinking-off\
+            {% else %}thinking-unset{% endif %}";
+        let tmpl = ChatTemplate::from_source(src);
+
+        let on = tmpl
+            .render(
+                &[],
+                false,
+                &HashMap::from([("enable_thinking".to_owned(), serde_json::Value::Bool(true))]),
+            )
+            .unwrap();
+        assert_eq!(on, "thinking-on");
+
+        let off = tmpl
+            .render(
+                &[],
+                false,
+                &HashMap::from([("enable_thinking".to_owned(), serde_json::Value::Bool(false))]),
+            )
+            .unwrap();
+        assert_eq!(off, "thinking-off");
+
+        let unset = tmpl.render(&[], false, &HashMap::new()).unwrap();
+        assert_eq!(unset, "thinking-unset");
     }
 }

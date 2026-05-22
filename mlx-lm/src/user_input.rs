@@ -13,6 +13,7 @@
 //! pre-processed arm lets a server avoid double work when the upstream
 //! has already resized / normalised the input.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[cfg(feature = "models-vision")]
@@ -42,6 +43,12 @@ pub struct UserInput {
     /// Zero or more video clips. Reserved for future families; current
     /// processors reject populated `videos`.
     pub videos: Vec<Video>,
+
+    /// Named values forwarded to the chat-template render. Empty by
+    /// default. Used by templates that gate on a kwarg — qwen 3.6
+    /// reads `enable_thinking` to decide whether to inject `<think>\n`
+    /// or `<think>\n\n</think>\n\n` at the assistant turn start.
+    pub template_kwargs: HashMap<String, serde_json::Value>,
 }
 
 /// Conversation shape. Plain text is the fast path for one-shot
@@ -67,6 +74,7 @@ impl UserInput {
             images: Vec::new(),
             audios: Vec::new(),
             videos: Vec::new(),
+            template_kwargs: HashMap::new(),
         }
     }
 
@@ -78,7 +86,17 @@ impl UserInput {
             images: Vec::new(),
             audios: Vec::new(),
             videos: Vec::new(),
+            template_kwargs: HashMap::new(),
         }
+    }
+
+    /// Set a single template kwarg by name. Builder-style for
+    /// ergonomics: `UserInput::chat(msgs).with_template_kwarg(
+    /// "enable_thinking", true.into())`.
+    #[must_use]
+    pub fn with_template_kwarg(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
+        self.template_kwargs.insert(key.into(), value);
+        self
     }
 }
 

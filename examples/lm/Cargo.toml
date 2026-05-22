@@ -6,21 +6,11 @@ version = "0.0.1"
 [dependencies]
 mlx-rs.workspace = true
 mlx-lm.workspace = true
-mlx-lm-convert = { path = "../../mlx-lm-convert" }
 mlx-lm-utils.workspace = true
 
-anyhow = "1"
-argh = { workspace = true }
+anyhow = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
-axum = { version = "0.8", default-features = false, features = ["json", "http1", "tokio"] }
-base64 = { version = "0.22", default-features = false, features = ["std"] }
-ctrlc = "3"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff", "webp", "gif"] }
-rustyline = { version = "18", default-features = false }
 plotters = { version = "0.3", default-features = false, features = ["svg_backend", "line_series", "ttf"] }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
-tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
-tokio = { version = "1", default-features = false, features = ["rt", "macros", "net", "signal", "sync"] }
-tokio-stream = { version = "0.1", default-features = false, features = ["sync"] }

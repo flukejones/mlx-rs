@@ -12,6 +12,7 @@
 //! preprocesses every image (or accepts the
 //! [`crate::Image::Pixels`] bypass).
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use mlx_rs::{module::Module, Array};
@@ -208,7 +209,12 @@ impl UserInputProcessor for Qwen35Processor {
         // Render chat template. Images route to the parts-list form
         // (one ContentPart::Image per attached image followed by the
         // text part); plain text goes through verbatim.
-        let prompt_text = render_prompt(&self.chat_template, input.prompt, grids.len())?;
+        let prompt_text = render_prompt(
+            &self.chat_template,
+            input.prompt,
+            grids.len(),
+            &input.template_kwargs,
+        )?;
 
         // Per-image, expand the single `<|image_pad|>` placeholder
         // emitted by the template into one-per-merged-patch (matches
@@ -334,12 +340,13 @@ fn render_prompt(
     template: &ChatTemplate,
     prompt: Prompt,
     num_images: usize,
+    kwargs: &HashMap<String, serde_json::Value>,
 ) -> Result<String, Error> {
     match prompt {
         Prompt::Text(text) => {
             if num_images == 0 {
                 let msg = ChatMessage::user(text);
-                template.render(&[msg], true)
+                template.render(&[msg], true, kwargs)
             } else {
                 let mut parts: Vec<ContentPart> =
                     (0..num_images).map(|_| ContentPart::Image).collect();
@@ -348,7 +355,7 @@ fn render_prompt(
                     role: "user".into(),
                     content: MessageContent::Parts(parts),
                 };
-                template.render(&[msg], true)
+                template.render(&[msg], true, kwargs)
             }
         }
         Prompt::Chat(mut messages) => {
@@ -385,7 +392,7 @@ fn render_prompt(
                     last_user.content = MessageContent::Parts(new_parts);
                 }
             }
-            template.render(&messages, true)
+            template.render(&messages, true, kwargs)
         }
     }
 }

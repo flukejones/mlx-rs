@@ -1,0 +1,32 @@
+[package]
+name = "chat"
+edition = "2021"
+version = "0.0.1"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "chat"
+path = "src/bin/chat.rs"
+
+[[bin]]
+name = "chat_server"
+path = "src/bin/chat_server.rs"
+
+[dependencies]
+mlx-rs.workspace = true
+mlx-lm.workspace = true
+anyhow = { workspace = true }
+argh = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+comfy-table = { workspace = true }
+rustyline = { version = "18", default-features = false }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+axum = { version = "0.8", default-features = false, features = ["json", "http1", "tokio"] }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff", "webp", "gif"] }
+serde = { version = "1", default-features = false, features = ["std", "derive"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "net", "signal", "sync"] }
+tokio-stream = { version = "0.1", default-features = false, features = ["sync"] }

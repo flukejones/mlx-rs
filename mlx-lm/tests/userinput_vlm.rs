@@ -10,6 +10,7 @@
 
 #![allow(clippy::missing_assert_message, reason = "test code")]
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use image::DynamicImage;
@@ -40,6 +41,7 @@ fn vlm_image_chat_round_trips() {
         images: vec![Image::Decoded(synthetic_image())],
         audios: Vec::new(),
         videos: Vec::new(),
+        template_kwargs: HashMap::new(),
     };
     let params = GenerateParams {
         max_new_tokens: 16,

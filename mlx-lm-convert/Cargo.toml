@@ -12,9 +12,22 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[[bin]]
+name = "mlx-lm-convert"
+path = "src/bin/mlx-lm-convert.rs"
+
 [dependencies]
 mlx-rs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
+
+# Bin-only deps. The library itself doesn't need these; cargo doesn't
+# split bin-vs-lib deps unless you use features, so they sit in
+# `[dependencies]`. The runtime cost is zero when consumers only use
+# the library API.
+mlx-lm = { workspace = true }
+anyhow = { workspace = true }
+argh = { workspace = true }
+env_logger = { workspace = true }

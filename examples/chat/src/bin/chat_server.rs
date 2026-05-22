@@ -1,38 +1,25 @@
-//! OpenAI-compatible HTTP server for any `mlx_lm` checkpoint.
+//! OpenAI-compatible HTTP server. POST `/v1/chat/completions` with
+//! either string or parts-array content (text + `image_url` data
+//! URLs). `stream: true` returns SSE chunks.
 //!
-//! POST `/v1/chat/completions` with the subset of the OpenAI spec
-//! needed for chat + vision-LM clients:
-//!
-//! - `messages: [{role, content}]` where `content` is a plain string
-//!   *or* a parts array of `{type:"text",text}` /
-//!   `{type:"image_url",image_url:{url}}` objects. Image URLs accept
-//!   `data:` base64 inline data.
-//! - `max_tokens`, `temperature`, `top_p` sampling controls.
-//! - `stream: true` returns an SSE stream of OpenAI-flavoured chunks
-//!   (`data: {...}\n\n` per delta).
-//!
-//! Non-streaming responses are plain JSON
-//! `{ choices: [{ message: { role:"assistant", content }, finish_reason }],
-//!    usage: { prompt_tokens, completion_tokens, total_tokens } }`.
-//!
-//! **MLX Metal stream thread-pin:** MLX initialises its Metal stream
-//! on whichever thread first touched it. The server is built on a
-//! `tokio::runtime::Builder::new_current_thread()` + `LocalSet`, and
-//! every `generate` call runs inline on that thread (the same one
-//! the model was loaded on). The SSE writer pumps deltas through a
-//! `tokio::sync::mpsc::Sender` drained by `tokio::spawn_local` on
-//! the same `LocalSet`, so the `on_token` callback never crosses a
-//! thread boundary.
+//! **MLX Metal stream thread-pin:** MLX binds its Metal stream to
+//! the first thread that touches it. The server uses a current-
+//! thread tokio runtime + `LocalSet` so `load` and every `generate`
+//! call (including SSE delta callbacks via `spawn_local`) run on
+//! the same OS thread.
 
 #![allow(clippy::print_stderr, reason = "CLI binary logs to stderr")]
 #![allow(clippy::print_stdout, reason = "CLI binary prints to stdout")]
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::ops::ControlFlow;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use anyhow::{Context, Result};
+use argh::FromArgs;
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, State},
@@ -42,57 +29,45 @@ use axum::{
     Router,
 };
 use base64::Engine;
+use chat::user_input::build_chat_input;
 use mlx_lm::chat_template::{ChatMessage as LmChatMessage, ContentPart, MessageContent};
 use mlx_lm::{
-    generate, load, FinishReason, GenerateParams, Image as LmImage, ModelContext, Prompt,
-    SamplingParams, UserInput,
+    generate, load, FinishReason, GenerateParams, Image as LmImage, ModelContext, SamplingParams,
+    UserInput,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-type Result<T> = std::result::Result<T, BoxError>;
-
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_MAX_TOKENS: i32 = 512;
 const MAX_BODY: usize = 32 * 1024 * 1024;
+/// SSE channel depth. Exceeded → `try_send` drops chunks; stream
+/// looks choppy. Dev-server default.
+const SSE_CHANNEL_DEPTH: usize = 64;
 
+/// OpenAI-compatible HTTP server for an mlx_lm checkpoint.
+#[derive(FromArgs)]
 struct Args {
+    /// model directory
+    #[argh(option)]
     model: PathBuf,
+
+    /// listen port (default 8080)
+    #[argh(option, default = "DEFAULT_PORT")]
     port: u16,
 }
 
-fn parse_args() -> Result<Args> {
-    let mut model: Option<PathBuf> = None;
-    let mut port: u16 = DEFAULT_PORT;
-    let mut it = std::env::args().skip(1);
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--model" => model = Some(PathBuf::from(it.next().ok_or("--model needs a path")?)),
-            "--port" => port = it.next().ok_or("--port needs a value")?.parse()?,
-            "-h" | "--help" => {
-                println!("chat_server --model <dir> [--port {DEFAULT_PORT}]");
-                std::process::exit(0);
-            }
-            other => return Err(format!("unknown argument: {other}").into()),
-        }
-    }
-    Ok(Args {
-        model: model.ok_or("--model is required")?,
-        port,
-    })
-}
-
-/// Boxed context behind a Mutex — `generate` mutates internal cache
-/// state, so requests serialise.
+/// `generate` mutates KV cache; requests serialise through this Mutex.
 type AppState = Arc<Mutex<ModelContext>>;
 
 fn main() -> Result<()> {
-    let args = parse_args()?;
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let args: Args = argh::from_env();
+
     eprintln!("[loading {}]", args.model.display());
-    let ctx = load(&args.model)?;
+    let ctx = load(&args.model).context("load model")?;
     eprintln!("[loaded]");
     let state: AppState = Arc::new(Mutex::new(ctx));
 
@@ -118,11 +93,9 @@ async fn serve(port: u16, state: AppState) -> Result<()> {
 }
 
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    tokio::signal::ctrl_c().await.ok();
     eprintln!("[ctrl-c received, shutting down]");
 }
-
-// ─── OpenAI request shape ───────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code, reason = "OpenAI request fields parsed but not all used")]
@@ -156,8 +129,12 @@ enum RequestContent {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RequestPart {
-    Text { text: String },
-    ImageUrl { image_url: ImageUrl },
+    Text {
+        text: String,
+    },
+    ImageUrl {
+        image_url: ImageUrl,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -166,8 +143,6 @@ enum RequestPart {
 struct ImageUrl {
     url: String,
 }
-
-// ─── OpenAI response shape ──────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 struct ChatResponse {
@@ -197,8 +172,6 @@ struct Usage {
     total_tokens: i32,
 }
 
-// ─── Streaming chunk shape ──────────────────────────────────────
-
 #[derive(Debug, Serialize)]
 struct ChatChunk {
     id: String,
@@ -222,11 +195,9 @@ struct ChunkDelta {
     content: Option<String>,
 }
 
-// ─── Route handler ──────────────────────────────────────────────
+struct ApiError(anyhow::Error);
 
-struct ApiError(BoxError);
-
-impl<E: Into<BoxError>> From<E> for ApiError {
+impl<E: Into<anyhow::Error>> From<E> for ApiError {
     fn from(e: E) -> Self {
         Self(e.into())
     }
@@ -234,7 +205,7 @@ impl<E: Into<BoxError>> From<E> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let msg = self.0.to_string();
+        let msg = format!("{:#}", self.0);
         eprintln!("error: request failed: {msg}");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -254,8 +225,7 @@ async fn chat_completions(
     let top_p = req.top_p;
     let stream = req.stream;
 
-    let input = build_input(messages, images);
-
+    let input = build_chat_input(messages, images);
     let params = GenerateParams {
         max_new_tokens: max_tokens,
         sampling: SamplingParams { temperature, top_p },
@@ -267,14 +237,11 @@ async fn chat_completions(
     } else {
         let result = {
             let mut ctx = state.lock().expect("ctx lock");
-            generate(
-                &mut ctx,
-                input,
-                params,
-                &mut |_, _| std::ops::ControlFlow::Continue(()),
-            )
+            generate(&mut ctx, input, params, &mut |_, _| {
+                ControlFlow::Continue(())
+            })
         }
-        .map_err(|e| format!("generate: {e}"))?;
+        .context("generate")?;
         Ok(Json(ChatResponse {
             id: chatcmpl_id(),
             object: "chat.completion",
@@ -296,94 +263,70 @@ async fn chat_completions(
     }
 }
 
-fn build_input(messages: Vec<LmChatMessage>, images: Vec<LmImage>) -> UserInput {
-    UserInput {
-        prompt: Prompt::Chat(messages),
-        images,
-        audios: Vec::new(),
-        videos: Vec::new(),
-    }
-}
-
-/// Spawn the generate call on the LocalSet (same thread as the
-/// model). The `on_token` callback pushes formatted SSE frames into
-/// an `mpsc::Sender`; the receiver is wrapped in a stream that
-/// becomes the HTTP response body.
 fn stream_response(state: AppState, input: UserInput, params: GenerateParams) -> Response {
-    let (tx, rx) = mpsc::channel::<axum::body::Bytes>(64);
-    let id = Rc::new(chatcmpl_id());
-    let id_for_task = id.clone();
+    let (tx, rx) = mpsc::channel::<axum::body::Bytes>(SSE_CHANNEL_DEPTH);
+    let id: Arc<str> = Arc::from(chatcmpl_id());
 
     tokio::task::spawn_local(async move {
-        let send_frame = |frame: String| {
-            let bytes = axum::body::Bytes::from(frame.into_bytes());
-            // `try_send` drops a chunk if the receiver is more than
-            // 64 frames behind; the stream then appears choppy but
-            // generation continues. Fine for a dev server.
-            let _ = tx.try_send(bytes);
-        };
-
-        let header = ChatChunk {
-            id: (*id_for_task).clone(),
-            object: "chat.completion.chunk",
-            choices: vec![ChunkChoice {
-                index: 0,
-                delta: ChunkDelta {
-                    role: Some("assistant"),
-                    content: None,
-                },
-                finish_reason: None,
-            }],
-        };
-        send_frame(format!(
-            "data: {}\n\n",
-            serde_json::to_string(&header).unwrap_or_default()
-        ));
+        send_chunk(
+            &tx,
+            ChatChunk {
+                id: id.to_string(),
+                object: "chat.completion.chunk",
+                choices: vec![ChunkChoice {
+                    index: 0,
+                    delta: ChunkDelta {
+                        role: Some("assistant"),
+                        content: None,
+                    },
+                    finish_reason: None,
+                }],
+            },
+        );
 
         let result = {
             let mut ctx = state.lock().expect("ctx lock");
-            let id_inner = id_for_task.clone();
-            let tx_inner = tx.clone();
+            let id_token = id.clone();
+            let tx_token = tx.clone();
             generate(&mut ctx, input, params, &mut |_, delta| {
-                let chunk = ChatChunk {
-                    id: (*id_inner).clone(),
-                    object: "chat.completion.chunk",
-                    choices: vec![ChunkChoice {
-                        index: 0,
-                        delta: ChunkDelta {
-                            role: None,
-                            content: Some(delta.to_owned()),
-                        },
-                        finish_reason: None,
-                    }],
-                };
-                let frame = format!(
-                    "data: {}\n\n",
-                    serde_json::to_string(&chunk).unwrap_or_default()
+                send_chunk(
+                    &tx_token,
+                    ChatChunk {
+                        id: id_token.to_string(),
+                        object: "chat.completion.chunk",
+                        choices: vec![ChunkChoice {
+                            index: 0,
+                            delta: ChunkDelta {
+                                role: None,
+                                content: Some(delta.to_owned()),
+                            },
+                            finish_reason: None,
+                        }],
+                    },
                 );
-                let _ = tx_inner.try_send(axum::body::Bytes::from(frame.into_bytes()));
-                std::ops::ControlFlow::Continue(())
+                ControlFlow::Continue(())
             })
         };
 
         let finish = match &result {
             Ok(r) => finish_reason_str(r.finish_reason),
-            Err(_) => "stop",
+            // generate errored — report length so clients don't treat
+            // a transport failure as a normal completion.
+            Err(_) => "length",
         };
-        let closing = ChatChunk {
-            id: (*id_for_task).clone(),
-            object: "chat.completion.chunk",
-            choices: vec![ChunkChoice {
-                index: 0,
-                delta: ChunkDelta::default(),
-                finish_reason: Some(finish),
-            }],
-        };
-        send_frame(format!(
-            "data: {}\n\n",
-            serde_json::to_string(&closing).unwrap_or_default()
-        ));
-        send_frame("data: [DONE]\n\n".to_owned());
+        send_chunk(
+            &tx,
+            ChatChunk {
+                id: id.to_string(),
+                object: "chat.completion.chunk",
+                choices: vec![ChunkChoice {
+                    index: 0,
+                    delta: ChunkDelta::default(),
+                    finish_reason: Some(finish),
+                }],
+            },
+        );
+        send_done(&tx);
 
         if let Err(e) = result {
             eprintln!("error: stream generate: {e}");
@@ -391,7 +334,6 @@ fn stream_response(state: AppState, input: UserInput, params: GenerateParams) ->
     });
 
     let stream = ReceiverStream::new(rx).map(std::result::Result::<_, Infallible>::Ok);
-
     Response::builder()
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
@@ -400,14 +342,22 @@ fn stream_response(state: AppState, input: UserInput, params: GenerateParams) ->
         .expect("build sse response")
 }
 
-/// Walk the OpenAI request messages: strip image parts out to the
-/// `images` vec, replace the message's content with the parts-list
-/// shape the chat template expects (one `ContentPart::Image` per
-/// attached image, followed by the text). Plain-text content stays
-/// as-is.
-fn into_user_input(
-    messages: &[RequestMessage],
-) -> Result<(Vec<LmChatMessage>, Vec<LmImage>)> {
+fn send_chunk(tx: &mpsc::Sender<axum::body::Bytes>, chunk: ChatChunk) {
+    let payload = serde_json::to_string(&chunk).unwrap_or_default();
+    let frame = format!("data: {payload}\n\n");
+    tx.try_send(axum::body::Bytes::from(frame.into_bytes()))
+        .ok();
+}
+
+fn send_done(tx: &mpsc::Sender<axum::body::Bytes>) {
+    tx.try_send(axum::body::Bytes::from_static(b"data: [DONE]\n\n"))
+        .ok();
+}
+
+/// Strip image parts out to a separate vec; rewrite each message's
+/// content into the parts-list shape the chat template expects
+/// (image parts followed by joined text).
+fn into_user_input(messages: &[RequestMessage]) -> Result<(Vec<LmChatMessage>, Vec<LmImage>)> {
     let mut out_msgs: Vec<LmChatMessage> = Vec::with_capacity(messages.len());
     let mut images: Vec<LmImage> = Vec::new();
     for m in messages {
@@ -427,8 +377,7 @@ fn into_user_input(
                         RequestPart::Text { text } => text_chunks.push(text.clone()),
                         RequestPart::ImageUrl { image_url } => {
                             msg_image_count += 1;
-                            let img = decode_image_url(&image_url.url)?;
-                            images.push(img);
+                            images.push(decode_image_url(&image_url.url)?);
                         }
                         RequestPart::Unknown => {}
                     }
@@ -453,20 +402,22 @@ fn decode_image_url(url: &str) -> Result<LmImage> {
     let url = url.trim();
     let Some(rest) = url.strip_prefix("data:") else {
         if url.starts_with("http://") || url.starts_with("https://") {
-            return Err("http(s):// image URLs not supported; use data: URLs".into());
+            anyhow::bail!("http(s):// image URLs not supported; use data: URLs");
         }
-        return Err(format!("unsupported image_url scheme: {url}").into());
+        anyhow::bail!("unsupported image_url scheme: {url}");
     };
-    let comma = rest.find(',').ok_or("malformed data URL: missing comma")?;
+    let comma = rest
+        .find(',')
+        .ok_or_else(|| anyhow::anyhow!("malformed data URL: missing comma"))?;
     let header = &rest[..comma];
     let payload = &rest[comma + 1..];
     if !header.contains(";base64") {
-        return Err(format!("data URL must use base64 encoding, got: {header}").into());
+        anyhow::bail!("data URL must use base64 encoding, got: {header}");
     }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(payload.as_bytes())
-        .map_err(|e| format!("base64 decode: {e}"))?;
-    let img = image::load_from_memory(&bytes).map_err(|e| format!("image decode: {e}"))?;
+        .context("base64 decode")?;
+    let img = image::load_from_memory(&bytes).context("image decode")?;
     Ok(LmImage::Decoded(img))
 }
 
@@ -478,7 +429,6 @@ fn finish_reason_str(reason: FinishReason) -> &'static str {
 }
 
 fn chatcmpl_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
