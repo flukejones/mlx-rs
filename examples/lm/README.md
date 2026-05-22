@@ -1,42 +1,42 @@
 # lm examples
 
-Small runnable demos of `mlx-lm`'s decode loop and KV-cache variants.
+Runnable demos and tooling for `mlxr-lm`.
 
 ## Binaries
 
-| Bin | Cache variant | Demonstrates |
-|---|---|---|
-| `lm` | `KVCache` (fp16 dense) | minimal qwen3 chat-template + decode loop |
-| `kv_packed_matmul_fused` | `QuantizedKVCache` + packed-matmul + fused qsdpa kernel | short-context quant decode (beats fp16 dequant by ~5% at T=1024) |
-| `kv_packed_matmul_long_context` | `QuantizedKVCache` + packed-matmul | long-context quant decode (~+96% over dequant at T=8192; fused kernel falls back past `n_k=4096`) |
-
-Each example is a single file with header comments explaining
-*what / why / how* for its variant.
+| Bin                | Purpose                                                                                                  |
+|--------------------|----------------------------------------------------------------------------------------------------------|
+| `lm` (`main.rs`)   | Minimal driver — load a Qwen 3 checkpoint and run one `mlxr_lm::generate` call. Useful as a smoke test.  |
+| `generate`         | One-shot text completion with full CLI options (model dir, prompt, temperature, top-p, max-tokens, chat-template toggle); streams tokens to stdout. |
+| `bench_with_temp`  | Wraps `cargo bench` with `macmon raw` sampling and emits a CSV + PNG of GPU/CPU temp and power vs time, with per-bench-cell boundaries marked. |
 
 ## Running
 
-Each example expects the relevant model checkpoint already on disk at
-`./cache/<repo-id>/`. Easy way to populate:
+Each example expects a checkpoint already on disk. Convenient way to
+populate the bench cache:
 
 ```sh
-hf download mlx-community/Qwen3-1.7B-4bit --local-dir ./cache/mlx-community/Qwen3-1.7B-4bit
+hf download mlx-community/Qwen3-1.7B-4bit \
+  --local-dir ~/.cache/mlx-rs-bench/mlx-community/Qwen3-1.7B-4bit
 ```
 
 Then:
 
 ```sh
-cargo run --release --bin kv_packed_matmul_fused
-cargo run --release --bin kv_packed_matmul_long_context
+cargo run --release --bin generate -- \
+  --model ~/.cache/mlx-rs-bench/mlx-community/Qwen3-1.7B-4bit \
+  --prompt "Explain MLX in one sentence."
 ```
 
-The synthetic prompts in the KV-cache demos are token-id arrays so the
-examples have zero tokenizer setup; copy the cache-construction lines
-into your own decode loop to use real prompts.
+For interactive chat see [`examples/chat/`](../chat/).
 
 ## Where to look next
 
-- `mlx-lm/README.md` — full KV cache variant table + selection guide.
-- `mlx-lm/benches/lm_decode.rs::maybe_bench_qwen3_kv_decode_only` —
-  the bench cell that produced the numbers cited above.
-- `mlx-lm/tests/quantized_kv_parity.rs` — quality validation of
-  packed-matmul + rotation vs dequant-on-read.
+- [`crates/mlxr-lm/README.md`](../../crates/mlxr-lm/README.md) — full
+  KV cache variant table + selection guide.
+- [`crates/mlxr-lm/benches/lm_decode.rs`](../../crates/mlxr-lm/benches/lm_decode.rs) —
+  decode-only bench harness (criterion `iter_custom`, prefill outside
+  the timing band). Run with `cargo bench -p mlxr-lm --bench lm_decode`.
+- [`crates/mlxr-lm/tests/qwen3_6_35b_a3b_parity.rs`](../../crates/mlxr-lm/tests/qwen3_6_35b_a3b_parity.rs) —
+  end-to-end loader + MTP decode parity test (`--ignored`; needs the
+  checkpoint on disk).

@@ -1,8 +1,8 @@
-use mlx_rs::{
+use mlxr::{
     error::Exception,
+    layers::{Linear, Relu, Sequential},
     macros::ModuleParameters,
     module::Module,
-    nn::{Linear, Relu, Sequential},
     Array,
 };
 

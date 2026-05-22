@@ -1,5 +1,5 @@
 //! Minimal example driver: load a Qwen3 checkpoint and run one
-//! `mlx_lm::generate` call. For interactive use see `chat`; for
+//! `mlxr_lm::generate` call. For interactive use see `chat`; for
 //! one-shot completion with full CLI options see `generate`.
 
 #![allow(clippy::print_stderr)]
@@ -8,8 +8,8 @@
 use std::io::Write;
 use std::path::Path;
 
-use mlx_lm::chat_template::ChatMessage;
-use mlx_lm::{generate, load, GenerateParams, SamplingParams, UserInput};
+use mlxr_lm::chat_template::ChatMessage;
+use mlxr_lm::{generate, load, GenerateParams, SamplingParams, UserInput};
 
 const DEFAULT_MODEL_DIR: &str = "./cache/Qwen3-4B-bf16";
 

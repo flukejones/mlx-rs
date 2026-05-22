@@ -1,7 +1,7 @@
-//! One-shot text completion against any `mlx_lm` checkpoint.
+//! One-shot text completion against any `mlxr_lm` checkpoint.
 //!
-//! Builds a [`mlx_lm::ModelContext`] via [`mlx_lm::load`] and runs
-//! one [`mlx_lm::generate`] call against a single prompt, streaming
+//! Builds a [`mlxr_lm::ModelContext`] via [`mlxr_lm::load`] and runs
+//! one [`mlxr_lm::generate`] call against a single prompt, streaming
 //! tokens to stdout.
 
 #![allow(clippy::print_stderr, reason = "CLI binary logs to stderr")]
@@ -10,8 +10,8 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use mlx_lm::chat_template::ChatMessage;
-use mlx_lm::{generate, load, GenerateParams, SamplingParams, UserInput};
+use mlxr_lm::chat_template::ChatMessage;
+use mlxr_lm::{generate, load, GenerateParams, SamplingParams, UserInput};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, BoxError>;

@@ -1,0 +1,24 @@
+[package]
+name = "mlxr-codegen"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+description = "Internal codegen proc-macros for mlxr (op-fn variants, builders, default-device). Implementation detail; depend on `mlxr` directly."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn.workspace = true
+quote.workspace = true
+darling.workspace = true
+proc-macro2.workspace = true
+itertools.workspace = true
+
+
+[lints]
+workspace = true

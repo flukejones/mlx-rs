@@ -2,6 +2,7 @@
 name = "chat"
 edition = "2021"
 version = "0.0.1"
+publish = false
 
 [lib]
 path = "src/lib.rs"
@@ -15,8 +16,7 @@ name = "chat_server"
 path = "src/bin/chat_server.rs"
 
 [dependencies]
-mlx-rs.workspace = true
-mlx-lm.workspace = true
+mlxr-lm.workspace = true
 anyhow = { workspace = true }
 argh = { workspace = true }
 env_logger = { workspace = true }

@@ -1,0 +1,72 @@
+[package]
+name = "mlxr-lm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+description = "Language-model runtime and model families on top of mlxr."
+
+[dependencies]
+# Local dependencies.
+# Runtime layer (cache, attention kernels, rotation matrices) needs
+# mlxr/fast for the Metal SDPA + custom-kernel entry points and
+# mlxr/linalg for the orthogonal rotation construction. Both are
+# pulled in via default-features = false so consumers can pick the
+# exact mlxr surface they want; model-family features below add
+# mlxr/layers on top.
+mlxr = { workspace = true, default-features = false, features = ["metal", "fast", "linalg"] }
+mlxr-macros.workspace = true
+
+# External dependencies
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokenizers.workspace = true
+minijinja.workspace = true
+minijinja-contrib.workspace = true
+anyhow = "1"
+log.workspace = true
+image = { version = "0.25", default-features = false, features = [
+  "png",
+  "jpeg",
+  "bmp",
+  "tiff",
+  "webp",
+  "gif",
+], optional = true }
+
+[features]
+default = ["qwen3_5", "gemma4", "image"]
+
+# Model families. Each pulls in the mlxr surface it needs so a
+# consumer enabling one family gets a buildable runtime without
+# having to opt into mlxr features by hand.
+qwen3_5 = ["mlxr/layers"]
+gemma4 = ["mlxr/layers"]
+
+# Modalities. Per-family modality sub-modules (e.g. `qwen3_5/image/`)
+# activate when the matching family AND modality are both enabled.
+image = ["dep:image"]
+audio = []
+video = []
+
+[dev-dependencies]
+lazy_static = "1"
+tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "lm_decode"
+harness = false
+
+[[bench]]
+name = "incremental_decode"
+harness = false
+
+
+[lints]
+workspace = true

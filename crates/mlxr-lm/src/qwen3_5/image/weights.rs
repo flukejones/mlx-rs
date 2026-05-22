@@ -1,0 +1,117 @@
+//! Vision-tower-aware weight loader. Splits a checkpoint into the
+//! shared language-model parameters (loaded via the text-side
+//! [`crate::qwen3_5::text::weights::load_sanitized_weights`] +
+//! [`crate::qwen3_5::text::weights::bucket_key`] pipeline) and the
+//! vision-tower parameters consumed by [`VisionModel`].
+
+use std::path::Path;
+
+use mlxr::{module::ModuleParameters, transforms::eval_params};
+
+use crate::error::Error;
+use crate::qwen3_5::image::vision::VisionModel;
+use crate::qwen3_5::text::weights::{
+    bucket_key, load_sanitized_weights, quantize_language_model, Bucketed, ModelConfig, Qwen35Model,
+};
+
+/// Load both the language model and the vision tower from the same
+/// checkpoint. Vision weights are bf16 (not quantised in chandra-ocr-2),
+/// so the vision module is not run through `quantize_language_model`.
+pub(crate) fn load_full_model(
+    cfg: &ModelConfig,
+    model_dir: impl AsRef<Path>,
+) -> Result<(Qwen35Model, VisionModel, Vec<String>), Error> {
+    let mut lm = Qwen35Model::new_dense(cfg.text_config.clone()).map_err(Error::Exception)?;
+    if let Some(q) = cfg.effective_quantization() {
+        quantize_language_model(&mut lm, q)?;
+    }
+    let vision_cfg = cfg.vision_config.as_ref().ok_or_else(|| {
+        Error::Other("qwen3_5 load_full_model: config has no vision_config".into())
+    })?;
+    let mut vision = VisionModel::new(vision_cfg).map_err(Error::Exception)?;
+    let weights = load_sanitized_weights(model_dir)?;
+
+    let mut leftover = Vec::new();
+    {
+        let mut lm_params = lm.parameters_mut().flatten();
+        let mut vision_params = vision.parameters_mut().flatten();
+        for (k, v) in weights {
+            match bucket_key(k) {
+                Bucketed::Language(p) => {
+                    if let Some(slot) = lm_params.get_mut(&*p) {
+                        **slot = v;
+                    } else {
+                        leftover.push(format!("language_model.{p}"));
+                    }
+                }
+                Bucketed::Vision(p) => {
+                    if let Some(slot) = vision_params.get_mut(&*p) {
+                        **slot = v;
+                    } else {
+                        leftover.push(format!("vision_tower.{p}"));
+                    }
+                }
+                Bucketed::Other(p) => leftover.push(p),
+            }
+        }
+    }
+
+    eval_params(lm.parameters()).map_err(Error::Exception)?;
+    eval_params(vision.parameters()).map_err(Error::Exception)?;
+    crate::loader::apply_post_load_memory_policy();
+    leftover.sort();
+    Ok((lm, vision, leftover))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::print_stderr, reason = "test code")]
+    use super::*;
+    use crate::qwen3_5::text::config::VisionConfig;
+
+    #[test]
+    #[ignore = "requires local model files at ~/MLXModels/chandra2/chandra-ocr-2-mlx-q8"]
+    fn loads_chandra_q8_full_model_with_vision() {
+        let home = std::env::var("HOME").unwrap();
+        let dir = std::path::PathBuf::from(home).join("MLXModels/chandra2/chandra-ocr-2-mlx-q8");
+        let cfg = ModelConfig::from_file(dir.join("config.json")).expect("parse config");
+        let (lm, vision, leftover) = load_full_model(&cfg, &dir).expect("load full model");
+        if !leftover.is_empty() {
+            eprintln!("unexpected leftover keys ({}):", leftover.len());
+            for k in &leftover[..leftover.len().min(20)] {
+                eprintln!("  {k}");
+            }
+            panic!("unexpected leftover keys");
+        }
+        use mlxr::module::ModuleParametersExt;
+        lm.eval().expect("eval LM");
+        vision.eval().expect("eval vision");
+    }
+
+    #[test]
+    #[ignore = "diagnostic: dump expected vision-tower parameter paths"]
+    fn dump_vision_param_keys() {
+        let cfg_json = r#"{
+            "model_type": "qwen3_5",
+            "depth": 2,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "out_hidden_size": 128,
+            "num_heads": 2,
+            "patch_size": 16,
+            "in_channels": 3,
+            "spatial_merge_size": 2,
+            "temporal_patch_size": 2,
+            "num_position_embeddings": 16
+        }"#;
+        let cfg: VisionConfig = serde_json::from_str(cfg_json).unwrap();
+        let mut vm = VisionModel::new(&cfg).unwrap();
+        let params = vm.parameters_mut().flatten();
+        let mut keys: Vec<String> = params.keys().map(|k| k.to_string()).collect();
+        keys.sort();
+        for k in &keys {
+            eprintln!("VKEY: {k}");
+        }
+    }
+}

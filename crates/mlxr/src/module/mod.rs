@@ -1,0 +1,15 @@
+//! This mod defines the traits for neural network modules and parameters.
+//!
+//! This is to separate the trait definitions from the implementations, which are in the `mlx-nn`
+//! crate. This also allows using the `mlxr_macros::ModuleParameters` derive macro in crates other
+//! than `mlx-nn`.
+
+#[allow(
+    clippy::module_inception,
+    reason = "wrapper module re-exports inner module by same name"
+)]
+mod module;
+mod param;
+
+pub use module::*;
+pub use param::*;

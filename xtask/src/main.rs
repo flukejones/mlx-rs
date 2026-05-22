@@ -56,7 +56,7 @@ fn checkout_tag(mlx_c_dir: &Path, tag: &str) {
 }
 
 fn generate_bindings(root_dir: &Path) -> String {
-    let mlx_c_dir = root_dir.join("mlx-sys/src/mlx-c");
+    let mlx_c_dir = root_dir.join("crates/mlxr-sys/src/mlx-c");
 
     let bindings = bindgen::Builder::default()
         .header(mlx_c_dir.join("mlx/c/mlx.h").to_str().unwrap())
@@ -455,7 +455,7 @@ fn main() {
     let target_tag = args.get(1).cloned();
 
     let root_dir = get_repo_root();
-    let mlx_c_dir = root_dir.join("mlx-sys/src/mlx-c");
+    let mlx_c_dir = root_dir.join("crates/mlxr-sys/src/mlx-c");
 
     println!("\x1b[33mChecking for mlx-c updates...\x1b[0m\n");
 
@@ -503,5 +503,5 @@ fn main() {
     }
 
     println!("\n\x1b[33mTo update, run:\x1b[0m");
-    println!("  cd mlx-sys/src/mlx-c && git checkout {target_tag}");
+    println!("  cd crates/mlxr-sys/src/mlx-c && git checkout {target_tag}");
 }

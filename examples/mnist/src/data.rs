@@ -1,6 +1,6 @@
 // TODO
 
-use mlx_rs::{error::Exception, ops::stack_axis, Array};
+use mlxr::{error::Exception, ops::stack_axis, Array};
 use mnist::{Mnist, MnistBuilder};
 
 const IMAGE_SIZE: usize = 28 * 28;

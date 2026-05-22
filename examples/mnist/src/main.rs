@@ -1,9 +1,9 @@
-use mlx_rs::{
+use mlxr::{
     builder::Builder,
     error::Exception,
+    layers,
     losses::{CrossEntropyBuilder, LossReduction},
     module::{Module, ModuleParameters},
-    nn,
     ops::{eq, indexing::argmax_axis, mean},
     optimizers::{Optimizer, Sgd},
     transforms::eval_params,
@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let y_pred = model.forward(x)?;
         cross_entropy.apply(y_pred, y)
     };
-    let mut loss_and_grad_fn = nn::value_and_grad(loss_fn);
+    let mut loss_and_grad_fn = layers::value_and_grad(loss_fn);
 
     let mut optimizer = Sgd::new(learning_rate);
 

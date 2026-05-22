@@ -191,7 +191,7 @@ fn run_bench(
     let mut child = Command::new("cargo")
         .arg("bench")
         .arg("-p")
-        .arg("mlx-lm")
+        .arg("mlxr-lm")
         .arg("--bench")
         .arg("lm_decode")
         .args(bench_args.split_whitespace())

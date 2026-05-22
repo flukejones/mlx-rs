@@ -2,11 +2,10 @@
 name = "lm"
 edition = "2021"
 version = "0.0.1"
+publish = false
 
 [dependencies]
-mlx-rs.workspace = true
-mlx-lm.workspace = true
-mlx-lm-utils.workspace = true
+mlxr-lm.workspace = true
 
 anyhow = { workspace = true }
 env_logger = { workspace = true }

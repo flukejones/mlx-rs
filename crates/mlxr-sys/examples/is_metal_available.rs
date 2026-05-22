@@ -1,0 +1,10 @@
+#![allow(clippy::print_stdout, reason = "example code")]
+#![allow(clippy::unwrap_used, reason = "example code")]
+#![allow(clippy::missing_assert_message, reason = "example code")]
+
+fn main() {
+    let mut is_available = false;
+    let status = unsafe { mlxr_sys::mlx_metal_is_available(&mut is_available) };
+    assert_eq!(status, 0);
+    println!("{is_available:?}");
+}

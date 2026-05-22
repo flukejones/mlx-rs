@@ -1,0 +1,31 @@
+[package]
+name = "mlxr-convert"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "mlxr-convert"
+path = "src/bin/mlxr-convert.rs"
+
+[dependencies]
+# Only needs `ops::quantize` + `Array` from the tensor core; no layers
+# or higher-level libs.
+mlxr = { workspace = true, features = ["metal"] }
+mlxr-lm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+argh = { workspace = true }
+env_logger = { workspace = true }

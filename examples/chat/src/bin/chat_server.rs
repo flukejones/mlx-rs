@@ -30,8 +30,8 @@ use axum::{
 };
 use base64::Engine;
 use chat::user_input::build_chat_input;
-use mlx_lm::chat_template::{ChatMessage as LmChatMessage, ContentPart, MessageContent};
-use mlx_lm::{
+use mlxr_lm::chat_template::{ChatMessage as LmChatMessage, ContentPart, MessageContent};
+use mlxr_lm::{
     generate, load, FinishReason, GenerateParams, Image as LmImage, ModelContext, SamplingParams,
     UserInput,
 };
@@ -47,7 +47,7 @@ const MAX_BODY: usize = 32 * 1024 * 1024;
 /// looks choppy. Dev-server default.
 const SSE_CHANNEL_DEPTH: usize = 64;
 
-/// OpenAI-compatible HTTP server for an mlx_lm checkpoint.
+/// OpenAI-compatible HTTP server for an mlxr_lm checkpoint.
 #[derive(FromArgs)]
 struct Args {
     /// model directory

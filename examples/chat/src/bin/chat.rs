@@ -1,4 +1,4 @@
-//! Interactive REPL against any `mlx_lm` checkpoint. KV cache resets
+//! Interactive REPL against any `mlxr_lm` checkpoint. KV cache resets
 //! between turns; the full chat history is re-rendered each request.
 
 #![allow(clippy::print_stderr, reason = "CLI binary logs to stderr")]
@@ -12,8 +12,8 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use argh::FromArgs;
 use chat::think_stream::ThinkStream;
-use mlx_lm::chat_template::ChatMessage;
-use mlx_lm::{generate, load, GenerateParams, ModelContext, SamplingParams, UserInput};
+use mlxr_lm::chat_template::ChatMessage;
+use mlxr_lm::{generate, load, GenerateParams, ModelContext, SamplingParams, UserInput};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
@@ -23,7 +23,7 @@ const C_BOT: &str = "\x1b[1;32m";
 const C_DIM: &str = "\x1b[2m";
 const C_RESET: &str = "\x1b[0m";
 
-/// Interactive REPL against any `mlx_lm` checkpoint.
+/// Interactive REPL against any `mlxr_lm` checkpoint.
 #[derive(FromArgs)]
 struct Args {
     /// path to a loadable model directory (config.json + safetensors)

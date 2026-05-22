@@ -2,7 +2,10 @@
 name = "mnist"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [dependencies]
-mlx-rs.workspace = true
+# Training example: Linear/Embedding from layers, Sgd from optimizers,
+# CrossEntropy from losses.
+mlxr = { workspace = true, features = ["metal", "layers", "losses", "optimizers"] }
 mnist = "0.6"

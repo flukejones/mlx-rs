@@ -1,6 +1,6 @@
 [workspace.package]
-# All but mlx-sys should follow the same version. mlx-sys should follow
-# the version of mlx-c.
+# All but mlxr-sys share this version. mlxr-sys tracks the mlx-c
+# release version (set in its own Cargo.toml).
 version = "0.27.0"
 edition = "2021"
 authors = [
@@ -9,7 +9,7 @@ authors = [
   "David Chavez <david@dcvz.io>",
 ]
 
-repository = "https://github.com/flukejones/mlx-rs"
+repository = "https://github.com/flukejones/mlxr"
 keywords = ["mlx", "deep-learning", "machine-learning"]
 categories = ["science"]
 license = "MIT OR Apache-2.0"
@@ -17,14 +17,13 @@ rust-version = "1.95.0"
 
 [workspace]
 members = [
-  "mlx-macros",
-  "mlx-sys",
-  "mlx-rs",
-  "mlx-internal-macros",
-  "mlx-lm",
-  "mlx-lm-convert",
-  "mlx-lm-utils",
-  "mlx-tests",
+  "crates/mlxr-sys",
+  "crates/mlxr-macros",
+  "crates/mlxr-codegen",
+  "crates/mlxr",
+  "crates/mlxr-lm",
+  "crates/mlxr-convert",
+  "crates/mlxr-tests",
   "xtask",
   "examples/chat",
   "examples/lm",
@@ -49,8 +48,8 @@ inherits = "release"
 debug = "line-tables-only"
 strip = "none"
 
-# Single source of truth for the upstream mlx version that mlx-sys
-# (cmake FetchContent) and mlx-lm (steel-attention preamble generator)
+# Single source of truth for the upstream mlx version that mlxr-sys
+# (cmake FetchContent) and mlxr-lm (steel-attention preamble generator)
 # both consume.
 [workspace.metadata.mlx]
 version = "v0.31.2"                              # last bumped 2026-05-16
@@ -58,12 +57,11 @@ sha = "68cf2fddd8de5edd8ab3d926391772b2e2cedad8" # mlx-c #114
 
 [workspace.dependencies]
 # workspace local dependencies
-mlx-sys = { version = "=0.2.0", path = "mlx-sys" }
-mlx-macros = { version = "0.27", path = "mlx-macros" }
-mlx-internal-macros = { version = "0.27", path = "mlx-internal-macros" }
-mlx-rs = { version = "0.27", path = "mlx-rs" }
-mlx-lm = { version = "0.0.1", path = "mlx-lm" }
-mlx-lm-utils = { version = "0.0.1", path = "mlx-lm-utils" }
+mlxr-sys     = { version = "=0.2.0", path = "crates/mlxr-sys" }
+mlxr-macros  = { version = "0.27",   path = "crates/mlxr-macros" }
+mlxr-codegen = { version = "0.27",   path = "crates/mlxr-codegen" }
+mlxr         = { version = "0.27",   path = "crates/mlxr",    default-features = false }
+mlxr-lm      = { version = "0.27",   path = "crates/mlxr-lm" }
 
 # external dependencies
 thiserror = "2"
