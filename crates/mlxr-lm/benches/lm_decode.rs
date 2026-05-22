@@ -284,6 +284,38 @@ fn time_decode(ctx: &mut ModelContext, prompt: &Array, steps: i32) -> Duration {
     t.elapsed()
 }
 
+/// Decode-only timing through MTP self-speculative decode. Drives
+/// `try_mtp_decode` until the per-step budget is exhausted. Greedy
+/// (temp=0) sampler so the comparison vs [`time_decode`] isolates the
+/// MTP head's contribution. Reports total wall time for `steps`
+/// committed tokens; criterion treats the cell as `steps` elements,
+/// so reported tok/s is directly comparable to greedy decode.
+fn time_decode_mtp(ctx: &mut ModelContext, prompt: &Array, steps: i32) -> Duration {
+    let initial = prefill_for_decode(ctx, prompt);
+    let mut sampler = SamplerState::new(SamplingParams {
+        temperature: 0.0,
+        top_p: None,
+    });
+    let mut pending = sampler.sample(&initial).unwrap();
+    eval([&pending]).unwrap();
+
+    let t = Instant::now();
+    let mut produced = 0_i32;
+    while produced < steps {
+        let (tokens, next_pending) = ctx
+            .model
+            .try_mtp_decode(&pending, &mut sampler)
+            .unwrap()
+            .expect("model.has_mtp() returned true but try_mtp_decode = None");
+        async_eval([&next_pending]).unwrap();
+        eval([&pending]).unwrap();
+        pending = next_pending;
+        produced += tokens.len() as i32;
+    }
+    eval([&pending]).unwrap();
+    t.elapsed()
+}
+
 /// Decode-only timing through [`SamplerState`] at temp=0.1 + top_p=0.95
 /// to exercise the cached scalar-array hot path. Same pipelining
 /// shape as [`time_decode`] (async_eval N+1 before syncing on N).
@@ -406,6 +438,27 @@ fn bench_one(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
                 });
             },
         );
+
+        // MTP self-speculative cell: only for models whose adapter
+        // ships an MTP head (Qwen 3.6-35B-A3B q8 today). Greedy sampler
+        // so the comparison vs `decode_short` / `decode_long` isolates
+        // MTP's contribution from the sampling-path cost.
+        if ctx.model.has_mtp() {
+            for (label, prompt) in [
+                (BenchmarkId::new("decode_short_mtp", decode_steps), &short),
+                (BenchmarkId::new("decode_long_mtp", decode_steps), &long),
+            ] {
+                group.bench_function(label, |b| {
+                    b.iter_custom(|iters| {
+                        let mut total = Duration::ZERO;
+                        for _ in 0..iters {
+                            total += time_decode_mtp(&mut ctx, prompt, decode_steps);
+                        }
+                        total
+                    });
+                });
+            }
+        }
         group.finish();
     }
 
@@ -425,8 +478,8 @@ fn bench_decode(c: &mut Criterion) {
     bench_one(
         c,
         "qwen3_6_moe",
-        "35b_a3b_q8",
-        "lmstudio-community/Qwen3.6-35B-A3B-MLX-8bit",
+        "35b_a3b_q8_mtp",
+        "mlx-community/Qwen3.6-35B-A3B-q8-mtp",
     );
 
     bench_one(
