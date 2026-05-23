@@ -93,6 +93,72 @@ fn mtp_greedy_matches_non_mtp_greedy_q8() {
     );
 }
 
+/// Same as the depth-1 greedy parity test but with the MTP draft
+/// chained to depth 2 (two MTP forwards per speculative call, then a
+/// 3-token main verify). All cache-rollback / re-prime paths in the
+/// walk-back accept must keep output bit-identical to non-MTP greedy.
+#[test]
+#[ignore = "requires mlx-community/Qwen3.6-35B-A3B-q8-mtp on disk"]
+fn mtp_greedy_depth2_matches_non_mtp_greedy_q8() {
+    let dir = home().join(Q8_MTP_PATH);
+    let mut ctx = load(&dir).expect("load");
+
+    fn run(ctx: &mut mlxr_lm::ModelContext, disable_mtp: bool, depth: u32) -> String {
+        ctx.model.set_mtp_depth(depth);
+        let input = UserInput::text("Once upon a time");
+        let params = GenerateParams {
+            max_new_tokens: 32,
+            disable_mtp,
+            ..GenerateParams::default()
+        };
+        generate(ctx, input, params, &mut |_, _| {
+            std::ops::ControlFlow::Continue(())
+        })
+        .expect("generate")
+        .text
+    }
+
+    let non_mtp = run(&mut ctx, true, 1);
+    let with_mtp_d2 = run(&mut ctx, false, 2);
+
+    assert_eq!(
+        non_mtp, with_mtp_d2,
+        "greedy MTP depth=2 diverged from greedy non-MTP:\n  non-mtp:  {non_mtp:?}\n  depth=2:  {with_mtp_d2:?}"
+    );
+}
+
+/// Same as the depth-2 greedy parity test but at depth 3. Verifies
+/// the walk-back / cache-rollback logic at the new cap.
+#[test]
+#[ignore = "requires mlx-community/Qwen3.6-35B-A3B-q8-mtp on disk"]
+fn mtp_greedy_depth3_matches_non_mtp_greedy_q8() {
+    let dir = home().join(Q8_MTP_PATH);
+    let mut ctx = load(&dir).expect("load");
+
+    fn run(ctx: &mut mlxr_lm::ModelContext, disable_mtp: bool, depth: u32) -> String {
+        ctx.model.set_mtp_depth(depth);
+        let input = UserInput::text("Once upon a time");
+        let params = GenerateParams {
+            max_new_tokens: 32,
+            disable_mtp,
+            ..GenerateParams::default()
+        };
+        generate(ctx, input, params, &mut |_, _| {
+            std::ops::ControlFlow::Continue(())
+        })
+        .expect("generate")
+        .text
+    }
+
+    let non_mtp = run(&mut ctx, true, 1);
+    let with_mtp_d3 = run(&mut ctx, false, 3);
+
+    assert_eq!(
+        non_mtp, with_mtp_d3,
+        "greedy MTP depth=3 diverged from greedy non-MTP:\n  non-mtp:  {non_mtp:?}\n  depth=3:  {with_mtp_d3:?}"
+    );
+}
+
 /// Sampled (temp > 0, top-p) generation through the MTP path. The
 /// gate no longer requires `temperature == 0` — the adapter runs
 /// Leviathan-2023 rejection sampling so the output distribution

@@ -268,13 +268,48 @@ where
         })
     }
 
-    /// Run the MTP head. `h_t` is the main decoder's *pre*-final-norm
+    /// Run the MTP head. `h_t` is the main decoder's post-final-norm
     /// hidden at the last committed slot; `embed_next` is the
-    /// embedding of the sampled `token[t+1]`. The head re-norms both
-    /// inputs via its own `pre_fc_norm_*` weights, so passing the
-    /// post-norm hidden would double-normalise. Returns the post-norm
-    /// hidden ready for the shared `lm_head`.
+    /// embedding of the sampled `token[t+1]`. The head normalises
+    /// both inputs via its own `pre_fc_norm_*` RMSNorms; the hidden
+    /// is therefore normalised twice (model.norm, then
+    /// pre_fc_norm_hidden), which matches what the Qwen 3.6 MTP head
+    /// weights were trained against. Returns the post-norm hidden
+    /// ready for the shared `lm_head`.
     pub fn forward(
+        &mut self,
+        h_t: &Array,
+        embed_next: &Array,
+        caches: &mut [LayerCache],
+        position_ids: Option<&Array>,
+    ) -> Result<Array, Exception> {
+        let h = self.run_inner(h_t, embed_next, caches, position_ids)?;
+        self.norm.forward(&h)
+    }
+
+    /// Run the MTP head over a multi-token prompt segment purely to
+    /// populate `caches`. Same compute path as [`Self::forward`] but
+    /// the post-norm + lm_head projection is skipped — the call site
+    /// only cares about advancing the MTP KV cache to match the main
+    /// cache offset.
+    ///
+    /// Inputs are 3-D `[B, S, H]`: `h_full` is the main decoder's
+    /// post-final-norm hidden at positions `0..S-1`, `embed_full` is
+    /// the embedding of the tokens at positions `1..S` (the MTP head
+    /// predicts the next-next token, so each position `i` of the
+    /// segment consumes hidden[i] + embed[i+1]). After this call
+    /// `caches[0].offset` advances by `S`.
+    pub fn update_cache(
+        &mut self,
+        h_full: &Array,
+        embed_full: &Array,
+        caches: &mut [LayerCache],
+    ) -> Result<(), Exception> {
+        self.run_inner(h_full, embed_full, caches, None)?;
+        Ok(())
+    }
+
+    fn run_inner(
         &mut self,
         h_t: &Array,
         embed_next: &Array,
@@ -288,7 +323,7 @@ where
         for (layer, cache) in self.layers.iter_mut().zip(caches.iter_mut()) {
             h = layer.forward(&h, None, None, Some(cache), position_ids)?;
         }
-        self.norm.forward(&h)
+        Ok(h)
     }
 
     pub fn training_mode(&mut self, mode: bool) {
@@ -626,10 +661,14 @@ where
         Ok(logits)
     }
 
-    /// Like [`Self::forward`] but also returns the **pre-final-norm**
-    /// hidden state. The MTP head consumes this pre-norm hidden (it
-    /// applies its own `pre_fc_norm_hidden` on top); the lm_head
-    /// projection uses the post-norm (returned alongside as logits).
+    /// Like [`Self::forward`] but also returns the post-final-norm
+    /// hidden state over the full sequence. The MTP head consumes
+    /// this post-norm hidden and applies its own `pre_fc_norm_hidden`
+    /// on top; the same post-norm is what the lm_head projects to
+    /// logits, so both outputs share the normalised hidden the model
+    /// was trained to produce. Hidden is `[B, S, H]` — callers slice
+    /// to `[:, -1:]` for the next-token logits or to `[:, :-1]` for
+    /// the MTP prime pass.
     pub fn forward_hidden_and_logits(
         &mut self,
         inputs: Option<&Array>,
@@ -637,11 +676,11 @@ where
         caches: &mut [LayerCache],
         position_ids: Option<&Array>,
     ) -> Result<(Array, Array), Exception> {
-        let (pre_norm, post_norm) =
+        let (_, post_norm) =
             self.model
                 .forward_pre_and_post_norm(inputs, inputs_embeds, caches, position_ids)?;
         let logits = self.apply_lm_head(&post_norm)?;
-        Ok((pre_norm, logits))
+        Ok((post_norm, logits))
     }
 
     /// Project a hidden state to vocab logits via the LM head (tied

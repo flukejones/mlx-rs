@@ -19,7 +19,6 @@ pub const KERNEL_HEADER: &str = concat!(
     include_str!(env!("STEEL_ATTENTION_PREAMBLE_PATH")),
     r#"
 
-// --- mlx-lm steel_attention header ----------------------------------
 // Steel templates live in `mlx::steel`; alias the namespace so the
 // kernel body can use unqualified names.
 using namespace mlx::steel;

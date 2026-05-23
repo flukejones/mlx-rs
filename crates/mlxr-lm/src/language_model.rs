@@ -146,6 +146,12 @@ pub trait LanguageModel: Send {
     ) -> Result<Option<(Vec<u32>, mlxr::Array)>, Error> {
         Ok(None)
     }
+
+    /// Set the MTP draft depth (number of tokens the MTP head
+    /// predicts ahead per speculative call). Adapters clamp to their
+    /// own supported range; models without an MTP head ignore the
+    /// call. Default is a no-op.
+    fn set_mtp_depth(&mut self, _n: u32) {}
 }
 
 /// Convenience for text-only models: a processor that does nothing

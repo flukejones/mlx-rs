@@ -5,6 +5,7 @@ version = "0.0.1"
 publish = false
 
 [dependencies]
+mlxr = { workspace = true, features = ["metal", "fast", "linalg"] }
 mlxr-lm.workspace = true
 
 anyhow = { workspace = true }

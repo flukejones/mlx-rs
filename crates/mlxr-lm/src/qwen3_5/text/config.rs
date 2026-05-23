@@ -221,9 +221,8 @@ pub use crate::quantization::QuantizationConfig;
 pub struct ModelConfig {
     pub model_type: String,
     pub text_config: TextConfig,
-    /// Text-only MoE checkpoints (e.g. mlx-lm convert output) omit this
-    /// entirely; the VLM adapter requires it and errors at its own
-    /// load_context if absent.
+    /// Text-only MoE checkpoints omit this entirely; the VLM adapter
+    /// requires it and errors at its own load_context if absent.
     #[serde(default)]
     pub vision_config: Option<VisionConfig>,
 

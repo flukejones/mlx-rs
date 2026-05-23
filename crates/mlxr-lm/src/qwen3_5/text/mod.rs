@@ -19,6 +19,7 @@ pub mod sampling;
 pub mod text;
 pub mod weights;
 
+pub use adapter_moe::{Qwen35MoeAdapter, MAX_MTP_DEPTH};
 pub use cache::{make_caches, LayerCache, LinearAttnCache};
 pub use config::{ModelConfig, TextConfig};
 pub use gated_delta_block::GatedDeltaNet;

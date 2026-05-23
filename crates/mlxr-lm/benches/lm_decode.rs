@@ -26,8 +26,9 @@ use mlxr::{
     transforms::{async_eval, eval},
     Array,
 };
+use mlxr_lm::language_model::UserInputProcessor;
 use mlxr_lm::lm_input::{LMInput, PrepareResult, Text};
-use mlxr_lm::{load, ModelContext, SamplerState, SamplingParams};
+use mlxr_lm::{load, ModelContext, SamplerState, SamplingParams, UserInput};
 
 const DECODE_TOKENS: i32 = 100;
 const SHORT_PROMPT_LEN: usize = 13;
@@ -163,6 +164,53 @@ fn bench_only_skip(group_prefix: &str) -> bool {
 fn synthetic_prompt(len: usize) -> Array {
     let ids: Vec<i32> = (0..len as i32).map(|i| 100 + (i % 100)).collect();
     Array::from_slice(&ids, &[1, ids.len() as i32])
+}
+
+/// Natural-text seed for the MTP cells. Synthetic period-100 IDs
+/// produce a context the MTP head can't draft from accurately,
+/// suppressing acceptance and underrepresenting MTP's real win. A
+/// short cohesive paragraph tiled to the target length keeps
+/// acceptance close to what real chat workloads see.
+const REAL_TEXT_SEED: &str = "Rust is a better systems language than Python for most non-glue \
+     code. The type system catches whole categories of bug at compile \
+     time that Python only catches at runtime — null derefs, use-after- \
+     move, data races, accidental implicit conversions. Cargo gives you \
+     reproducible builds, a single test runner, a single benchmarking \
+     framework, and a single doc tool without ten years of accumulated \
+     packaging archaeology. Performance is closer to C than to CPython \
+     by a factor of fifty or more on tight loops, and the language has \
+     no global interpreter lock, so spawning threads actually buys you \
+     parallelism. Memory layout is predictable: structs are flat, \
+     enums are tagged unions the size of their largest variant, and \
+     allocations only happen where you write them. Python wins on \
+     iteration speed at the REPL and on libraries for one-off data \
+     work, but those wins shrink when the code outgrows a notebook. \
+     For everything that ships, Rust gives you fewer surprises in \
+     production. ";
+
+/// `[1, len]` real-text prompt tokenised via the loaded model's
+/// processor, tiled and truncated to exactly `len` tokens. Used by
+/// the MTP cells so acceptance rates reflect real chat workloads
+/// rather than the synthetic period-100 worst case.
+fn real_text_prompt(processor: &mut dyn UserInputProcessor, len: usize) -> Array {
+    // Tile the seed enough times that the tokeniser is guaranteed to
+    // produce at least `len` ids regardless of how the BPE merges
+    // play out across the seed boundary.
+    let mut text = String::with_capacity(REAL_TEXT_SEED.len() * 8);
+    while text.len() < REAL_TEXT_SEED.len().max(1) * 8 {
+        text.push_str(REAL_TEXT_SEED);
+    }
+    let lm_input = processor
+        .prepare(UserInput::text(text))
+        .expect("real_text_prompt: processor.prepare failed");
+    let tokens = lm_input.text.tokens;
+    let total = tokens.shape()[1] as usize;
+    assert!(
+        total >= len,
+        "real_text_prompt: tiled text produced {total} tokens, need {len}; \
+         enlarge the tile factor",
+    );
+    tokens.index((.., ..len as i32))
 }
 
 fn make_lm_input(prompt: &Array) -> LMInput {
@@ -439,24 +487,38 @@ fn bench_one(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
             },
         );
 
-        // MTP self-speculative cell: only for models whose adapter
+        // MTP self-speculative cells. Only for models whose adapter
         // ships an MTP head (Qwen 3.6-35B-A3B q8 today). Greedy sampler
         // so the comparison vs `decode_short` / `decode_long` isolates
-        // MTP's contribution from the sampling-path cost.
+        // MTP's contribution from the sampling-path cost. Real-text
+        // prompt: synthetic period-100 IDs suppress acceptance and
+        // underrepresent MTP's real win; the natural-text tile keeps
+        // it close to real chat workloads.
+        //
+        // Two depth settings: `_mtp` = depth 1 (one draft per call,
+        // commits 1 or 2 tokens); `_mtp_depth2` = depth 2 (chained
+        // two-token draft, commits 1, 2, or 3 tokens per call). The
+        // depth setter is invoked before each cell so the two
+        // configurations are independently measurable.
         if ctx.model.has_mtp() {
-            for (label, prompt) in [
-                (BenchmarkId::new("decode_short_mtp", decode_steps), &short),
-                (BenchmarkId::new("decode_long_mtp", decode_steps), &long),
-            ] {
-                group.bench_function(label, |b| {
-                    b.iter_custom(|iters| {
-                        let mut total = Duration::ZERO;
-                        for _ in 0..iters {
-                            total += time_decode_mtp(&mut ctx, prompt, decode_steps);
-                        }
-                        total
+            let short_real = real_text_prompt(ctx.processor.as_mut(), SHORT_PROMPT_LEN);
+            let long_real = real_text_prompt(ctx.processor.as_mut(), LONG_PROMPT_LEN);
+            for (depth, suffix) in [(1u32, "mtp"), (2u32, "mtp_depth2"), (3u32, "mtp_depth3")] {
+                for (label_kind, prompt) in
+                    [("decode_short", &short_real), ("decode_long", &long_real)]
+                {
+                    let label = BenchmarkId::new(format!("{label_kind}_{suffix}"), decode_steps);
+                    group.bench_function(label, |b| {
+                        b.iter_custom(|iters| {
+                            let mut total = Duration::ZERO;
+                            for _ in 0..iters {
+                                ctx.model.set_mtp_depth(depth);
+                                total += time_decode_mtp(&mut ctx, prompt, decode_steps);
+                            }
+                            total
+                        });
                     });
-                });
+                }
             }
         }
         group.finish();
