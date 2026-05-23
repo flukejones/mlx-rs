@@ -20,36 +20,58 @@ pub fn sample(logits: &Array, temp: f32) -> Result<Array, Exception> {
     }
 }
 
-/// Sampling knobs. `temperature == 0.0` → argmax.
-#[derive(Debug, Clone)]
-pub struct SamplingParams {
-    pub temperature: f32,
-    /// Nucleus (top-p). Ignored when `temperature == 0`.
-    pub top_p: Option<f32>,
+/// Sampling strategy. The variants are mutually exclusive; nucleus
+/// (`top_p`) can never silently override greedy decode because
+/// `Greedy` has no `p` field. Default is `Greedy` (argmax) for parity
+/// with `temperature == 0.0` in prior shapes.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Sampler {
+    /// Argmax. No temperature, no top-p.
+    #[default]
+    Greedy,
+    /// Plain categorical sampling at the given temperature.
+    /// `temperature` must be `> 0.0`; `0.0` is a logic bug, use [`Self::Greedy`].
+    Temperature(f32),
+    /// Categorical sampling with a nucleus (top-p) mask applied after
+    /// temperature scaling. `temperature` must be `> 0.0`.
+    TopP { temperature: f32, p: f32 },
 }
 
-impl Default for SamplingParams {
-    fn default() -> Self {
-        Self {
-            temperature: 0.0,
-            top_p: None,
+impl Sampler {
+    /// `None` for [`Self::Greedy`], else the temperature.
+    pub fn temperature(self) -> Option<f32> {
+        match self {
+            Self::Greedy => None,
+            Self::Temperature(t) | Self::TopP { temperature: t, .. } => Some(t),
+        }
+    }
+
+    /// `Some(p)` for [`Self::TopP`]; `None` otherwise.
+    pub fn top_p(self) -> Option<f32> {
+        match self {
+            Self::TopP { p, .. } => Some(p),
+            _ => None,
         }
     }
 }
 
-/// Sample with full parameter support: argmax at temp=0, plain
-/// categorical at temp>0, or nucleus (top-p) when `top_p` is set.
+/// Sample with full parameter support: argmax for [`Sampler::Greedy`],
+/// plain categorical for [`Sampler::Temperature`], or nucleus mask for
+/// [`Sampler::TopP`].
 ///
 /// One-shot convenience: each call re-allocates the temperature and
 /// top-p scalar arrays. Use [`SamplerState`] in a hot decode loop.
-pub fn sample_with(logits: &Array, params: &SamplingParams) -> Result<Array, Exception> {
-    if params.temperature == 0.0 {
-        return argmax_axis!(logits, -1);
-    }
-    let scaled = multiply(logits, array!(1.0_f32 / params.temperature))?;
-    match params.top_p {
-        None => categorical!(scaled),
-        Some(p) => top_p_sample(&scaled, p),
+pub fn sample_with(logits: &Array, sampler: Sampler) -> Result<Array, Exception> {
+    match sampler {
+        Sampler::Greedy => argmax_axis!(logits, -1),
+        Sampler::Temperature(t) => {
+            let scaled = multiply(logits, array!(1.0_f32 / t))?;
+            categorical!(scaled)
+        }
+        Sampler::TopP { temperature, p } => {
+            let scaled = multiply(logits, array!(1.0_f32 / temperature))?;
+            top_p_sample(&scaled, p)
+        }
     }
 }
 
@@ -61,7 +83,7 @@ pub fn sample_with(logits: &Array, params: &SamplingParams) -> Result<Array, Exc
 /// for every subsequent call. Rebuild the state if the dtype changes
 /// (it does not, across a single generation).
 pub struct SamplerState {
-    params: SamplingParams,
+    sampler: Sampler,
     /// `1.0 / temperature` materialised at logits dtype. `None` for
     /// greedy decode.
     inv_temp: Option<Array>,
@@ -77,10 +99,10 @@ pub struct SamplerState {
 }
 
 impl SamplerState {
-    pub fn new(params: SamplingParams) -> Self {
-        let top_p_threshold = params.top_p.map(Array::from_f32);
+    pub fn new(sampler: Sampler) -> Self {
+        let top_p_threshold = sampler.top_p().map(Array::from_f32);
         Self {
-            params,
+            sampler,
             inv_temp: None,
             top_p_threshold,
             neg_inf: None,
@@ -89,9 +111,9 @@ impl SamplerState {
     }
 
     /// Sample one token from the given logits, reusing cached scalar
-    /// arrays. Argmax at `temperature == 0.0`.
+    /// arrays.
     pub fn sample(&mut self, logits: &Array) -> Result<Array, Exception> {
-        if self.params.temperature == 0.0 {
+        if matches!(self.sampler, Sampler::Greedy) {
             return argmax_axis!(logits, -1);
         }
         let dtype = logits.dtype();
@@ -102,17 +124,18 @@ impl SamplerState {
             .as_ref()
             .expect("inv_temp populated by bind()");
         let scaled = multiply(logits, inv_temp)?;
-        match self.params.top_p {
-            None => categorical!(&scaled),
-            Some(_) => self.top_p_sample(&scaled),
+        match self.sampler {
+            Sampler::Greedy => unreachable!("greedy handled above"),
+            Sampler::Temperature(_) => categorical!(&scaled),
+            Sampler::TopP { .. } => self.top_p_sample(&scaled),
         }
     }
 
-    /// Read access to the sampling knobs the state was built from.
-    /// MTP rejection-sampling needs the temperature + top-p values
-    /// to drive its own masked log-prob computation.
-    pub fn params(&self) -> &SamplingParams {
-        &self.params
+    /// Read access to the sampler the state was built from. MTP
+    /// rejection-sampling needs the temperature + top-p values to
+    /// drive its own masked log-prob computation.
+    pub fn sampler(&self) -> Sampler {
+        self.sampler
     }
 
     /// Apply temperature scaling and (optionally) a shared top-p
@@ -131,9 +154,9 @@ impl SamplerState {
         logits: &Array,
         keep_mask: Option<&Array>,
     ) -> Result<Array, Exception> {
-        if self.params.temperature == 0.0 {
+        if matches!(self.sampler, Sampler::Greedy) {
             return Err(Exception::custom(
-                "masked_log_probs: temperature must be > 0; greedy callers go through the argmax path",
+                "masked_log_probs: Sampler::Greedy has no temperature; greedy callers go through the argmax path",
             ));
         }
         let dtype = logits.dtype();
@@ -149,7 +172,11 @@ impl SamplerState {
         if self.bound_dtype == Some(dtype) {
             return Ok(());
         }
-        let inv_temp = Array::from_f32(1.0_f32 / self.params.temperature).as_dtype(dtype)?;
+        let t = self
+            .sampler
+            .temperature()
+            .expect("bind() called on Sampler::Greedy");
+        let inv_temp = Array::from_f32(1.0_f32 / t).as_dtype(dtype)?;
         let neg_inf = Array::from_f32(f32::NEG_INFINITY).as_dtype(dtype)?;
         self.inv_temp = Some(inv_temp);
         self.neg_inf = Some(neg_inf);
@@ -259,24 +286,19 @@ mod tests {
     #[test]
     fn sampler_state_matches_sample_with_greedy() {
         let logits = Array::from_slice(&[0.1_f32, 0.5, 0.3, 0.05, 0.05], &[1, 5]);
-        let params = SamplingParams {
-            temperature: 0.0,
-            top_p: None,
-        };
-        let mut state = SamplerState::new(params.clone());
+        let mut state = SamplerState::new(Sampler::Greedy);
         let one = state.sample(&logits).unwrap();
-        let two = sample_with(&logits, &params).unwrap();
+        let two = sample_with(&logits, Sampler::Greedy).unwrap();
         assert_eq!(one.item::<u32>(), two.item::<u32>());
     }
 
     #[test]
     fn sampler_state_top_p_returns_top_token() {
         let logits = Array::from_slice(&[-10.0_f32, -10.0, -10.0, 5.0, -10.0], &[1, 5]);
-        let params = SamplingParams {
+        let mut state = SamplerState::new(Sampler::TopP {
             temperature: 1.0,
-            top_p: Some(0.5),
-        };
-        let mut state = SamplerState::new(params);
+            p: 0.5,
+        });
         for _ in 0..16 {
             let tok = state.sample(&logits).unwrap();
             assert_eq!(tok.item::<u32>(), 3);
@@ -313,11 +335,10 @@ mod tests {
     fn sampler_state_caches_across_calls() {
         // Single bind + repeated sample must produce valid token ids.
         let logits = Array::from_slice(&[0.1_f32, 0.9, 0.2], &[1, 3]);
-        let params = SamplingParams {
+        let mut state = SamplerState::new(Sampler::TopP {
             temperature: 0.7,
-            top_p: Some(0.95),
-        };
-        let mut state = SamplerState::new(params);
+            p: 0.95,
+        });
         for _ in 0..32 {
             let tok = state.sample(&logits).unwrap();
             let id = tok.item::<u32>();

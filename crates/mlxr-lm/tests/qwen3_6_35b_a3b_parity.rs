@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 use mlxr_lm::chat_template::ChatMessage;
-use mlxr_lm::{generate, load, GenerateParams, SamplingParams, UserInput};
+use mlxr_lm::{generate, load, GenerateParams, Sampler, UserInput};
 
 const Q8_PATH: &str = ".cache/mlx-rs-bench/lmstudio-community/Qwen3.6-35B-A3B-MLX-8bit";
 const Q8_MTP_PATH: &str = ".cache/mlx-rs-bench/mlx-community/Qwen3.6-35B-A3B-q8-mtp";
@@ -176,9 +176,9 @@ fn mtp_sampled_q8_produces_text() {
     let input = UserInput::text("The capital of France is");
     let params = GenerateParams {
         max_new_tokens: 32,
-        sampling: SamplingParams {
+        sampling: Sampler::TopP {
             temperature: 0.7,
-            top_p: Some(0.95),
+            p: 0.95,
         },
         ..GenerateParams::default()
     };
@@ -206,10 +206,7 @@ fn mtp_sampled_no_top_p_q8_produces_text() {
     let input = UserInput::text("Write a haiku about Rust:");
     let params = GenerateParams {
         max_new_tokens: 24,
-        sampling: SamplingParams {
-            temperature: 1.0,
-            top_p: None,
-        },
+        sampling: Sampler::Temperature(1.0),
         ..GenerateParams::default()
     };
     let result = generate(&mut ctx, input, params, &mut |_, _| {

@@ -15,53 +15,37 @@ pub mod image;
 
 use std::path::Path;
 
+use crate::config::{Family, ModelConfig};
 use crate::error::Error;
 use crate::family::LoadedContext;
 
-/// `config.json::model_type` strings handled by the dense entry point
-/// in [`text::adapter_dense::load_context_dense`]. VLM checkpoints
-/// also use these — disambiguation happens at load time via the
-/// `preprocessor_config.json` probe inside [`load_context`].
-pub const MODEL_TYPES_DENSE: &[&str] =
-    &["qwen3_5", "qwen3_5_text", "qwen3_5forconditionalgeneration"];
+/// Family entry point. Dispatches on the typed [`Family`] variant,
+/// then probes the checkpoint to choose dense-text vs vlm. The probe
+/// runs once at load — never per turn.
+pub(crate) fn load_context(cfg: &ModelConfig, dir: &Path) -> Result<LoadedContext, Error> {
+    if let Family::Qwen35Moe(env) = &cfg.family {
+        return text::adapter_moe::load_context_moe(cfg, env, dir);
+    }
+    let env = cfg
+        .family
+        .as_qwen35()
+        .ok_or_else(|| Error::Other("qwen3_5::load_context: wrong family".into()))?;
 
-/// MoE model_type strings (Qwen 3.6 35B-A3B and friends).
-pub const MODEL_TYPES_MOE: &[&str] = &["qwen3_5_moe", "qwen3_5_moe_text"];
+    let is_vlm_checkpoint = dir.join("preprocessor_config.json").exists();
 
-/// Returns true if this family knows how to load `model_type`.
-pub(crate) fn handles(model_type: &str) -> bool {
-    MODEL_TYPES_DENSE.contains(&model_type) || MODEL_TYPES_MOE.contains(&model_type)
-}
-
-/// Family entry point. Routes by `model_type` then probes the
-/// checkpoint to choose dense-text vs vlm. The probe runs once at
-/// load — never per turn.
-pub(crate) fn load_context(model_type: &str, dir: &Path) -> Result<LoadedContext, Error> {
-    if MODEL_TYPES_MOE.contains(&model_type) {
-        return text::adapter_moe::load_context_moe(dir);
+    #[cfg(feature = "image")]
+    if is_vlm_checkpoint {
+        return image::adapter::load_context_vlm(cfg, env, dir);
     }
 
-    if MODEL_TYPES_DENSE.contains(&model_type) {
-        let is_vlm_checkpoint = dir.join("preprocessor_config.json").exists();
-
-        #[cfg(feature = "image")]
-        if is_vlm_checkpoint {
-            return image::adapter::load_context_vlm(dir);
-        }
-
-        #[cfg(not(feature = "image"))]
-        if is_vlm_checkpoint {
-            log::warn!(
-                "qwen3_5: checkpoint at {} carries preprocessor_config.json \
-                 but the `image` feature is off; loading text-only (vision tower ignored)",
-                dir.display()
-            );
-        }
-
-        return text::adapter_dense::load_context_dense(dir);
+    #[cfg(not(feature = "image"))]
+    if is_vlm_checkpoint {
+        log::warn!(
+            "qwen3_5: checkpoint at {} carries preprocessor_config.json \
+             but the `image` feature is off; loading text-only (vision tower ignored)",
+            dir.display()
+        );
     }
 
-    Err(Error::Other(
-        format!("qwen3_5::load_context: unsupported model_type {model_type:?}").into(),
-    ))
+    text::adapter_dense::load_context_dense(cfg, env, dir)
 }

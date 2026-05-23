@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use mlxr_lm::chat_template::ChatMessage;
-use mlxr_lm::{generate, load, GenerateParams, SamplingParams, UserInput};
+use mlxr_lm::{generate, load, GenerateParams, Sampler, UserInput};
 
 /// Default checkpoint relative to the bench-cache root. The cache root
 /// resolves via `MLX_LM_BENCH_CACHE` → `XDG_CACHE_HOME/mlx-rs-bench` →
@@ -40,10 +40,7 @@ fn main() -> anyhow::Result<()> {
     let input = UserInput::chat(vec![ChatMessage::user("what's your name?")]);
     let params = GenerateParams {
         max_new_tokens: 256,
-        sampling: SamplingParams {
-            temperature: 0.2,
-            top_p: None,
-        },
+        sampling: Sampler::Temperature(0.2),
         ..GenerateParams::default()
     };
 

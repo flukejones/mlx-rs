@@ -25,9 +25,11 @@ use mlxr::{
 };
 use serde::Deserialize;
 
-pub use super::config::{ModelConfig, QuantizationConfig};
+pub use super::config::ModelConfig;
 pub use super::layer::Qwen35Model;
+use crate::config::ModelConfig as Config;
 use crate::error::Error;
+use crate::quantization::QuantizationConfig;
 
 const NORM_SUFFIXES: &[&str] = &[
     ".input_layernorm.weight",
@@ -258,11 +260,12 @@ fn list_shards(model_dir: &Path) -> Result<Vec<String>, Error> {
 /// `quantization_config`. Returns the loaded model and the list of
 /// fully-qualified sanitised paths that did not bind to a model parameter.
 pub(crate) fn load_language_model(
-    cfg: &ModelConfig,
-    model_dir: impl AsRef<Path>,
+    cfg: &Config,
+    env: &ModelConfig,
+    model_dir: &Path,
 ) -> Result<(Qwen35Model, Vec<String>), Error> {
-    let mut model = Qwen35Model::new_dense(cfg.text_config.clone()).map_err(Error::Exception)?;
-    if let Some(q) = cfg.effective_quantization() {
+    let mut model = Qwen35Model::new_dense(env.text_config.clone()).map_err(Error::Exception)?;
+    if let Some(q) = cfg.quantization() {
         quantize_language_model(&mut model, q)?;
     }
     let weights = load_sanitized_weights(model_dir)?;
@@ -393,7 +396,7 @@ mod tests {
         let q = QuantizationConfig {
             group_size: 64,
             bits: 8,
-            mode: "affine".to_owned(),
+            mode: crate::quantization::QuantMode::Affine,
             overrides: HashMap::new(),
         };
         quantize_language_model(&mut model, &q).unwrap();
@@ -414,8 +417,9 @@ mod tests {
 
         let home = std::env::var("HOME").unwrap();
         let dir = std::path::PathBuf::from(home).join("MLXModels/chandra2/chandra-ocr-2-mlx-q8");
-        let cfg = ModelConfig::from_file(dir.join("config.json")).expect("parse config");
-        let (mut model, _leftover) = load_language_model(&cfg, &dir).expect("load weights");
+        let cfg = Config::from_dir(&dir).expect("parse config");
+        let env = cfg.family.as_qwen35().expect("expected qwen3_5 family");
+        let (mut model, _leftover) = load_language_model(&cfg, env, &dir).expect("load weights");
 
         let tok = Tokenizer::from_file(dir.join("tokenizer.json")).expect("load tokenizer");
         let enc = tok.encode("Hello, world!", true).expect("encode");
@@ -423,14 +427,14 @@ mod tests {
         let s = ids.len() as i32;
         let inputs = Array::from_slice(&ids, &[1, s]);
 
-        let mut caches = make_caches(&cfg);
+        let mut caches = make_caches(env);
         let logits = model
             .forward(Some(&inputs), None, &mut caches, None)
             .expect("forward");
         eval([&logits]).expect("eval");
         assert_eq!(
             logits.shape(),
-            &[1, s, cfg.text_config.vocab_size],
+            &[1, s, env.text_config.vocab_size],
             "logits shape mismatch"
         );
         // No NaNs anywhere.
@@ -450,8 +454,9 @@ mod tests {
     fn loads_chandra_q8_weights_into_language_model() {
         let home = std::env::var("HOME").unwrap();
         let dir = std::path::PathBuf::from(home).join("MLXModels/chandra2/chandra-ocr-2-mlx-q8");
-        let cfg = ModelConfig::from_file(dir.join("config.json")).expect("parse config");
-        let (model, leftover) = load_language_model(&cfg, &dir).expect("load weights");
+        let cfg = Config::from_dir(&dir).expect("parse config");
+        let env = cfg.family.as_qwen35().expect("expected qwen3_5 family");
+        let (model, leftover) = load_language_model(&cfg, env, &dir).expect("load weights");
 
         // We should at least have layer 0 weights populated. The exact param
         // ergonomics get exercised in subsequent commits; for now we sanity-

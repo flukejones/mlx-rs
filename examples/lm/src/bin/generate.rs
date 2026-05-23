@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use mlxr_lm::chat_template::ChatMessage;
-use mlxr_lm::{generate, load, GenerateParams, SamplingParams, UserInput};
+use mlxr_lm::{generate, load, GenerateParams, Sampler, UserInput};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, BoxError>;
@@ -78,12 +78,14 @@ fn main() -> Result<()> {
     } else {
         UserInput::chat(vec![ChatMessage::user(args.prompt)])
     };
+    let sampling = match (args.temperature, args.top_p) {
+        (0.0, _) => Sampler::Greedy,
+        (t, None) => Sampler::Temperature(t),
+        (t, Some(p)) => Sampler::TopP { temperature: t, p },
+    };
     let params = GenerateParams {
         max_new_tokens: args.max_tokens,
-        sampling: SamplingParams {
-            temperature: args.temperature,
-            top_p: args.top_p,
-        },
+        sampling,
         ..GenerateParams::default()
     };
 

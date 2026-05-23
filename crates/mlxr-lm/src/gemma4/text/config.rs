@@ -1,20 +1,22 @@
 //! Gemma 4 text-only config (mirrors HF `Gemma4TextConfig`).
 
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::error::Error;
-use crate::quantization::QuantizationConfig;
 use crate::utils::rope::FloatOrString;
 
+/// Gemma 4 envelope of `config.json`. Stored inside
+/// [`crate::config::Family::Gemma4`]; the per-layer hyperparameters
+/// live in [`TextConfig`] under `text_config`. Quantisation lives
+/// on the outer [`crate::config::ModelConfig`].
 #[derive(Debug, Clone, Deserialize)]
-pub struct Gemma4Config {
-    #[serde(default = "default_model_type")]
-    pub model_type: String,
+pub struct ModelConfig {
+    pub text_config: TextConfig,
+}
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct TextConfig {
     #[serde(default = "default_hidden_size")]
     pub hidden_size: i32,
     #[serde(default = "default_num_hidden_layers")]
@@ -74,22 +76,14 @@ pub struct Gemma4Config {
     #[serde(default = "default_vocab_size_per_layer_input")]
     pub vocab_size_per_layer_input: i32,
 
-    /// Optional explicit per-layer types list (`"sliding_attention"` or
-    /// `"full_attention"`). Derived from `sliding_window_pattern` if
-    /// absent.
-    pub layer_types: Option<Vec<String>>,
+    /// Optional explicit per-layer types list. Derived from
+    /// `sliding_window_pattern` if absent. Validated at deserialize.
+    pub layer_types: Option<Vec<LayerKind>>,
 
     #[serde(default = "default_tie_word_embeddings")]
     pub tie_word_embeddings: bool,
-    #[serde(default)]
-    pub quantization: Option<QuantizationConfig>,
-    #[serde(default)]
-    pub quantization_config: Option<QuantizationConfig>,
 }
 
-fn default_model_type() -> String {
-    "gemma4_text".to_owned()
-}
 const fn default_hidden_size() -> i32 {
     1536
 }
@@ -139,48 +133,12 @@ const fn default_vocab_size_per_layer_input() -> i32 {
     262144
 }
 
-/// Outer multimodal-wrapper config schema. HF Gemma 4 checkpoints
-/// store all text-model architecture fields under `text_config`; the
-/// wrapper carries the `quantization` block, and audio/vision configs
-/// we don't load.
-#[derive(Debug, Clone, Deserialize)]
-struct OuterConfig {
-    pub text_config: Option<Gemma4Config>,
-    #[serde(default)]
-    pub quantization: Option<QuantizationConfig>,
-    #[serde(default)]
-    pub quantization_config: Option<QuantizationConfig>,
-}
-
-impl Gemma4Config {
-    /// Parse the HF config.json. Accepts both forms:
-    ///   - Multimodal wrapper: `{ model_type, text_config: {...}, quantization: {...} }`
-    ///   - Flat text-only:    `{ hidden_size, ... }`
-    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, Error> {
-        let raw = fs::read_to_string(path.as_ref())?;
-        // Try the outer-wrapper form first; flat-form falls through.
-        if let Ok(outer) = serde_json::from_str::<OuterConfig>(&raw) {
-            if let Some(mut inner) = outer.text_config {
-                // Propagate the outer-level quantization block down so
-                // `try_into_quantized` finds it on the inner config.
-                if inner.quantization.is_none() {
-                    inner.quantization = outer.quantization;
-                }
-                if inner.quantization_config.is_none() {
-                    inner.quantization_config = outer.quantization_config;
-                }
-                return Ok(inner);
-            }
-        }
-        let cfg = serde_json::from_str::<Self>(&raw)?;
-        Ok(cfg)
-    }
-
+impl TextConfig {
     /// Pattern-derived layer-type table when `layer_types` is absent:
     /// `pattern = ["sliding"]*(P-1) + ["full"]`, tiled to N layers.
     pub fn layer_types_resolved(&self) -> Vec<LayerKind> {
         if let Some(explicit) = &self.layer_types {
-            return explicit.iter().map(|s| LayerKind::parse(s)).collect();
+            return explicit.clone();
         }
         let pattern_len = self.sliding_window_pattern as usize;
         (0..self.num_hidden_layers as usize)
@@ -204,7 +162,7 @@ impl Gemma4Config {
     pub fn effective_sliding_window_pattern(&self) -> i32 {
         if let Some(types) = &self.layer_types {
             for (i, ty) in types.iter().enumerate() {
-                if ty == "full_attention" {
+                if *ty == LayerKind::FullAttention {
                     return (i as i32) + 1;
                 }
             }
@@ -213,17 +171,12 @@ impl Gemma4Config {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Per-layer attention kind. Deserialized from `config.json::layer_types`
+/// entries; unknown strings hard-error rather than silently routing as
+/// sliding-attention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LayerKind {
     SlidingAttention,
     FullAttention,
-}
-
-impl LayerKind {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "full_attention" => Self::FullAttention,
-            _ => Self::SlidingAttention,
-        }
-    }
 }

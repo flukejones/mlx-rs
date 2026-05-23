@@ -163,17 +163,9 @@ impl Attention {
 
         let rotary_dim =
             (head_dim as f32 * cfg.rope_parameters.partial_rotary_factor).floor() as i32;
-        // Only `default` (which the chandra checkpoint ships) and `mrope`
-        // are valid here. Reject yarn / longrope upfront with a clear
-        // error rather than silently parsing them and producing garbage
-        // logits at runtime.
-        let rope_type = cfg.rope_parameters.rope_type.as_str();
-        if !matches!(rope_type, "default" | "mrope") {
-            return Err(Exception::custom(format!(
-                "Qwen3.5 Attention: rope_type {rope_type:?} is not supported \
-                 (only \"default\" and \"mrope\" are wired up today)"
-            )));
-        }
+        // Unsupported rope variants (yarn / longrope) reject at
+        // `config.json` deserialize via `QwenRopeType`, so the only
+        // values reaching here are `default` / `mrope`.
         let rope = MultimodalRope::new(
             rotary_dim,
             cfg.rope_parameters.rope_theta,
@@ -390,12 +382,15 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_rope_type_rejected() {
-        let mut cfg = synthetic_text_config();
-        cfg.rope_parameters.rope_type = "yarn".to_owned();
-        let err = Attention::new(&cfg).unwrap_err();
+    fn unsupported_rope_type_rejected_at_deserialize() {
+        let json = serde_json::json!({
+            "mrope_section": [2, 1, 1],
+            "rope_theta": 10000.0,
+            "partial_rotary_factor": 1.0,
+            "type": "yarn"
+        });
+        let err = serde_json::from_value::<super::super::config::RopeParameters>(json).unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("rope_type"), "unexpected error: {msg}");
         assert!(msg.contains("yarn"), "unexpected error: {msg}");
     }
 

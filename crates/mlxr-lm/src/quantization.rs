@@ -20,14 +20,23 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-const DEFAULT_QUANT_MODE: &str = "affine";
+/// Quantisation mode tag from `config.json::quantization.mode`. Every
+/// production checkpoint ships `affine`; unknown values reject at
+/// deserialize.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuantMode {
+    /// Affine quantisation (scale + bias).
+    #[default]
+    Affine,
+}
 
 /// Body quantisation + optional per-key overrides.
 #[derive(Debug, Clone)]
 pub struct QuantizationConfig {
     pub group_size: i32,
     pub bits: i32,
-    pub mode: String,
+    pub mode: QuantMode,
     /// Per-key overrides keyed by the raw safetensors prefix (before
     /// sanitisation), e.g.
     /// `language_model.model.layers.0.mlp.gate`.
@@ -47,14 +56,6 @@ impl QuantizationConfig {
     }
 }
 
-/// Prefer `quantization`; fall back to legacy `quantization_config`.
-pub fn resolve_quantization<'a>(
-    primary: &'a Option<QuantizationConfig>,
-    legacy: &'a Option<QuantizationConfig>,
-) -> Option<&'a QuantizationConfig> {
-    primary.as_ref().or(legacy.as_ref())
-}
-
 // ─── serde plumbing ───────────────────────────────────────────────
 
 /// Intermediate shape: top-level body knobs flatten into a catch-all
@@ -64,16 +65,12 @@ pub fn resolve_quantization<'a>(
 struct Raw {
     group_size: i32,
     bits: i32,
-    #[serde(default = "default_quant_mode")]
-    mode: String,
+    #[serde(default)]
+    mode: QuantMode,
     /// Per-tensor overrides — every entry that isn't `group_size`,
     /// `bits`, or `mode` lands here.
     #[serde(flatten)]
     extras: HashMap<String, serde_json::Value>,
-}
-
-fn default_quant_mode() -> String {
-    DEFAULT_QUANT_MODE.to_owned()
 }
 
 #[derive(Deserialize)]
@@ -114,7 +111,7 @@ mod tests {
             serde_json::from_str(r#"{"group_size": 64, "bits": 8, "mode": "affine"}"#).unwrap();
         assert_eq!(q.group_size, 64);
         assert_eq!(q.bits, 8);
-        assert_eq!(q.mode, "affine");
+        assert_eq!(q.mode, QuantMode::Affine);
         assert!(q.overrides.is_empty());
         assert_eq!(q.for_path("anything"), (64, 8));
     }
@@ -152,6 +149,6 @@ mod tests {
     fn default_mode_filled() {
         let q: QuantizationConfig =
             serde_json::from_str(r#"{"group_size": 32, "bits": 4}"#).unwrap();
-        assert_eq!(q.mode, "affine");
+        assert_eq!(q.mode, QuantMode::Affine);
     }
 }

@@ -28,6 +28,7 @@ use mlxr::quantization::{MaybeQuantized, Quantizable as _};
 use mlxr::transforms::eval_params;
 use mlxr::Array;
 
+use crate::config::ModelConfig as Config;
 use crate::error::Error;
 use crate::nn::switch::{SplitSwitchFfn, SwigluActivation};
 use crate::nn::SwigluMlp;
@@ -164,23 +165,25 @@ pub use super::cache::{make_caches, LayerCache};
 /// End-to-end loader: parse config, build the model with per-tensor
 /// quant overrides, sanitise + bind weights, hard-error on unbound
 /// LM keys.
-pub(crate) fn load_qwen3_5_moe_model(model_dir: impl AsRef<Path>) -> Result<Qwen35MoeModel, Error> {
-    let model_dir = model_dir.as_ref();
-    let cfg = ModelConfig::from_file(model_dir.join("config.json"))?;
-    if !cfg.text_config.is_moe() {
+pub(crate) fn load_qwen3_5_moe_model(
+    cfg: &Config,
+    env: &ModelConfig,
+    model_dir: &Path,
+) -> Result<Qwen35MoeModel, Error> {
+    if !env.text_config.is_moe() {
         return Err(Error::Other(
             format!(
                 "qwen3_5_moe loader: config {} declares num_experts={} \
                  (not MoE); use qwen3_5::weights::load_language_model",
                 model_dir.display(),
-                cfg.text_config.num_experts,
+                env.text_config.num_experts,
             )
             .into(),
         ));
     }
 
-    let mut model = make_moe_language_model(&cfg.text_config)?;
-    if let Some(q) = cfg.effective_quantization() {
+    let mut model = make_moe_language_model(&env.text_config)?;
+    if let Some(q) = cfg.quantization() {
         quantize_with_overrides(&mut model, q)?;
     }
 

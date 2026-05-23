@@ -28,7 +28,7 @@ use mlxr::{
 };
 use mlxr_lm::language_model::UserInputProcessor;
 use mlxr_lm::lm_input::{LMInput, PrepareResult, Text};
-use mlxr_lm::{load, ModelContext, SamplerState, SamplingParams, UserInput};
+use mlxr_lm::{load, ModelContext, Sampler, SamplerState, UserInput};
 
 const DECODE_TOKENS: i32 = 100;
 const SHORT_PROMPT_LEN: usize = 13;
@@ -340,10 +340,7 @@ fn time_decode(ctx: &mut ModelContext, prompt: &Array, steps: i32) -> Duration {
 /// so reported tok/s is directly comparable to greedy decode.
 fn time_decode_mtp(ctx: &mut ModelContext, prompt: &Array, steps: i32) -> Duration {
     let initial = prefill_for_decode(ctx, prompt);
-    let mut sampler = SamplerState::new(SamplingParams {
-        temperature: 0.0,
-        top_p: None,
-    });
+    let mut sampler = SamplerState::new(Sampler::Greedy);
     let mut pending = sampler.sample(&initial).unwrap();
     eval([&pending]).unwrap();
 
@@ -369,9 +366,9 @@ fn time_decode_mtp(ctx: &mut ModelContext, prompt: &Array, steps: i32) -> Durati
 /// shape as [`time_decode`] (async_eval N+1 before syncing on N).
 fn time_decode_sampled(ctx: &mut ModelContext, prompt: &Array, steps: i32) -> Duration {
     let initial = prefill_for_decode(ctx, prompt);
-    let mut sampler = SamplerState::new(SamplingParams {
+    let mut sampler = SamplerState::new(Sampler::TopP {
         temperature: 0.1,
-        top_p: Some(0.95),
+        p: 0.95,
     });
     let mut pending = sampler.sample(&initial).unwrap();
     eval([&pending]).unwrap();

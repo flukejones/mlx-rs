@@ -16,7 +16,7 @@ use mlxr::{
 };
 use mlxr_lm::language_model::UserInputProcessor;
 use mlxr_lm::lm_input::{LMInput, PrepareResult, Text};
-use mlxr_lm::{load, SamplerState, SamplingParams, UserInput};
+use mlxr_lm::{load, Sampler, SamplerState, UserInput};
 
 const REAL_TEXT_SEED: &str = "Rust is a better systems language than Python for most non-glue \
      code. The type system catches whole categories of bug at compile \
@@ -144,10 +144,7 @@ fn run_mtp(ctx: &mut mlxr_lm::ModelContext, prompt: &Array, steps: i32) -> (f32,
         PrepareResult::Logits(arr) => arr,
         PrepareResult::Primed => unreachable!(),
     };
-    let mut sampler = SamplerState::new(SamplingParams {
-        temperature: 0.0,
-        top_p: None,
-    });
+    let mut sampler = SamplerState::new(Sampler::Greedy);
     let mut pending = sampler.sample(&initial).unwrap();
     eval([&pending]).unwrap();
     let t = Instant::now();

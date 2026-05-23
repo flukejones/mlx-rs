@@ -8,6 +8,7 @@ use std::path::Path;
 
 use mlxr::{module::ModuleParameters, transforms::eval_params};
 
+use crate::config::ModelConfig as Config;
 use crate::error::Error;
 use crate::qwen3_5::image::vision::VisionModel;
 use crate::qwen3_5::text::weights::{
@@ -18,14 +19,15 @@ use crate::qwen3_5::text::weights::{
 /// checkpoint. Vision weights are bf16 (not quantised in chandra-ocr-2),
 /// so the vision module is not run through `quantize_language_model`.
 pub(crate) fn load_full_model(
-    cfg: &ModelConfig,
-    model_dir: impl AsRef<Path>,
+    cfg: &Config,
+    env: &ModelConfig,
+    model_dir: &Path,
 ) -> Result<(Qwen35Model, VisionModel, Vec<String>), Error> {
-    let mut lm = Qwen35Model::new_dense(cfg.text_config.clone()).map_err(Error::Exception)?;
-    if let Some(q) = cfg.effective_quantization() {
+    let mut lm = Qwen35Model::new_dense(env.text_config.clone()).map_err(Error::Exception)?;
+    if let Some(q) = cfg.quantization() {
         quantize_language_model(&mut lm, q)?;
     }
-    let vision_cfg = cfg.vision_config.as_ref().ok_or_else(|| {
+    let vision_cfg = env.vision_config.as_ref().ok_or_else(|| {
         Error::Other("qwen3_5 load_full_model: config has no vision_config".into())
     })?;
     let mut vision = VisionModel::new(vision_cfg).map_err(Error::Exception)?;
@@ -75,8 +77,9 @@ mod tests {
     fn loads_chandra_q8_full_model_with_vision() {
         let home = std::env::var("HOME").unwrap();
         let dir = std::path::PathBuf::from(home).join("MLXModels/chandra2/chandra-ocr-2-mlx-q8");
-        let cfg = ModelConfig::from_file(dir.join("config.json")).expect("parse config");
-        let (lm, vision, leftover) = load_full_model(&cfg, &dir).expect("load full model");
+        let cfg = Config::from_dir(&dir).expect("parse config");
+        let env = cfg.family.as_qwen35().expect("expected qwen3_5 family");
+        let (lm, vision, leftover) = load_full_model(&cfg, env, &dir).expect("load full model");
         if !leftover.is_empty() {
             eprintln!("unexpected leftover keys ({}):", leftover.len());
             for k in &leftover[..leftover.len().min(20)] {

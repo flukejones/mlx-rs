@@ -40,8 +40,18 @@ Related docs in this repo:
 - **Flag function names with type/variant suffixes** — `decode_f32`, `forward_v2`, `mlp_fast`. Rename the call site or split modules. (CLAUDE.md rule.)
 - **Flag the `steel_` prefix** on any new symbol. `attention/` was renamed deliberately because "steel" is an upstream MLX kernel-pack name with no standalone meaning. `with_steel_prefill` is grandfathered (matches the upstream method name).
 - **Verify variable names describe role, not type** — an `Array`-typed key matrix is `k`, not `arr_k` or `key_array`.
-- **Flag stringly-typed values for finite sets** — `Dtype`, sampler modes, MoE routing strategies, KV-cache variants. Should be enums.
 - **Audit `model_type` strings.** Each family owns its list (`MODEL_TYPES_DENSE`, `MODEL_TYPES_MOE`, etc.). Adding a new variant means appending to the list AND verifying the dispatcher routes it. A typo silently falls through to the "unsupported model_type" error.
+
+## Typed configs vs stringly-typed
+
+Closed-form value sets should be enums; unknown inputs should fail at the type-system boundary (deserialize / `TryFrom`), not at the kernel call site where the error message is `"unknown rope_type 'yarn'"` from inside a 30-layer forward.
+
+- **Flag `&str` / `String` fields that accept a finite set of values.** `MatrixNorm`, `MatrixTriangle`, `QwenRopeType`, `QwenLayerKind`, `QuantMode`, `LayerKind` (gemma4) are the in-tree references. New ones go with `#[derive(Deserialize)] #[serde(rename_all = "snake_case")] enum Foo`.
+- **Flag `parse(s: &str) -> Self` with a silent `_` fallback** (e.g. an old `LayerKind::parse` that defaults unknown strings to one variant). Use `TryFrom<&str>` returning `Result<_, ErrorKind>`; let serde reject at config-load time when the value is a config field.
+- **Flag `match str { … _ => default }`** in loader-adjacent code. The same pattern, harder to spot.
+- **Flag `Option<bool>` for binary toggles with a known default.** `cholesky(upper: Option<bool>)` is the same anti-pattern as `Option<&str>`: three states with two distinct meanings. Use the enum (`MatrixTriangle`) or a plain `bool` with serde default.
+- **Flag mutually-exclusive `Option<f32>` + `Option<f32>` fields** that one branch silently ignores at runtime — `temperature == 0.0 ` ignoring `top_p`. Collapse into an enum (`Sampler::{Greedy, Temperature(f32), TopP { temperature, p }}`) so the type system enforces "set together or not at all".
+- **Flag `meta_state: HashMap<String, String>` round-tripping typed scalars.** The KV-cache wire format does this today (parse-string-back-to-i32 on load); a future change should land typed serde structs + a version field. Flag any new consumer that adds keys to the map.
 
 ## Public API
 
@@ -173,7 +183,9 @@ When N is known at compile time, draining FFI vectors or iterators through a `Ve
 
 ## Model loading and weight files
 
-- **Verify new loaders read `config.json::model_type` for dispatch**, not filename patterns or directory layout heuristics.
+- **`config.json` is parsed exactly once** at [`crate::config::ModelConfig::from_dir`] in `mlxr_lm::load`. Every adapter takes `(&ModelConfig, &Envelope, &Path)` — no `cfg.from_file()` calls inside `load_context_*`, no second `serde_json::from_str` pass anywhere downstream. Flag any new loader that re-reads `config.json` or unwraps a fresh JSON `Value` from the file.
+- **Dispatch through the typed `Family` enum**, never on a raw `model_type` string. The internally-tagged enum (`#[serde(tag = "model_type")]`) reads the discriminant at deserialize; aliases (`qwen3_5_text`, `gemma4textmodel`, …) live on the enum variants. `MODEL_TYPES_*` const arrays + `handles(&str)` predicates are the old shape — flag them on sight.
+- **Verify family envelopes (`qwen3_5::text::config::ModelConfig`, `gemma4::text::config::Gemma4Envelope`) don't re-declare `quantization`, `model_type`, or other outer-envelope fields.** Those live on `crate::config::ModelConfig` and are accessed via `cfg.quantization()`.
 - **Check `eos_token_id` normalisation handles both `int` and `[int]` forms.** `family::read_eos_ids` is the canonical helper.
 - **Flag hand-rolled safetensors-key probing.** The weight-loader walk pattern in `qwen3_5/text/weights.rs` is the reference; copying its skeleton for a new family beats re-inventing.
 - **Verify quantised checkpoints carry per-tensor overrides where needed** — Qwen 3.6-MoE has them; missing them silently downgrades expert weights to defaults.

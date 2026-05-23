@@ -18,6 +18,7 @@ use std::path::Path;
 use mlxr::{module::Module, Array};
 
 use crate::chat_template::{ChatMessage, ChatTemplate, ContentPart, MessageContent};
+use crate::config::ModelConfig as Config;
 use crate::error::Error;
 use crate::family::LoadedContext;
 use crate::language_model::{LanguageModel, UserInputProcessor};
@@ -399,15 +400,19 @@ fn render_prompt(
 /// is present) — the family-level `qwen3_5::load_context` performs
 /// that probe and routes dense-only checkpoints to
 /// [`crate::qwen3_5::text::adapter_dense::load_context_dense`].
-pub(crate) fn load_context_vlm(dir: &Path) -> Result<LoadedContext, Error> {
-    let (cfg, tokenizer, chat_template, eos_ids) = crate::qwen3_5::text::load_common(dir)?;
-    let (model, vision, leftover) = load_full_model(&cfg, dir)?;
+pub(crate) fn load_context_vlm(
+    cfg: &Config,
+    env: &ModelConfig,
+    dir: &Path,
+) -> Result<LoadedContext, Error> {
+    let (tokenizer, chat_template, eos_ids) = crate::qwen3_5::text::load_common(env, dir)?;
+    let (model, vision, leftover) = load_full_model(cfg, env, dir)?;
     if !leftover.is_empty() {
         return Err(crate::qwen3_5::text::leftover_keys_error("vlm", &leftover));
     }
     let image_processor = Qwen35ImageProcessor::from_dir(dir)?;
-    let dense = Qwen35DenseAdapter::new(model, cfg.clone());
+    let dense = Qwen35DenseAdapter::new(model, env.clone());
     let vlm = Qwen35VlmAdapter::new(dense, vision);
-    let processor = Qwen35Processor::new(tokenizer, chat_template, image_processor, cfg);
+    let processor = Qwen35Processor::new(tokenizer, chat_template, image_processor, env.clone());
     Ok((Box::new(vlm), Box::new(processor), eos_ids))
 }

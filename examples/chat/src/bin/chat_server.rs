@@ -32,7 +32,7 @@ use base64::Engine;
 use chat::user_input::build_chat_input;
 use mlxr_lm::chat_template::{ChatMessage as LmChatMessage, ContentPart, MessageContent};
 use mlxr_lm::{
-    generate, load, FinishReason, GenerateParams, Image as LmImage, ModelContext, SamplingParams,
+    generate, load, FinishReason, GenerateParams, Image as LmImage, ModelContext, Sampler,
     UserInput,
 };
 use serde::{Deserialize, Serialize};
@@ -226,9 +226,14 @@ async fn chat_completions(
     let stream = req.stream;
 
     let input = build_chat_input(messages, images);
+    let sampling = match (temperature, top_p) {
+        (0.0, _) => Sampler::Greedy,
+        (t, None) => Sampler::Temperature(t),
+        (t, Some(p)) => Sampler::TopP { temperature: t, p },
+    };
     let params = GenerateParams {
         max_new_tokens: max_tokens,
-        sampling: SamplingParams { temperature, top_p },
+        sampling,
         ..GenerateParams::default()
     };
 

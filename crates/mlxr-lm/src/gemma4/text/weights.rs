@@ -22,10 +22,10 @@ use mlxr::module::ModuleParameters;
 use mlxr::transforms::eval_params;
 use mlxr::Array;
 
+use crate::config::ModelConfig as Config;
 use crate::error::Error;
-use crate::gemma4::text::config::Gemma4Config;
+use crate::gemma4::text::config::ModelConfig;
 use crate::gemma4::text::text::Model;
-use crate::quantization::resolve_quantization;
 use mlxr::quantization::Quantizable;
 use serde::Deserialize;
 
@@ -226,14 +226,16 @@ fn merge_gate_up(raw: &mut HashMap<String, Array>, module: &str, axis: i32) -> R
 
 /// End-to-end load: build `Model::new`, apply quantisation config, load
 /// sanitised weights into the parameter walk, then `eval_params`.
-pub(crate) fn load_gemma4_model_sanitized(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
-    let model_dir = model_dir.as_ref();
-    let cfg = Gemma4Config::from_file(model_dir.join("config.json"))?;
-    let quant = resolve_quantization(&cfg.quantization, &cfg.quantization_config).cloned();
-    let num_layers = cfg.num_hidden_layers;
-    let num_shared = cfg.num_kv_shared_layers;
-    let mut model = Model::new(cfg)?;
-    if let Some(q) = quant {
+pub(crate) fn load_gemma4_model_sanitized(
+    cfg: &Config,
+    env: &ModelConfig,
+    model_dir: &Path,
+) -> Result<Model, Error> {
+    let text = env.text_config.clone();
+    let num_layers = text.num_hidden_layers;
+    let num_shared = text.num_kv_shared_layers;
+    let mut model = Model::new(text)?;
+    if let Some(q) = cfg.quantization() {
         model = model.try_into_quantized(q.group_size, q.bits)?;
     }
 

@@ -26,7 +26,7 @@ use crate::activations::{
     ResidualAddScaleCache, RouterPostCache,
 };
 use crate::cache::KeyValueCache;
-use crate::gemma4::text::config::{Gemma4Config, LayerKind};
+use crate::gemma4::text::config::{LayerKind, TextConfig};
 use crate::gemma4::text::rope::ProportionalRope;
 use crate::gemma4::text::GemmaSwitchGlu;
 use crate::nn::ensure_cache_populated;
@@ -260,7 +260,7 @@ pub struct Attention {
 }
 
 impl Attention {
-    pub fn new(args: &Gemma4Config, layer_idx: i32) -> Result<Self, Exception> {
+    pub fn new(args: &TextConfig, layer_idx: i32) -> Result<Self, Exception> {
         let layer_types = args.layer_types_resolved();
         let layer_kind = layer_types[layer_idx as usize];
         let is_sliding = matches!(layer_kind, LayerKind::SlidingAttention);
@@ -504,7 +504,7 @@ pub struct Mlp {
 }
 
 impl Mlp {
-    pub fn new(args: &Gemma4Config, layer_idx: i32) -> Result<Self, Exception> {
+    pub fn new(args: &TextConfig, layer_idx: i32) -> Result<Self, Exception> {
         let first_kv_shared = args.num_hidden_layers - args.num_kv_shared_layers;
         let is_kv_shared_layer = args.num_kv_shared_layers > 0 && layer_idx >= first_kv_shared;
         let use_double_wide = args.use_double_wide_mlp && is_kv_shared_layer;
@@ -777,7 +777,7 @@ pub struct DecoderLayer {
 }
 
 impl DecoderLayer {
-    pub fn new(args: &Gemma4Config, layer_idx: i32) -> Result<Self, Exception> {
+    pub fn new(args: &TextConfig, layer_idx: i32) -> Result<Self, Exception> {
         let layer_kind = args.layer_types_resolved()[layer_idx as usize];
         let enable_moe = args.enable_moe_block;
 
@@ -1033,7 +1033,7 @@ pub struct Gemma4TextModel {
 }
 
 impl Gemma4TextModel {
-    pub fn new(args: &Gemma4Config) -> Result<Self, Exception> {
+    pub fn new(args: &TextConfig) -> Result<Self, Exception> {
         assert!(args.vocab_size > 0);
         let embed_tokens = layers::Embedding::new(args.vocab_size, args.hidden_size)?;
         let layers = (0..args.num_hidden_layers)
@@ -1095,7 +1095,7 @@ impl Gemma4TextModel {
 /// the layer-`i` attention should consume. For non-shared layers
 /// it's `i` itself; for shared layers it's the most recent
 /// same-kind layer below `first_kv_shared`.
-fn compute_previous_kvs(args: &Gemma4Config) -> Vec<usize> {
+fn compute_previous_kvs(args: &TextConfig) -> Vec<usize> {
     let n = args.num_hidden_layers as usize;
     let mut previous_kvs: Vec<usize> = (0..n).collect();
     if args.num_kv_shared_layers <= 0 {
@@ -1265,7 +1265,7 @@ where
 
 #[derive(Debug, ModuleParameters, Quantizable)]
 pub struct Model {
-    pub args: Gemma4Config,
+    pub args: TextConfig,
     pub final_logit_softcapping: Option<f32>,
 
     #[quantizable]
@@ -1285,7 +1285,7 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn new(args: Gemma4Config) -> Result<Self, Exception> {
+    pub fn new(args: TextConfig) -> Result<Self, Exception> {
         let final_logit_softcapping = if args.final_logit_softcapping > 0.0 {
             Some(args.final_logit_softcapping)
         } else {
@@ -1309,10 +1309,6 @@ impl Model {
             softcap_cache: LogitSoftcapCache::default(),
             softcap_array: OnceLock::new(),
         })
-    }
-
-    pub fn model_type(&self) -> &str {
-        &self.args.model_type
     }
 
     pub fn layer_count(&self) -> usize {

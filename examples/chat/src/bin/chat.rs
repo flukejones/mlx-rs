@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use argh::FromArgs;
 use chat::think_stream::ThinkStream;
 use mlxr_lm::chat_template::ChatMessage;
-use mlxr_lm::{generate, load, GenerateParams, ModelContext, SamplingParams, UserInput};
+use mlxr_lm::{generate, load, GenerateParams, ModelContext, Sampler, UserInput};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
@@ -107,12 +107,14 @@ fn main() -> Result<()> {
             }
             ThinkMode::Default => {}
         }
+        let sampling = match (args.temperature, args.top_p) {
+            (0.0, _) => Sampler::Greedy,
+            (t, None) => Sampler::Temperature(t),
+            (t, Some(p)) => Sampler::TopP { temperature: t, p },
+        };
         let params = GenerateParams {
             max_new_tokens: args.max_tokens,
-            sampling: SamplingParams {
-                temperature: args.temperature,
-                top_p: args.top_p,
-            },
+            sampling,
             ..GenerateParams::default()
         };
 

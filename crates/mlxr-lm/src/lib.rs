@@ -19,6 +19,7 @@ pub mod activations;
 pub mod attention;
 pub mod cache;
 pub mod chat_template;
+pub mod config;
 pub mod error;
 pub(crate) mod family;
 pub mod language_model;
@@ -43,7 +44,7 @@ pub use lm_input::{LMInput, LMOutput, PrepareResult, ProcessedAudio, ProcessedIm
 pub use model_context::{
     generate, load, FinishReason, GenerateParams, GenerateResult, ModelContext, TokenCallback,
 };
-pub use sampler::{SamplerState, SamplingParams};
+pub use sampler::{Sampler, SamplerState};
 #[cfg(feature = "image")]
 pub use user_input::Image;
 pub use user_input::{Audio, Prompt, UserInput, Video};

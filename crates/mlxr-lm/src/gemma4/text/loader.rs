@@ -3,13 +3,13 @@
 //! adapter directly).
 
 use crate::cache::{KVCache, RotatingKVCache};
-use crate::gemma4::text::config::{Gemma4Config, LayerKind};
+use crate::gemma4::text::config::{LayerKind, TextConfig};
 
 /// One cache slot per non-shared layer. Shared-KV layers share the
 /// underlying KV state of an earlier same-kind layer at forward time
 /// via `Gemma4TextModel::previous_kvs`; the cache vec only owns the
 /// upstream slots (`num_hidden_layers - num_kv_shared_layers`).
-pub(crate) fn make_gemma4_caches(args: &Gemma4Config) -> Vec<Option<Gemma4LayerCache>> {
+pub(crate) fn make_gemma4_caches(args: &TextConfig) -> Vec<Option<Gemma4LayerCache>> {
     let first_kv_shared = (args.num_hidden_layers - args.num_kv_shared_layers).max(0);
     let layer_types = args.layer_types_resolved();
     (0..args.num_hidden_layers as usize)

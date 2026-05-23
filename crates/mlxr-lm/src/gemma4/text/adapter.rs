@@ -12,9 +12,10 @@ use std::path::Path;
 use mlxr::{module::Module, ops::indexing::IndexOp, Array};
 
 use crate::chat_template::ChatTemplate;
+use crate::config::ModelConfig as Config;
 use crate::error::Error;
 use crate::family::LoadedContext;
-use crate::gemma4::text::config::Gemma4Config;
+use crate::gemma4::text::config::{ModelConfig, TextConfig};
 use crate::gemma4::text::loader::{make_gemma4_caches, Gemma4LayerCache};
 use crate::gemma4::text::text::Model;
 use crate::gemma4::text::weights::load_gemma4_model_sanitized;
@@ -26,13 +27,13 @@ use crate::nn::ModelInput;
 pub(crate) struct Gemma4Adapter {
     model: Model,
     cache: Vec<Option<Gemma4LayerCache>>,
-    args: Gemma4Config,
+    args: TextConfig,
     vocab_size: i32,
 }
 
 impl Gemma4Adapter {
-    fn load(dir: &Path) -> Result<Self, Error> {
-        let model = load_gemma4_model_sanitized(dir)?;
+    fn load(cfg: &Config, env: &ModelConfig, dir: &Path) -> Result<Self, Error> {
+        let model = load_gemma4_model_sanitized(cfg, env, dir)?;
         let args = model.args.clone();
         let vocab_size = args.vocab_size;
         let cache = make_gemma4_caches(&args);
@@ -104,8 +105,12 @@ impl LanguageModel for Gemma4Adapter {
     }
 }
 
-pub(crate) fn load_context(dir: &Path) -> Result<LoadedContext, Error> {
-    let model = Gemma4Adapter::load(dir)?;
+pub(crate) fn load_context(
+    cfg: &Config,
+    env: &ModelConfig,
+    dir: &Path,
+) -> Result<LoadedContext, Error> {
+    let model = Gemma4Adapter::load(cfg, env, dir)?;
     let tokenizer = load_tokenizer(dir)?;
     let chat_template = ChatTemplate::from_dir(dir)?;
     let eos_ids = crate::family::read_eos_ids(dir);

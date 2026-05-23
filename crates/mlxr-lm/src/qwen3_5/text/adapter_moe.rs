@@ -11,6 +11,7 @@ use mlxr::ops::{concatenate_axis, exp, log, maximum, r#where, stack_axis, sum_ax
 use mlxr::random::uniform;
 use mlxr::{argmax_axis, categorical, Array};
 
+use crate::config::ModelConfig as Config;
 use crate::error::Error;
 use crate::family::LoadedContext;
 use crate::language_model::{LanguageModel, TextOnlyProcessor};
@@ -20,7 +21,7 @@ use crate::qwen3_5::text::config::ModelConfig;
 use crate::qwen3_5::text::layer::Qwen35Model;
 use crate::qwen3_5::text::moe::{load_qwen3_5_moe_model, Qwen35MoeBlock};
 use crate::qwen3_5::text::sampling::top_p_keep_mask;
-use crate::sampler::SamplerState;
+use crate::sampler::{Sampler, SamplerState};
 
 /// Upper bound on MTP draft depth. The walk-back algorithm is
 /// depth-generic; this cap reflects the depth past which adding
@@ -52,15 +53,14 @@ pub struct Qwen35MoeAdapter {
 }
 
 impl Qwen35MoeAdapter {
-    pub fn load(dir: &Path) -> Result<Self, Error> {
-        let model = load_qwen3_5_moe_model(dir)?;
-        let cfg = ModelConfig::from_file(dir.join("config.json"))?;
-        let cache = make_caches(&cfg);
-        let mtp_cache = make_mtp_caches(&cfg);
-        let vocab_size = cfg.text_config.vocab_size;
+    pub fn load(cfg: &Config, env: &ModelConfig, dir: &Path) -> Result<Self, Error> {
+        let model = load_qwen3_5_moe_model(cfg, env, dir)?;
+        let cache = make_caches(env);
+        let mtp_cache = make_mtp_caches(env);
+        let vocab_size = env.text_config.vocab_size;
         Ok(Self {
             model,
-            cfg,
+            cfg: env.clone(),
             cache,
             mtp_cache,
             prev_hidden: None,
@@ -191,9 +191,10 @@ fn mtp_step(
     // Snapshot caches BEFORE any draft so partial-reject can roll back
     // both main + mtp to the pre-step state and re-commit only the
     // accepted prefix. Snapshot clone is shared-ptr cheap (the Arrays
-    // are `mlx::core::array` shared_ptr handles).
-    let cache_snapshot = adapter.cache.clone();
-    let mtp_snapshot = adapter.mtp_cache.clone();
+    // are `mlx::core::array` shared_ptr handles). The guard restores
+    // both caches if dropped without `.commit()`, including the `?`
+    // early-exit paths in the verify forward + accept_draft below.
+    let mut cache_guard = CacheSnapshot::new(&adapter.cache, &adapter.mtp_cache);
 
     // Build the chained draft: drafts[i] predicts the token at slot
     // `last_token + i + 1`. Each MTP forward advances mtp_cache by 1
@@ -269,6 +270,7 @@ fn mtp_step(
 
     if k == depth {
         // All-accept: commit last_token + every draft.
+        cache_guard.commit();
         adapter.prev_hidden = Some(verify_hidden.index((.., -1..)));
         let next_logits = verify_logits.index((.., depth as i32, ..));
         let next_pending = sampler.sample(&next_logits)?;
@@ -280,11 +282,11 @@ fn mtp_step(
 
     // Partial reject at level k (0 <= k < depth). Both caches are
     // currently over-committed: main by depth+1, mtp by depth. Roll
-    // both back to the pre-step snapshot and re-commit exactly the
-    // accepted prefix (k+1 tokens) on the main side, plus matching
-    // MTP-cache priming so the next call's RoPE positions line up.
-    adapter.cache = cache_snapshot;
-    adapter.mtp_cache = mtp_snapshot;
+    // back to the pre-step snapshot via the guard, then re-commit
+    // exactly the accepted prefix (k+1 tokens) on the main side, plus
+    // matching MTP-cache priming so the next call's RoPE positions
+    // line up.
+    cache_guard.rollback_into(&mut adapter.cache, &mut adapter.mtp_cache);
 
     let corrected = {
         let verify_k = verify_logits.index((.., k as i32, ..));
@@ -326,10 +328,10 @@ fn mtp_step(
 /// categorical on the masked log-probs otherwise. The `[1]`-shape
 /// output is what the rest of the speculative step expects.
 fn sample_draft(sampler: &mut SamplerState, draft_logits: &Array) -> Result<Array, Error> {
-    if sampler.params().temperature == 0.0 {
+    if matches!(sampler.sampler(), Sampler::Greedy) {
         return Ok(argmax_axis!(draft_logits, -1)?.reshape(&[1])?);
     }
-    let top_p_mask = match sampler.params().top_p {
+    let top_p_mask = match sampler.sampler().top_p() {
         Some(p) => Some(top_p_keep_mask(draft_logits, p)?),
         None => None,
     };
@@ -348,11 +350,11 @@ fn accept_draft(
     draft_logits: &Array,
     verify_logits_i: &Array,
 ) -> Result<bool, Error> {
-    if sampler.params().temperature == 0.0 {
+    if matches!(sampler.sampler(), Sampler::Greedy) {
         let verify_first_id = argmax_axis!(verify_logits_i, -1)?.reshape(&[1])?;
         return Ok(verify_first_id.eq(draft_id)?.item::<bool>());
     }
-    let keep_mask = match sampler.params().top_p {
+    let keep_mask = match sampler.sampler().top_p() {
         Some(p) => {
             let draft_mask = top_p_keep_mask(draft_logits, p)?;
             let verify_mask = top_p_keep_mask(verify_logits_i, p)?;
@@ -382,10 +384,10 @@ fn resample_on_reject(
     draft_logits: &Array,
     verify_logits_i: &Array,
 ) -> Result<Array, Error> {
-    if sampler.params().temperature == 0.0 {
+    if matches!(sampler.sampler(), Sampler::Greedy) {
         return Ok(argmax_axis!(verify_logits_i, -1)?.reshape(&[1])?);
     }
-    let keep_mask = match sampler.params().top_p {
+    let keep_mask = match sampler.sampler().top_p() {
         Some(p) => {
             let draft_mask = top_p_keep_mask(draft_logits, p)?;
             let verify_mask = top_p_keep_mask(verify_logits_i, p)?;
@@ -478,9 +480,61 @@ fn host_id_to_u32(id: i32, vocab: i32) -> Result<u32, Error> {
     Ok(id as u32)
 }
 
-pub(crate) fn load_context_moe(dir: &Path) -> Result<LoadedContext, Error> {
-    let model = Qwen35MoeAdapter::load(dir)?;
-    let (_cfg, tokenizer, chat_template, eos_ids) = crate::qwen3_5::text::load_common(dir)?;
+/// Pre-MTP snapshot of `(main_cache, mtp_cache)`. Holding it forces a
+/// caller to choose between [`Self::commit`] (keep the over-committed
+/// state — full accept path) and [`Self::rollback_into`] (restore
+/// before re-committing the accepted prefix — partial reject path).
+/// Dropping it without either is a logic bug; the destructor logs.
+struct CacheSnapshot {
+    main: Option<Vec<LayerCache>>,
+    mtp: Option<Vec<LayerCache>>,
+}
+
+impl CacheSnapshot {
+    fn new(main: &[LayerCache], mtp: &[LayerCache]) -> Self {
+        Self {
+            main: Some(main.to_vec()),
+            mtp: Some(mtp.to_vec()),
+        }
+    }
+
+    /// Discard the snapshot — the post-MTP cache state is what we
+    /// want.
+    fn commit(&mut self) {
+        self.main = None;
+        self.mtp = None;
+    }
+
+    /// Restore both caches from the snapshot. Consumes the snapshot
+    /// fields so [`Drop`] below doesn't double-warn.
+    fn rollback_into(&mut self, main: &mut Vec<LayerCache>, mtp: &mut Vec<LayerCache>) {
+        if let Some(s) = self.main.take() {
+            *main = s;
+        }
+        if let Some(s) = self.mtp.take() {
+            *mtp = s;
+        }
+    }
+}
+
+impl Drop for CacheSnapshot {
+    fn drop(&mut self) {
+        if self.main.is_some() || self.mtp.is_some() {
+            log::warn!(
+                "CacheSnapshot dropped without commit() or rollback_into(); \
+                 KV cache state may be inconsistent"
+            );
+        }
+    }
+}
+
+pub(crate) fn load_context_moe(
+    cfg: &Config,
+    env: &ModelConfig,
+    dir: &Path,
+) -> Result<LoadedContext, Error> {
+    let model = Qwen35MoeAdapter::load(cfg, env, dir)?;
+    let (tokenizer, chat_template, eos_ids) = crate::qwen3_5::text::load_common(env, dir)?;
     let processor = TextOnlyProcessor::new("qwen3_5_moe", tokenizer, chat_template);
     Ok((Box::new(model), Box::new(processor), eos_ids))
 }

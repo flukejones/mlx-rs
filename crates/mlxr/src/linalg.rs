@@ -5,57 +5,78 @@ use crate::utils::guard::Guarded;
 use crate::utils::{IntoOption, VectorArray};
 use crate::{Array, Stream};
 use mlxr_codegen::{default_device, generate_macro};
-use std::f64;
-use std::ffi::CString;
+use std::ffi::CStr;
 
-/// Order of the norm
-///
-/// See [`norm`] for more details.
-#[derive(Debug, Clone, Copy)]
-pub enum Ord<'a> {
-    /// String representation of the order
-    Str(&'a str),
-
-    /// Order of the norm
-    P(f64),
+/// Triangle selector for symmetric/Hermitian matrix ops (`eigh`,
+/// `eigvalsh`, `cholesky`, `cholesky_inv`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum MatrixTriangle {
+    /// Use the lower triangle (mlx-c `"L"`).
+    #[default]
+    Lower,
+    /// Use the upper triangle (mlx-c `"U"`).
+    Upper,
 }
 
-impl Default for Ord<'_> {
-    fn default() -> Self {
-        Ord::Str("fro")
+impl MatrixTriangle {
+    fn as_c_str(self) -> &'static CStr {
+        match self {
+            Self::Lower => c"L",
+            Self::Upper => c"U",
+        }
+    }
+
+    /// `true` if this is the upper triangle (`cholesky` API takes a
+    /// plain `bool` where `true` = upper).
+    pub fn is_upper(self) -> bool {
+        matches!(self, Self::Upper)
     }
 }
 
-impl std::fmt::Display for Ord<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+/// Closed-form matrix-norm orders accepted by [`norm_matrix`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum MatrixNorm {
+    /// Frobenius norm (default).
+    #[default]
+    Fro,
+    /// Nuclear norm.
+    Nuc,
+}
+
+impl MatrixNorm {
+    fn as_c_str(self) -> &'static CStr {
         match self {
-            Ord::Str(s) => write!(f, "{s}"),
-            Ord::P(p) => write!(f, "{p}"),
+            Self::Fro => c"fro",
+            Self::Nuc => c"nuc",
         }
     }
 }
 
-impl<'a> From<&'a str> for Ord<'a> {
-    fn from(value: &'a str) -> Self {
-        Ord::Str(value)
+/// Failed parse of a matrix-norm name. Carries the rejected input
+/// for diagnostics.
+#[derive(Debug, Clone)]
+pub struct UnknownMatrixNorm(pub String);
+
+impl std::fmt::Display for UnknownMatrixNorm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown matrix norm {:?}; expected one of `fro`, `nuc`",
+            self.0
+        )
     }
 }
 
-impl From<f64> for Ord<'_> {
-    fn from(value: f64) -> Self {
-        Ord::P(value)
-    }
-}
+impl std::error::Error for UnknownMatrixNorm {}
 
-impl<'a> IntoOption<Ord<'a>> for &'a str {
-    fn into_option(self) -> Option<Ord<'a>> {
-        Some(Ord::Str(self))
-    }
-}
-
-impl<'a> IntoOption<Ord<'a>> for f64 {
-    fn into_option(self) -> Option<Ord<'a>> {
-        Some(Ord::P(self))
+impl TryFrom<&str> for MatrixNorm {
+    type Error = UnknownMatrixNorm;
+    fn try_from(s: &str) -> std::result::Result<Self, Self::Error> {
+        match s {
+            "fro" => Ok(Self::Fro),
+            "nuc" => Ok(Self::Nuc),
+            other => Err(UnknownMatrixNorm(other.to_owned())),
+        }
     }
 }
 
@@ -97,17 +118,17 @@ pub fn norm_device<'a>(
     }
 }
 
-/// Matrix or vector norm.
+/// Matrix or vector norm with a closed-form order (`fro` / `nuc`).
 #[generate_macro(customize(root = "$crate::linalg"))]
 #[default_device]
 pub fn norm_matrix_device<'a>(
     array: impl AsRef<Array>,
-    ord: &'a str,
+    ord: MatrixNorm,
     #[optional] axes: impl IntoOption<&'a [i32]>,
     #[optional] keep_dims: impl Into<Option<bool>>,
     #[optional] stream: impl AsRef<Stream>,
 ) -> Result<Array> {
-    let ord = CString::new(ord).map_err(|e| Exception::custom(format!("{e}")))?;
+    let ord_ptr = ord.as_c_str().as_ptr();
     let keep_dims = keep_dims.into().unwrap_or(false);
 
     match axes.into_option() {
@@ -115,7 +136,7 @@ pub fn norm_matrix_device<'a>(
             mlxr_sys::mlx_linalg_norm_matrix(
                 res,
                 array.as_ref().as_ptr(),
-                ord.as_ptr(),
+                ord_ptr,
                 axes.as_ptr(),
                 axes.len(),
                 keep_dims,
@@ -126,7 +147,7 @@ pub fn norm_matrix_device<'a>(
             mlxr_sys::mlx_linalg_norm_matrix(
                 res,
                 array.as_ref().as_ptr(),
-                ord.as_ptr(),
+                ord_ptr,
                 std::ptr::null(),
                 0,
                 keep_dims,
@@ -386,10 +407,10 @@ pub fn inv_device(a: impl AsRef<Array>, #[optional] stream: impl AsRef<Stream>) 
 #[default_device]
 pub fn cholesky_device(
     a: impl AsRef<Array>,
-    #[optional] upper: Option<bool>,
+    #[optional] triangle: Option<MatrixTriangle>,
     #[optional] stream: impl AsRef<Stream>,
 ) -> Result<Array> {
-    let upper = upper.unwrap_or(false);
+    let upper = triangle.unwrap_or_default().is_upper();
     Array::try_from_op(|res| unsafe {
         mlxr_sys::mlx_linalg_cholesky(res, a.as_ref().as_ptr(), upper, stream.as_ref().as_ptr())
     })
@@ -400,10 +421,10 @@ pub fn cholesky_device(
 #[default_device]
 pub fn cholesky_inv_device(
     a: impl AsRef<Array>,
-    #[optional] upper: Option<bool>,
+    #[optional] triangle: Option<MatrixTriangle>,
     #[optional] stream: impl AsRef<Stream>,
 ) -> Result<Array> {
-    let upper = upper.unwrap_or(false);
+    let upper = triangle.unwrap_or_default().is_upper();
     Array::try_from_op(|res| unsafe {
         mlxr_sys::mlx_linalg_cholesky_inv(res, a.as_ref().as_ptr(), upper, stream.as_ref().as_ptr())
     })
@@ -442,20 +463,14 @@ pub fn cross_device(
 #[default_device]
 pub fn eigh_device(
     a: impl AsRef<Array>,
-    #[optional] uplo: Option<&str>,
+    #[optional] uplo: Option<MatrixTriangle>,
     #[optional] stream: impl AsRef<Stream>,
 ) -> Result<(Array, Array)> {
     let a = a.as_ref();
-    let uplo = CString::new(uplo.unwrap_or("L")).map_err(|e| Exception::custom(format!("{e}")))?;
+    let uplo_ptr = uplo.unwrap_or_default().as_c_str().as_ptr();
 
     <(Array, Array) as Guarded>::try_from_op(|(res_0, res_1)| unsafe {
-        mlxr_sys::mlx_linalg_eigh(
-            res_0,
-            res_1,
-            a.as_ptr(),
-            uplo.as_ptr(),
-            stream.as_ref().as_ptr(),
-        )
+        mlxr_sys::mlx_linalg_eigh(res_0, res_1, a.as_ptr(), uplo_ptr, stream.as_ref().as_ptr())
     })
 }
 
@@ -467,13 +482,13 @@ pub fn eigh_device(
 #[default_device]
 pub fn eigvalsh_device(
     a: impl AsRef<Array>,
-    #[optional] uplo: Option<&str>,
+    #[optional] uplo: Option<MatrixTriangle>,
     #[optional] stream: impl AsRef<Stream>,
 ) -> Result<Array> {
     let a = a.as_ref();
-    let uplo = CString::new(uplo.unwrap_or("L")).map_err(|e| Exception::custom(format!("{e}")))?;
+    let uplo_ptr = uplo.unwrap_or_default().as_c_str().as_ptr();
     Array::try_from_op(|res| unsafe {
-        mlxr_sys::mlx_linalg_eigvalsh(res, a.as_ptr(), uplo.as_ptr(), stream.as_ref().as_ptr())
+        mlxr_sys::mlx_linalg_eigvalsh(res, a.as_ptr(), uplo_ptr, stream.as_ref().as_ptr())
     })
 }
 
@@ -736,7 +751,9 @@ mod tests {
         );
 
         assert_float_eq!(
-            norm_matrix(&b, "fro", None, None).unwrap().item::<f32>(),
+            norm_matrix(&b, MatrixNorm::Fro, None, None)
+                .unwrap()
+                .item::<f32>(),
             7.74597,
             abs <= 0.001
         );

@@ -346,11 +346,12 @@ where
 }
 
 fn layer_is_linear(cfg: &TextConfig, layer_idx: usize) -> bool {
+    use super::config::QwenLayerKind;
     if !cfg.layer_types.is_empty() {
         return cfg
             .layer_types
             .get(layer_idx)
-            .map(|s| s.as_str() == super::config::LAYER_TYPE_LINEAR)
+            .map(|k| *k == QwenLayerKind::LinearAttention)
             .unwrap_or(false);
     }
     let interval = cfg.full_attention_interval;
@@ -358,6 +359,16 @@ fn layer_is_linear(cfg: &TextConfig, layer_idx: usize) -> bool {
         return false;
     }
     ((layer_idx as i32 + 1) % interval) != 0
+}
+
+/// Hidden states returned by [`Qwen35Decoder::forward_pre_and_post_norm`].
+///
+/// `pre_norm` feeds the MTP head (which applies its own
+/// `pre_fc_norm_hidden`); `post_norm` is what the lm_head projects.
+#[derive(Debug)]
+pub struct DecoderOutput {
+    pub pre_norm: Array,
+    pub post_norm: Array,
 }
 
 /// Top-level decoder model: embeddings + layers + final norm. Generic
@@ -429,6 +440,22 @@ where
         caches: &mut [LayerCache],
         position_ids: Option<&Array>,
     ) -> Result<Array, Exception> {
+        Ok(self
+            .forward_pre_and_post_norm(inputs, inputs_embeds, caches, position_ids)?
+            .post_norm)
+    }
+
+    /// Like [`Self::forward`] but returns the pre-final-norm hidden
+    /// state alongside the post-norm one. The MTP head consumes
+    /// `pre_norm` (it applies its own pre_fc_norm_hidden); the lm_head
+    /// projection uses `post_norm`.
+    pub fn forward_pre_and_post_norm(
+        &mut self,
+        inputs: Option<&Array>,
+        inputs_embeds: Option<&Array>,
+        caches: &mut [LayerCache],
+        position_ids: Option<&Array>,
+    ) -> Result<DecoderOutput, Exception> {
         let mut h = if let Some(e) = inputs_embeds {
             e.clone()
         } else {
@@ -437,7 +464,6 @@ where
             })?;
             self.embed_tokens.forward(ids)?
         };
-
         if caches.len() != self.layers.len() {
             return Err(Exception::custom(format!(
                 "Qwen35Decoder::forward: expected {} caches, got {}",
@@ -445,7 +471,6 @@ where
                 caches.len()
             )));
         }
-
         // Hybrid mask scheme:
         //
         // - Full-attention layers use a causal mask of shape `[1, 1, T, kv]`
@@ -455,48 +480,6 @@ where
         //   trivial 1-row case.
         // - Linear-attention layers don't need a mask in single-batch /
         //   non-chunked prefill, so we always pass `None`.
-        let full_attn_mask = Self::build_full_attn_mask(&h, caches)?;
-        let full_attn_mask_ref = full_attn_mask.as_ref();
-        let ssm_mask_ref: Option<&Array> = None;
-
-        for (layer, cache) in self.layers.iter_mut().zip(caches.iter_mut()) {
-            h = layer.forward(
-                &h,
-                full_attn_mask_ref,
-                ssm_mask_ref,
-                Some(cache),
-                position_ids,
-            )?;
-        }
-        self.norm.forward(&h)
-    }
-
-    /// Like [`Self::forward`] but returns the **pre-final-norm** hidden
-    /// state alongside the post-norm one. The MTP head consumes the
-    /// pre-norm hidden (it applies its own pre_fc_norm_hidden); the
-    /// lm_head projection uses the post-norm.
-    pub fn forward_pre_and_post_norm(
-        &mut self,
-        inputs: Option<&Array>,
-        inputs_embeds: Option<&Array>,
-        caches: &mut [LayerCache],
-        position_ids: Option<&Array>,
-    ) -> Result<(Array, Array), Exception> {
-        let mut h = if let Some(e) = inputs_embeds {
-            e.clone()
-        } else {
-            let ids = inputs.ok_or_else(|| {
-                Exception::custom("Qwen35Decoder::forward: needs either inputs or inputs_embeds")
-            })?;
-            self.embed_tokens.forward(ids)?
-        };
-        if caches.len() != self.layers.len() {
-            return Err(Exception::custom(format!(
-                "Qwen35Decoder::forward: expected {} caches, got {}",
-                self.layers.len(),
-                caches.len()
-            )));
-        }
         let full_attn_mask = Self::build_full_attn_mask(&h, caches)?;
         let full_attn_mask_ref = full_attn_mask.as_ref();
         let ssm_mask_ref: Option<&Array> = None;
@@ -510,7 +493,10 @@ where
             )?;
         }
         let post = self.norm.forward(&h)?;
-        Ok((h, post))
+        Ok(DecoderOutput {
+            pre_norm: h,
+            post_norm: post,
+        })
     }
 
     /// Build the additive causal mask the full-attention layers need.
@@ -674,7 +660,7 @@ where
         caches: &mut [LayerCache],
         position_ids: Option<&Array>,
     ) -> Result<(Array, Array), Exception> {
-        let (_, post_norm) =
+        let DecoderOutput { post_norm, .. } =
             self.model
                 .forward_pre_and_post_norm(inputs, inputs_embeds, caches, position_ids)?;
         let logits = self.apply_lm_head(&post_norm)?;

@@ -6,11 +6,29 @@
 
 use serde::Deserialize;
 
-/// Sentinel layer in [`TextConfig::layer_types`] that uses Gated DeltaNet (SSM).
-pub const LAYER_TYPE_LINEAR: &str = "linear_attention";
+/// Per-layer architecture tag from `config.json::layer_types`. Unknown
+/// strings hard-error rather than silently routing as one or the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QwenLayerKind {
+    /// Gated DeltaNet (linear-attention SSM).
+    LinearAttention,
+    /// Regular GQA full attention.
+    FullAttention,
+}
 
-/// Sentinel layer in [`TextConfig::layer_types`] that uses regular GQA attention.
-pub const LAYER_TYPE_FULL: &str = "full_attention";
+/// Rotary embedding variant from `rope_parameters.type`. Qwen3.5
+/// implements `default` and `mrope`; yarn / longrope are rejected at
+/// model build time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QwenRopeType {
+    /// Standard RoPE.
+    #[default]
+    Default,
+    /// Multimodal RoPE used by the VL variants.
+    Mrope,
+}
 
 /// Default EOS for Qwen chat templates. Used as a fallback when `eos_token_id`
 /// is missing from `config.json`.
@@ -32,26 +50,19 @@ pub struct RopeParameters {
     pub rope_theta: f32,
     /// Fraction of `head_dim` that is rotated. 0.25 for Qwen3.5.
     pub partial_rotary_factor: f32,
-    /// Type tag — accepted values `"default"` and `"mrope"`. The Qwen3.5
-    /// reference `Qwen3_5RotaryEmbedding` doesn't branch on this field, so
-    /// other variants (yarn / longrope) are rejected at `Attention` build
-    /// time rather than silently parsed.
-    #[serde(default = "default_rope_type", rename = "type", alias = "rope_type")]
-    pub rope_type: String,
+    /// RoPE variant. Qwen3.5 implements `default` and `mrope`;
+    /// yarn / longrope deserialize-fail before reaching `Attention::new`.
+    #[serde(default, rename = "type", alias = "rope_type")]
+    pub rope_type: QwenRopeType,
     /// Some configs emit a top-level `mrope_interleaved` flag; we accept it but
     /// the interleaved layout is the only one currently implemented.
     #[serde(default)]
     pub mrope_interleaved: bool,
 }
 
-fn default_rope_type() -> String {
-    "default".to_owned()
-}
-
 /// Text-decoder hyperparameters for Qwen3.5.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TextConfig {
-    pub model_type: String,
     pub hidden_size: i32,
     /// Dense MLP intermediate size. Absent on MoE variants
     /// (Qwen3.6-35B-A3B etc.) which use [`Self::moe_intermediate_size`]
@@ -66,9 +77,8 @@ pub struct TextConfig {
     pub vocab_size: i32,
     pub max_position_embeddings: i32,
 
-    /// Per-layer architecture string. Length must equal `num_hidden_layers`.
-    /// Each entry is one of [`LAYER_TYPE_LINEAR`] or [`LAYER_TYPE_FULL`].
-    pub layer_types: Vec<String>,
+    /// Per-layer architecture tag. Length must equal `num_hidden_layers`.
+    pub layer_types: Vec<QwenLayerKind>,
 
     /// Every `full_attention_interval`-th layer is a full-attention layer.
     /// Used when [`Self::layer_types`] is empty.
@@ -213,15 +223,15 @@ fn default_num_position_embeddings() -> i32 {
     2304
 }
 
-pub use crate::quantization::QuantizationConfig;
-
-/// Top-level model config matching `config.json` shape.
+/// Qwen-family envelope of `config.json`. Stored inside
+/// [`crate::config::Family::Qwen35`] / [`crate::config::Family::Qwen35Moe`].
+/// Quantisation lives on the outer [`crate::config::ModelConfig`].
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelConfig {
-    pub model_type: String,
     pub text_config: TextConfig,
-    /// Text-only MoE checkpoints omit this entirely; the VLM adapter
-    /// requires it and errors at its own load_context if absent.
+    /// Text-only checkpoints (Qwen 3.6 MoE) omit this entirely; the
+    /// VLM adapter requires it and errors at its own load_context if
+    /// absent.
     #[serde(default)]
     pub vision_config: Option<VisionConfig>,
 
@@ -239,15 +249,6 @@ pub struct ModelConfig {
 
     #[serde(default)]
     pub eos_token_id: Option<EosTokenId>,
-
-    /// Quantisation settings. Some checkpoints emit a second
-    /// `quantization_config` block with identical contents; that field is
-    /// captured separately and ignored unless `quantization` is missing.
-    #[serde(default)]
-    pub quantization: Option<QuantizationConfig>,
-
-    #[serde(default)]
-    quantization_config: Option<QuantizationConfig>,
 }
 
 fn default_image_token_id() -> u32 {
@@ -264,25 +265,6 @@ fn default_vision_end_token_id() -> u32 {
 }
 
 impl ModelConfig {
-    /// Load a `ModelConfig` from the standard `config.json` at the root of an
-    /// MLX-format checkpoint directory.
-    pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self, crate::error::Error> {
-        let f = std::fs::File::open(path.as_ref())?;
-        let mut cfg: Self = serde_json::from_reader(f)?;
-        if cfg.quantization.is_none() {
-            cfg.quantization = cfg.quantization_config.take();
-        }
-        Ok(cfg)
-    }
-
-    /// Effective quantisation settings, preferring `quantization` and falling
-    /// back to `quantization_config` if only the latter was provided.
-    pub fn effective_quantization(&self) -> Option<&QuantizationConfig> {
-        self.quantization
-            .as_ref()
-            .or(self.quantization_config.as_ref())
-    }
-
     /// Returns true for the `i`-th decoder layer if it is a linear-attention
     /// (Gated DeltaNet) layer rather than a full-attention layer.
     ///
@@ -293,7 +275,7 @@ impl ModelConfig {
         if !lt.is_empty() {
             return lt
                 .get(layer_idx)
-                .map(|s| s.as_str() == LAYER_TYPE_LINEAR)
+                .map(|k| *k == QwenLayerKind::LinearAttention)
                 .unwrap_or(false);
         }
         let interval = self.text_config.full_attention_interval;
@@ -311,6 +293,7 @@ mod tests {
     #![allow(clippy::print_stdout, reason = "test code")]
     #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
+    use crate::config::ModelConfig as Config;
 
     const CHANDRA_CONFIG_JSON: &str = r#"
     {
@@ -379,71 +362,67 @@ mod tests {
     }
     "#;
 
+    fn parse_outer(json: &str) -> Config {
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn unwrap_qwen(cfg: &Config) -> &ModelConfig {
+        cfg.family.as_qwen35().expect("expected qwen3_5 family")
+    }
+
     #[test]
     fn parses_chandra_config() {
-        let cfg: ModelConfig = serde_json::from_str(CHANDRA_CONFIG_JSON).unwrap();
-        assert_eq!(cfg.model_type, "qwen3_5");
-        assert_eq!(cfg.text_config.hidden_size, 2560);
-        assert_eq!(cfg.text_config.head_dim, 256);
-        assert_eq!(cfg.text_config.num_attention_heads, 16);
-        assert_eq!(cfg.text_config.num_key_value_heads, 4);
-        assert_eq!(cfg.text_config.num_hidden_layers, 32);
-        assert_eq!(cfg.text_config.layer_types.len(), 32);
-        assert!(cfg.text_config.attn_output_gate);
+        let cfg = parse_outer(CHANDRA_CONFIG_JSON);
+        assert_eq!(cfg.family_name(), "qwen3_5");
+        let env = unwrap_qwen(&cfg);
+        assert_eq!(env.text_config.hidden_size, 2560);
+        assert_eq!(env.text_config.head_dim, 256);
+        assert_eq!(env.text_config.num_attention_heads, 16);
+        assert_eq!(env.text_config.num_key_value_heads, 4);
+        assert_eq!(env.text_config.num_hidden_layers, 32);
+        assert_eq!(env.text_config.layer_types.len(), 32);
+        assert!(env.text_config.attn_output_gate);
         assert_eq!(
-            cfg.text_config.rope_parameters.mrope_section,
+            env.text_config.rope_parameters.mrope_section,
             vec![11, 11, 10]
         );
-        assert_eq!(cfg.text_config.rope_parameters.partial_rotary_factor, 0.25);
-        assert_eq!(cfg.text_config.rope_parameters.rope_theta, 10_000_000.0);
-        assert!(cfg.text_config.rope_parameters.mrope_interleaved);
+        assert_eq!(env.text_config.rope_parameters.partial_rotary_factor, 0.25);
+        assert_eq!(env.text_config.rope_parameters.rope_theta, 10_000_000.0);
+        assert!(env.text_config.rope_parameters.mrope_interleaved);
 
-        assert_eq!(cfg.vision_config.as_ref().unwrap().depth, 24);
-        assert_eq!(cfg.vision_config.as_ref().unwrap().hidden_size, 1024);
-        assert_eq!(cfg.vision_config.as_ref().unwrap().out_hidden_size, 2560);
-        assert_eq!(cfg.vision_config.as_ref().unwrap().num_heads, 16);
-        assert!(cfg
+        assert_eq!(env.vision_config.as_ref().unwrap().depth, 24);
+        assert_eq!(env.vision_config.as_ref().unwrap().hidden_size, 1024);
+        assert_eq!(env.vision_config.as_ref().unwrap().out_hidden_size, 2560);
+        assert_eq!(env.vision_config.as_ref().unwrap().num_heads, 16);
+        assert!(env
             .vision_config
             .as_ref()
             .unwrap()
             .deepstack_visual_indexes
             .is_empty());
 
-        assert_eq!(cfg.image_token_id, 248056);
-        assert_eq!(cfg.vision_start_token_id, 248053);
-        assert_eq!(cfg.vision_end_token_id, 248054);
+        assert_eq!(env.image_token_id, 248056);
+        assert_eq!(env.vision_start_token_id, 248053);
+        assert_eq!(env.vision_end_token_id, 248054);
 
-        let q = cfg.effective_quantization().unwrap();
+        let q = cfg.quantization().unwrap();
         assert_eq!(q.bits, 8);
         assert_eq!(q.group_size, 64);
-        assert_eq!(q.mode, "affine");
+        assert_eq!(q.mode, crate::quantization::QuantMode::Affine);
     }
 
     #[test]
     fn layer_type_dispatch() {
-        let cfg: ModelConfig = serde_json::from_str(CHANDRA_CONFIG_JSON).unwrap();
+        let cfg = parse_outer(CHANDRA_CONFIG_JSON);
+        let env = unwrap_qwen(&cfg);
         // layer_types: [linear, linear, linear, full, linear, linear, linear, full, ...]
-        assert!(cfg.is_linear_layer(0));
-        assert!(cfg.is_linear_layer(1));
-        assert!(cfg.is_linear_layer(2));
-        assert!(!cfg.is_linear_layer(3));
-        assert!(cfg.is_linear_layer(4));
-        assert!(!cfg.is_linear_layer(7));
-        assert!(!cfg.is_linear_layer(31));
-    }
-
-    #[test]
-    #[ignore = "requires local model files at ~/MLXModels/chandra2/chandra-ocr-2-mlx-q8"]
-    fn loads_chandra_q8_config_from_disk() {
-        let home = std::env::var("HOME").unwrap();
-        let path = std::path::PathBuf::from(home)
-            .join("MLXModels/chandra2/chandra-ocr-2-mlx-q8/config.json");
-        let cfg = ModelConfig::from_file(&path).expect("parse chandra q8 config");
-        assert_eq!(cfg.text_config.num_hidden_layers, 32);
-        assert_eq!(cfg.text_config.layer_types.len(), 32);
-        assert_eq!(cfg.vision_config.as_ref().unwrap().depth, 24);
-        assert_eq!(cfg.image_token_id, 248056);
-        assert!(cfg.effective_quantization().is_some());
+        assert!(env.is_linear_layer(0));
+        assert!(env.is_linear_layer(1));
+        assert!(env.is_linear_layer(2));
+        assert!(!env.is_linear_layer(3));
+        assert!(env.is_linear_layer(4));
+        assert!(!env.is_linear_layer(7));
+        assert!(!env.is_linear_layer(31));
     }
 
     /// Qwen3.6-27B reuses the qwen3_5 schema with extra unknown fields
@@ -452,19 +431,20 @@ mod tests {
     #[test]
     fn parses_qwen3_6_27b_config() {
         let json = include_str!("../../../tests/fixtures/qwen3_6_27b/config.json");
-        let cfg: ModelConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(cfg.text_config.num_hidden_layers, 64);
-        assert_eq!(cfg.text_config.hidden_size, 5120);
-        assert_eq!(cfg.text_config.intermediate_size, 17408);
-        assert_eq!(cfg.text_config.num_attention_heads, 24);
-        assert_eq!(cfg.text_config.num_key_value_heads, 4);
-        assert_eq!(cfg.text_config.head_dim, 256);
-        assert_eq!(cfg.text_config.linear_num_value_heads, 48);
-        assert_eq!(cfg.text_config.linear_num_key_heads, 16);
-        assert_eq!(cfg.text_config.layer_types.len(), 64);
-        assert!(cfg.text_config.attn_output_gate);
-        assert!(!cfg.text_config.tie_word_embeddings);
-        let q = cfg.effective_quantization().unwrap();
+        let cfg = parse_outer(json);
+        let env = unwrap_qwen(&cfg);
+        assert_eq!(env.text_config.num_hidden_layers, 64);
+        assert_eq!(env.text_config.hidden_size, 5120);
+        assert_eq!(env.text_config.intermediate_size, 17408);
+        assert_eq!(env.text_config.num_attention_heads, 24);
+        assert_eq!(env.text_config.num_key_value_heads, 4);
+        assert_eq!(env.text_config.head_dim, 256);
+        assert_eq!(env.text_config.linear_num_value_heads, 48);
+        assert_eq!(env.text_config.linear_num_key_heads, 16);
+        assert_eq!(env.text_config.layer_types.len(), 64);
+        assert!(env.text_config.attn_output_gate);
+        assert!(!env.text_config.tie_word_embeddings);
+        let q = cfg.quantization().unwrap();
         assert_eq!(q.bits, 4);
         assert_eq!(q.group_size, 64);
     }
@@ -478,23 +458,24 @@ mod tests {
     #[test]
     fn parses_qwen3_6_35b_a3b_config() {
         let json = include_str!("../../../tests/fixtures/qwen3_6_35b_a3b/config.json");
-        let cfg: ModelConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(cfg.text_config.num_hidden_layers, 40);
-        assert_eq!(cfg.text_config.hidden_size, 2048);
-        assert_eq!(cfg.text_config.intermediate_size, 0); // absent, defaults to 0
-        assert!(cfg.text_config.is_moe());
-        assert_eq!(cfg.text_config.num_experts, 256);
-        assert_eq!(cfg.text_config.num_experts_per_tok, 8);
-        assert_eq!(cfg.text_config.moe_intermediate_size, 512);
-        assert_eq!(cfg.text_config.shared_expert_intermediate_size, 512);
-        assert_eq!(cfg.text_config.num_attention_heads, 16);
-        assert_eq!(cfg.text_config.num_key_value_heads, 2);
-        assert_eq!(cfg.text_config.head_dim, 256);
-        assert_eq!(cfg.text_config.linear_num_value_heads, 32);
-        assert_eq!(cfg.text_config.layer_types.len(), 40);
-        assert!(!cfg.text_config.tie_word_embeddings);
+        let cfg = parse_outer(json);
+        let env = unwrap_qwen(&cfg);
+        assert_eq!(env.text_config.num_hidden_layers, 40);
+        assert_eq!(env.text_config.hidden_size, 2048);
+        assert_eq!(env.text_config.intermediate_size, 0); // absent, defaults to 0
+        assert!(env.text_config.is_moe());
+        assert_eq!(env.text_config.num_experts, 256);
+        assert_eq!(env.text_config.num_experts_per_tok, 8);
+        assert_eq!(env.text_config.moe_intermediate_size, 512);
+        assert_eq!(env.text_config.shared_expert_intermediate_size, 512);
+        assert_eq!(env.text_config.num_attention_heads, 16);
+        assert_eq!(env.text_config.num_key_value_heads, 2);
+        assert_eq!(env.text_config.head_dim, 256);
+        assert_eq!(env.text_config.linear_num_value_heads, 32);
+        assert_eq!(env.text_config.layer_types.len(), 40);
+        assert!(!env.text_config.tie_word_embeddings);
 
-        let q = cfg.effective_quantization().unwrap();
+        let q = cfg.quantization().unwrap();
         assert_eq!(q.bits, 4);
         assert_eq!(q.group_size, 64);
         // Per-tensor quant overrides: router + shared-expert gate at 8b.

@@ -1274,7 +1274,7 @@ pub fn sinh_device(a: impl AsRef<Array>, #[optional] stream: impl AsRef<Stream>)
 pub fn softmax_axes_device(
     a: impl AsRef<Array>,
     axes: &[i32],
-    precise: impl Into<Option<bool>>,
+    #[optional] precise: impl Into<Option<bool>>,
     #[optional] stream: impl AsRef<Stream>,
 ) -> Result<Array> {
     let precise = precise.into().unwrap_or(false);
@@ -1298,7 +1298,7 @@ pub fn softmax_axes_device(
 pub fn softmax_axis_device(
     a: impl AsRef<Array>,
     axis: i32,
-    precise: impl Into<Option<bool>>,
+    #[optional] precise: impl Into<Option<bool>>,
     #[optional] stream: impl AsRef<Stream>,
 ) -> Result<Array> {
     let precise = precise.into().unwrap_or(false);

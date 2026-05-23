@@ -11,10 +11,12 @@ use std::path::Path;
 
 use mlxr::{ops::indexing::IndexOp, transforms::async_eval, Array};
 
+use crate::config::{Family, ModelConfig as Config};
 use crate::error::Error;
+use crate::family::LoadedContext;
 use crate::language_model::{LanguageModel, UserInputProcessor};
 use crate::lm_input::{LMInput, PrepareResult, Text};
-use crate::sampler::{SamplerState, SamplingParams};
+use crate::sampler::{Sampler, SamplerState};
 use crate::user_input::UserInput;
 
 /// Sampling + stopping knobs handed to [`generate`].
@@ -24,8 +26,8 @@ pub struct GenerateParams {
     /// loop exits early when an EOS token is sampled.
     pub max_new_tokens: i32,
 
-    /// Sampling parameters (temperature + optional top-p).
-    pub sampling: SamplingParams,
+    /// Sampling strategy: greedy / pure-categorical / nucleus.
+    pub sampling: Sampler,
 
     /// Stop tokens beyond the model-default EOS list. Empty by
     /// default; useful for stop-on-newline or stop-on-`</answer>`
@@ -43,7 +45,7 @@ impl Default for GenerateParams {
     fn default() -> Self {
         Self {
             max_new_tokens: 256,
-            sampling: SamplingParams::default(),
+            sampling: Sampler::default(),
             extra_stop_ids: Vec::new(),
             disable_mtp: false,
         }
@@ -128,12 +130,12 @@ impl ModelContext {
     }
 }
 
-/// Detect the model family from `<dir>/config.json::model_type` and
-/// build the matching [`ModelContext`].
+/// Parse `<dir>/config.json` into a typed [`Config`] once and
+/// dispatch to the family-specific loader.
 pub fn load(dir: impl AsRef<Path>) -> Result<ModelContext, Error> {
     let dir = dir.as_ref();
-    let model_type = detect_model_type(dir)?;
-    let (model, processor, eos_ids) = dispatch_load(model_type.as_str(), dir)?;
+    let cfg = Config::from_dir(dir)?;
+    let (model, processor, eos_ids) = dispatch_load(&cfg, dir)?;
     Ok(ModelContext {
         model,
         processor,
@@ -242,7 +244,7 @@ pub fn generate(
         });
     }
 
-    let mut sampler = SamplerState::new(params.sampling.clone());
+    let mut sampler = SamplerState::new(params.sampling);
     let mut pending_id = sampler.sample(&initial_logits)?;
     async_eval([&pending_id])?;
 
@@ -411,46 +413,20 @@ fn run_prefill(model: &mut dyn LanguageModel, mut input: LMInput) -> Result<Arra
     }
 }
 
-/// Read the top-level `model_type` field from `<dir>/config.json`.
-fn detect_model_type(dir: &Path) -> Result<String, Error> {
-    let path = dir.join("config.json");
-    let raw = std::fs::read_to_string(&path)?;
-    let val: serde_json::Value = serde_json::from_str(&raw)?;
-    val.get("model_type")
-        .and_then(|v| v.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            Error::Other(format!("{}: missing `model_type` field", path.display()).into())
-        })
-}
-
-/// Match `model_type` against the enabled families and delegate to
-/// the family's own `load_context`. Each family's `mod.rs` owns the
-/// per-modality routing internally so the dispatcher stays flat.
-/// Unknown / disabled families fall through to a typed error with
-/// a hint about Cargo features.
+/// Pattern-match the typed [`Family`] variant and delegate to the
+/// family's loader. Compile-time exhaustive once all enabled-feature
+/// variants are matched; no string compare reaches runtime.
 #[allow(
     unused_variables,
-    reason = "dir consumed only when at least one model family feature is enabled"
+    reason = "cfg + dir consumed only when at least one family feature is enabled"
 )]
-fn dispatch_load(model_type: &str, dir: &Path) -> Result<crate::family::LoadedContext, Error> {
-    #[cfg(feature = "qwen3_5")]
-    if crate::qwen3_5::handles(model_type) {
-        return crate::qwen3_5::load_context(model_type, dir);
+fn dispatch_load(cfg: &Config, dir: &Path) -> Result<LoadedContext, Error> {
+    match &cfg.family {
+        #[cfg(feature = "qwen3_5")]
+        Family::Qwen35(_) | Family::Qwen35Moe(_) => crate::qwen3_5::load_context(cfg, dir),
+        #[cfg(feature = "gemma4")]
+        Family::Gemma4(_) => crate::gemma4::load_context(cfg, dir),
     }
-
-    #[cfg(feature = "gemma4")]
-    if crate::gemma4::handles(model_type) {
-        return crate::gemma4::load_context(model_type, dir);
-    }
-
-    Err(Error::Other(
-        format!(
-            "mlxr_lm::load: unsupported model_type {model_type:?} \
-             (family not compiled in; check Cargo features)"
-        )
-        .into(),
-    ))
 }
 
 #[cfg(test)]
