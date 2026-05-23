@@ -1,21 +1,9 @@
-//! Safetensors weight loader + tokenizer + cache factory for Gemma 4.
-
-use std::path::Path;
+//! Per-layer cache factory for Gemma 4. The weight loader lives in
+//! `weights::load_gemma4_model_sanitized` (one fn, called by the
+//! adapter directly).
 
 use crate::cache::{KVCache, RotatingKVCache};
-use crate::error::Error;
 use crate::gemma4::text::config::{Gemma4Config, LayerKind};
-use crate::gemma4::text::text::Model;
-use crate::gemma4::text::weights::load_gemma4_model_sanitized;
-
-/// Loads a Gemma 4 checkpoint. mlx-community checkpoints carry the
-/// `language_model.model.layers.X` prefix and MoE expert weights in a
-/// fused `experts.gate_up_proj` layout that the generic `load_sharded`
-/// cannot interpret — both transforms live in
-/// `weights::load_gemma4_model_sanitized`.
-pub(crate) fn load_gemma4_model(model_dir: impl AsRef<Path>) -> Result<Model, Error> {
-    load_gemma4_model_sanitized(model_dir)
-}
 
 /// One cache slot per non-shared layer. Shared-KV layers share the
 /// underlying KV state of an earlier same-kind layer at forward time

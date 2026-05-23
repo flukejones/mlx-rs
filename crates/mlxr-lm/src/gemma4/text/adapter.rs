@@ -15,8 +15,9 @@ use crate::chat_template::ChatTemplate;
 use crate::error::Error;
 use crate::family::LoadedContext;
 use crate::gemma4::text::config::Gemma4Config;
-use crate::gemma4::text::loader::{load_gemma4_model, make_gemma4_caches, Gemma4LayerCache};
+use crate::gemma4::text::loader::{make_gemma4_caches, Gemma4LayerCache};
 use crate::gemma4::text::text::Model;
+use crate::gemma4::text::weights::load_gemma4_model_sanitized;
 use crate::language_model::{LanguageModel, TextOnlyProcessor};
 use crate::lm_input::{LMInput, LMOutput, PrepareResult};
 use crate::loader::load_tokenizer;
@@ -31,7 +32,7 @@ pub(crate) struct Gemma4Adapter {
 
 impl Gemma4Adapter {
     fn load(dir: &Path) -> Result<Self, Error> {
-        let model = load_gemma4_model(dir)?;
+        let model = load_gemma4_model_sanitized(dir)?;
         let args = model.args.clone();
         let vocab_size = args.vocab_size;
         let cache = make_gemma4_caches(&args);

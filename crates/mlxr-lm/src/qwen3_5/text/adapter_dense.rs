@@ -11,12 +11,10 @@ use std::path::Path;
 
 use mlxr::{ops::indexing::IndexOp, Array};
 
-use crate::chat_template::ChatTemplate;
 use crate::error::Error;
 use crate::family::LoadedContext;
 use crate::language_model::{LanguageModel, TextOnlyProcessor};
 use crate::lm_input::{LMInput, LMOutput, PrepareResult};
-use crate::loader::load_tokenizer;
 use crate::qwen3_5::text::cache::{make_caches, LayerCache};
 use crate::qwen3_5::text::config::ModelConfig;
 use crate::qwen3_5::text::layer::Qwen35Model;
@@ -132,23 +130,13 @@ impl LanguageModel for Qwen35DenseAdapter {
 /// guarantees the directory carries the dense weights only (no
 /// `preprocessor_config.json`).
 pub(crate) fn load_context_dense(dir: &Path) -> Result<LoadedContext, Error> {
-    let cfg = ModelConfig::from_file(dir.join("config.json"))?;
-    let tokenizer = load_tokenizer(dir)?;
-    let chat_template = ChatTemplate::from_dir(dir)?;
-    let eos_ids = crate::qwen3_5::text::read_qwen3_5_eos_ids(dir, &cfg);
-
+    let (cfg, tokenizer, chat_template, eos_ids) = crate::qwen3_5::text::load_common(dir)?;
     let (model, leftover) = load_language_model(&cfg, dir)?;
     if !leftover.is_empty() {
-        return Err(Error::Other(
-            format!(
-                "qwen3_5 dense load: {} unbound key(s); first 8: {:?}",
-                leftover.len(),
-                leftover.iter().take(8).collect::<Vec<_>>()
-            )
-            .into(),
+        return Err(crate::qwen3_5::text::leftover_keys_error(
+            "dense", &leftover,
         ));
     }
-
     let dense = Qwen35DenseAdapter::new(model, cfg);
     let processor = TextOnlyProcessor::new("qwen3_5", tokenizer, chat_template);
     Ok((Box::new(dense), Box::new(processor), eos_ids))

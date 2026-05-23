@@ -49,3 +49,37 @@ pub(crate) fn read_qwen3_5_eos_ids(dir: &Path, cfg: &ModelConfig) -> Vec<u32> {
     }
     ids
 }
+
+/// Load the shared prelude every Qwen 3.5 / 3.6 adapter (dense, MoE,
+/// VLM) needs: parsed `config.json`, tokenizer, chat template, and
+/// the resolved EOS-id set.
+pub(crate) fn load_common(
+    dir: &Path,
+) -> Result<
+    (
+        ModelConfig,
+        tokenizers::Tokenizer,
+        crate::chat_template::ChatTemplate,
+        Vec<u32>,
+    ),
+    crate::error::Error,
+> {
+    let cfg = ModelConfig::from_file(dir.join("config.json"))?;
+    let tokenizer = crate::loader::load_tokenizer(dir)?;
+    let chat_template = crate::chat_template::ChatTemplate::from_dir(dir)?;
+    let eos_ids = read_qwen3_5_eos_ids(dir, &cfg);
+    Ok((cfg, tokenizer, chat_template, eos_ids))
+}
+
+/// Build a typed error for an adapter load that left safetensors keys
+/// unbound. Truncates to the first 8 keys for log readability.
+pub(crate) fn leftover_keys_error(family: &str, leftover: &[String]) -> crate::error::Error {
+    crate::error::Error::Other(
+        format!(
+            "qwen3_5 {family} load: {} unbound key(s); first 8: {:?}",
+            leftover.len(),
+            leftover.iter().take(8).collect::<Vec<_>>()
+        )
+        .into(),
+    )
+}

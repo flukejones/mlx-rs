@@ -22,7 +22,6 @@ use crate::error::Error;
 use crate::family::LoadedContext;
 use crate::language_model::{LanguageModel, UserInputProcessor};
 use crate::lm_input::{LMInput, LMOutput, PrepareResult, ProcessedImage, Text};
-use crate::loader::load_tokenizer;
 use crate::qwen3_5::image::multimodal::{
     get_rope_index_single_batch, merge_input_ids_with_image_features, pack_position_ids,
 };
@@ -401,23 +400,10 @@ fn render_prompt(
 /// that probe and routes dense-only checkpoints to
 /// [`crate::qwen3_5::text::adapter_dense::load_context_dense`].
 pub(crate) fn load_context_vlm(dir: &Path) -> Result<LoadedContext, Error> {
-    let cfg_path = dir.join("config.json");
-    let cfg = ModelConfig::from_file(&cfg_path)?;
-
-    let tokenizer = load_tokenizer(dir)?;
-    let chat_template = ChatTemplate::from_dir(dir)?;
-    let eos_ids = crate::qwen3_5::text::read_qwen3_5_eos_ids(dir, &cfg);
-
+    let (cfg, tokenizer, chat_template, eos_ids) = crate::qwen3_5::text::load_common(dir)?;
     let (model, vision, leftover) = load_full_model(&cfg, dir)?;
     if !leftover.is_empty() {
-        return Err(Error::Other(
-            format!(
-                "qwen3_5 vlm load: {} unbound key(s); first 8: {:?}",
-                leftover.len(),
-                leftover.iter().take(8).collect::<Vec<_>>()
-            )
-            .into(),
-        ));
+        return Err(crate::qwen3_5::text::leftover_keys_error("vlm", &leftover));
     }
     let image_processor = Qwen35ImageProcessor::from_dir(dir)?;
     let dense = Qwen35DenseAdapter::new(model, cfg.clone());
