@@ -139,9 +139,9 @@ ones.
 | `decode_short`           |   99 |        — |    88.62 |       — |
 | `decode_long`            |   99 |        — |    84.49 |       — |
 | `decode_short_sampled`   |   99 |        — |    86.66 |       — |
-| `decode_short_mtp`       |   99 |    92.43 |    95.14 |   +2.9% |
-| `decode_long_mtp`        |   99 |    89.16 |    90.09 |   +1.0% |
+| `decode_short_mtp`       |   99 |    95.14 |    97.01 |   +2.0% |
+| `decode_long_mtp`        |   99 |    90.09 |    92.95 |   +3.2% |
 | `decode_short_mtp_depth2`|   99 |        — |   110.83 |       — |
-| `decode_long_mtp_depth2` |   99 |        — |    93.73 |       — |
-| `decode_short_mtp_depth3`|   99 |        — |   107.46 |       — |
+| `decode_long_mtp_depth2` |   99 |    93.73 |    95.26 |   +1.6% |
+| `decode_short_mtp_depth3`|   99 |   107.46 |   109.08 |   +1.5% |
 | `decode_long_mtp_depth3` |   99 |        — |    87.01 |       — |

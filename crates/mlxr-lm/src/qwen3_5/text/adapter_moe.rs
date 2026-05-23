@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use mlxr::ops::indexing::{take_along_axis, IndexOp};
-use mlxr::ops::{concatenate_axis, exp, log, maximum, r#where, sum_axis};
+use mlxr::ops::{concatenate_axis, exp, log, maximum, r#where, stack_axis, sum_axis};
 use mlxr::random::uniform;
 use mlxr::{argmax_axis, categorical, Array};
 
@@ -231,6 +231,31 @@ fn mtp_step(
         None,
     )?;
 
+    // Materialise host ids for every draft in one sync, instead of
+    // re-syncing each `draft_ids[i]` individually inside the commit
+    // loop below. Verify forward above already evaluated the chain,
+    // so this stack is cheap. argmax returns u32; per-slot bounds
+    // check mirrors `host_id_to_u32`.
+    let draft_ids_stacked = stack_axis(&draft_ids, 0)?.reshape(&[depth as i32])?;
+    let vocab_u32 = u32::try_from(adapter.vocab_size).map_err(|_| {
+        Error::Shape(format!(
+            "mtp_step: vocab_size {} negative",
+            adapter.vocab_size
+        ))
+    })?;
+    let draft_ids_host: Vec<u32> = draft_ids_stacked
+        .as_slice::<u32>()
+        .iter()
+        .map(|&id| {
+            if id >= vocab_u32 {
+                return Err(Error::Shape(format!(
+                    "mtp_step: out-of-vocab id {id} (vocab = {vocab_u32})"
+                )));
+            }
+            Ok(id)
+        })
+        .collect::<Result<_, _>>()?;
+
     // Walk-back accept: find the first level k where verify rejects
     // the draft. k == depth means all-accept.
     let mut k = depth;
@@ -249,9 +274,7 @@ fn mtp_step(
         let next_pending = sampler.sample(&next_logits)?;
         let mut committed = Vec::with_capacity(depth + 1);
         committed.push(last_u32);
-        for d in &draft_ids {
-            committed.push(host_id_to_u32(d.item::<i32>(), adapter.vocab_size)?);
-        }
+        committed.extend_from_slice(&draft_ids_host);
         return Ok((committed, next_pending));
     }
 
@@ -295,9 +318,7 @@ fn mtp_step(
 
     let mut committed = Vec::with_capacity(k + 1);
     committed.push(last_u32);
-    for d in draft_ids.iter().take(k) {
-        committed.push(host_id_to_u32(d.item::<i32>(), adapter.vocab_size)?);
-    }
+    committed.extend_from_slice(&draft_ids_host[..k]);
     Ok((committed, corrected))
 }
 
@@ -329,7 +350,7 @@ fn accept_draft(
 ) -> Result<bool, Error> {
     if sampler.params().temperature == 0.0 {
         let verify_first_id = argmax_axis!(verify_logits_i, -1)?.reshape(&[1])?;
-        return Ok(verify_first_id.item::<i32>() == draft_id.item::<i32>());
+        return Ok(verify_first_id.eq(draft_id)?.item::<bool>());
     }
     let keep_mask = match sampler.params().top_p {
         Some(p) => {
