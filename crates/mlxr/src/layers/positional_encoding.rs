@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap};
+use std::collections::HashMap;
 
 use crate::{
     array,
@@ -270,14 +270,17 @@ struct AlibiKey {
     dtype: Dtype,
 }
 
-thread_local! {
-    static ALIBI_CACHE: RefCell<HashMap<AlibiKey, Array>> = RefCell::new(HashMap::new());
-}
-
-/// Attention with Linear Biases
-#[derive(Debug, Clone, ModuleParameters)]
+/// Attention with Linear Biases. The per-shape ALiBi mask is cached on
+/// the module so repeat forwards at the same `(q_len, k_len, n_heads,
+/// offset, dtype)` reuse the same `Array` instead of rebuilding it.
+/// Caller-owned: the cache drops with the module on the same thread
+/// that built it, avoiding the mlx-c destructor race that
+/// `thread_local!`-held `Array` slots can hit on thread exit.
+#[derive(Debug, Default, Clone, ModuleParameters)]
 #[module(root = crate)]
-pub struct Alibi;
+pub struct Alibi {
+    cache: HashMap<AlibiKey, Array>,
+}
 
 impl Alibi {
     fn slope(num_heads: i32) -> Result<Array, Exception> {
@@ -287,9 +290,9 @@ impl Alibi {
             .expand_dims_axes(&[-1, -2])
     }
 
-    fn matrix(key: AlibiKey) -> Result<Array, Exception> {
-        if let Some(value) = ALIBI_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
-            return Ok(value);
+    fn matrix(&mut self, key: AlibiKey) -> Result<Array, Exception> {
+        if let Some(value) = self.cache.get(&key) {
+            return Ok(value.clone());
         }
 
         let x1 = arange::<_, f32>(key.offset, key.q_seq_len, None)?;
@@ -304,10 +307,7 @@ impl Alibi {
         let slope = Self::slope(key.num_heads)?;
         let mask = distance_matrix.multiply(&slope)?.as_dtype(key.dtype)?;
 
-        ALIBI_CACHE.with(|cache| {
-            cache.borrow_mut().insert(key, mask.clone());
-        });
-
+        self.cache.insert(key, mask.clone());
         Ok(mask)
     }
 }
@@ -408,7 +408,7 @@ where
             dtype: attention_scores.dtype(),
         };
 
-        let mut alibi_mask = Self::matrix(key)?;
+        let mut alibi_mask = self.matrix(key)?;
         if let Some(mask) = mask {
             alibi_mask = alibi_mask.add(mask)?;
         }
@@ -423,7 +423,7 @@ where
 mod tests {
     #![allow(
         clippy::excessive_precision,
-        reason = "test reference values from Python; precision kept for parity"
+        reason = "test reference values captured at higher precision than f32; kept for parity"
     )]
     #![allow(clippy::unwrap_used, reason = "test code")]
     #![allow(clippy::missing_assert_message, reason = "test code")]
@@ -504,11 +504,9 @@ mod tests {
         );
     }
 
-    // The unit test below is adapted from the python binding at:
-    // mlx/python/tests/test_nn.py
     #[test]
     fn test_alibi() {
-        let mut alibi = crate::layers::Alibi;
+        let mut alibi = crate::layers::Alibi::default();
         let shape = [1, 8, 20, 20];
         let x = uniform::<_, f32>(0, 1, &shape, None).unwrap();
         let input = AlibiInput::from(&x);

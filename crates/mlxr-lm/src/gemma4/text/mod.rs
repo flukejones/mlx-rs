@@ -12,6 +12,8 @@ pub mod rope;
 pub mod text;
 pub mod weights;
 
+use crate::nn::switch::{GegluActivation, PackedSwitchFfn};
+
 pub use config::{Gemma4Config, LayerKind};
 pub use loader::Gemma4LayerCache;
 pub use rope::ProportionalRope;
@@ -21,6 +23,5 @@ pub use text::{
 };
 
 /// Gemma 4 routed-expert FFN: gelu-approx activation + packed
-/// `gate_up_proj` layout. Concrete alias of
-/// [`crate::nn::switch::PackedSwitchFfn`].
-pub type GemmaSwitchGlu = crate::nn::switch::PackedSwitchFfn<crate::nn::switch::GegluActivation>;
+/// `gate_up_proj` layout. Concrete alias of [`PackedSwitchFfn`].
+pub type GemmaSwitchGlu = PackedSwitchFfn<GegluActivation>;

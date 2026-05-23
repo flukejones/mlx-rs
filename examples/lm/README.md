@@ -9,6 +9,7 @@ Runnable demos and tooling for `mlxr-lm`.
 | `lm` (`main.rs`)   | Minimal driver — load a Qwen 3 checkpoint and run one `mlxr_lm::generate` call. Useful as a smoke test.  |
 | `generate`         | One-shot text completion with full CLI options (model dir, prompt, temperature, top-p, max-tokens, chat-template toggle); streams tokens to stdout. |
 | `bench_with_temp`  | Wraps `cargo bench` with `macmon raw` sampling and emits a CSV + PNG of GPU/CPU temp and power vs time, with per-bench-cell boundaries marked. |
+| `mtp_diag`         | One-shot MTP self-speculative decode diagnostic on `Qwen3.6-35B-A3B-q8-mtp`. Compares greedy vs MTP depths 1/2/3 with per-slot acceptance counts. |
 
 ## Running
 

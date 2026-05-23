@@ -35,7 +35,7 @@ use mlxr::{
 /// multiple of this constant for the kernel path to be usable.
 const SIMD_WIDTH: i32 = 32;
 
-pub type ComputeGCompiled = Compiled<
+pub(crate) type ComputeGCompiled = Compiled<
     fn((&Array, &Array, &Array)) -> Result<Array, Exception>,
     Box<dyn FnMut(&[Array]) -> Result<Vec<Array>, Exception> + Send + 'static>,
     ThreeArgs,
@@ -44,7 +44,7 @@ pub type ComputeGCompiled = Compiled<
 /// Cached compiled-graph slot for [`compute_g`]. Owned by the calling
 /// [`super::gated_delta_block::GatedDeltaNet`].
 #[derive(Default)]
-pub struct ComputeGCache(pub Option<ComputeGCompiled>);
+pub(crate) struct ComputeGCache(pub(crate) Option<ComputeGCompiled>);
 
 impl std::fmt::Debug for ComputeGCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -56,9 +56,9 @@ impl std::fmt::Debug for ComputeGCache {
 
 /// Compute the per-step decay `g = exp(-exp(A_log) * softplus(a + dt_bias))`.
 ///
-/// Caller passes a `&mut ComputeGCache` owned by the surrounding block.
-/// Mirrors Python's `@partial(mx.compile, shapeless=True) compute_g`.
-pub fn compute_g(
+/// Caller passes a `&mut ComputeGCache` owned by the surrounding
+/// block; the closure is shape-compiled and reused across decode steps.
+pub(crate) fn compute_g(
     cache: &mut ComputeGCache,
     a_log: &Array,
     a: &Array,
@@ -93,7 +93,7 @@ fn compute_g_inner((a_log, a, dt_bias): (&Array, &Array, &Array)) -> Result<Arra
 ///   is zeroed.
 ///
 /// Returns `(y, new_state)` with `y` shaped `[B, Hv, Dv]`.
-pub fn step_ops(
+pub(crate) fn step_ops(
     q_t: &Array,
     k_t: &Array,
     v_t: &Array,
@@ -163,7 +163,7 @@ pub fn step_ops(
     clippy::too_many_arguments,
     reason = "GDN operator: every input is load-bearing"
 )]
-pub fn gated_delta_update_ops(
+pub(crate) fn gated_delta_update_ops(
     compute_g_cache: &mut ComputeGCache,
     q: &Array,
     k: &Array,
@@ -239,7 +239,7 @@ pub fn gated_delta_update_ops(
 /// The caller is expected to cache the returned handle for the lifetime of
 /// the block — see [`gated_delta_update_metal`] for why per-call recreation
 /// breaks chained launches.
-pub fn make_gated_delta_kernel() -> Result<MetalKernel, Exception> {
+pub(crate) fn make_gated_delta_kernel() -> Result<MetalKernel, Exception> {
     metal_kernel(
         "qwen3_5_gated_delta_step",
         &["q", "k", "v", "g", "beta", "state_in", "T"],
@@ -257,7 +257,7 @@ pub fn make_gated_delta_kernel() -> Result<MetalKernel, Exception> {
     clippy::too_many_arguments,
     reason = "GDN operator: every input is load-bearing"
 )]
-pub fn gated_delta_update_metal(
+pub(crate) fn gated_delta_update_metal(
     kernel: &MetalKernel,
     compute_g_cache: &mut ComputeGCache,
     q: &Array,

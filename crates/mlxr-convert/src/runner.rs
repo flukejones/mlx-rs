@@ -129,12 +129,10 @@ fn list_source_shards(src: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// Copy + edit `config.json` to record the quantisation. The Python
-/// pipeline emits a `quantization` dict with `bits` + `group_size` +
-/// `mode` + per-layer overrides; mlxr_lm::load reads the top-level
-/// `bits`/`group_size`. Per-tensor overrides are not yet wired in our
-/// Rust loader (the kept set doesn't need them), so we emit only the
-/// global block and leave per-layer overrides out.
+/// Copy + edit `config.json` to record the quantisation. `mlxr_lm::load`
+/// reads the top-level `bits`/`group_size`. Per-tensor overrides are
+/// not yet wired in our loader (the kept set doesn't need them), so we
+/// emit only the global block.
 fn write_converted_config(src: &Path, dst: &Path, bits: i32, group_size: i32) -> Result<()> {
     let src_path = src.join("config.json");
     let text = std::fs::read_to_string(&src_path)?;

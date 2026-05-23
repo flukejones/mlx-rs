@@ -157,7 +157,6 @@ mod tests {
     use crate::layers::{self, Linear};
 
     // The unit test below is adapted from `test_compiled_optimizer` in
-    // `mlx/python/tests/test_optimizers.py``
     #[test]
     fn test_value_and_grad() {
         let mut model = Linear::new(2, 2).unwrap();

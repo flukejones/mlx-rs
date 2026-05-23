@@ -1220,7 +1220,6 @@ mod tests {
         assert_eq!(results, &[5.0, 8.0, 4.0, 9.0]);
     }
 
-    // Tests adapted from Python test `test_ops.py/test_median`
     #[test]
     fn test_median() {
         // Test basic median over all elements (odd count)

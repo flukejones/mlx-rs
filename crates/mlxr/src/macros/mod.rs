@@ -1,4 +1,4 @@
-//! Macros for mlx-rs.
+//! Macros for mlxr.
 
 #[macro_use]
 mod internal;

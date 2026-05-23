@@ -56,9 +56,23 @@ fn make_lm_input(prompt: &Array) -> LMInput {
     }
 }
 
+const MODEL_REPO: &str = "mlx-community/Qwen3.6-35B-A3B-q8-mtp";
+
+fn bench_cache_root() -> PathBuf {
+    if let Ok(dir) = std::env::var("MLX_LM_BENCH_CACHE") {
+        return PathBuf::from(dir);
+    }
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+        return PathBuf::from(xdg).join("mlx-rs-bench");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".cache").join("mlx-rs-bench");
+    }
+    PathBuf::from(".mlx-rs-bench-cache")
+}
+
 fn main() {
-    let dir = PathBuf::from(std::env::var("HOME").unwrap())
-        .join(".cache/mlx-rs-bench/mlx-community/Qwen3.6-35B-A3B-q8-mtp");
+    let dir = bench_cache_root().join(MODEL_REPO);
     eprintln!("loading {}", dir.display());
     let mut ctx = load(&dir).expect("load");
     eprintln!("has_mtp={}", ctx.model.has_mtp());

@@ -163,11 +163,10 @@ impl Attention {
 
         let rotary_dim =
             (head_dim as f32 * cfg.rope_parameters.partial_rotary_factor).floor() as i32;
-        // The Qwen3.5 mrope `__init__` in the Python reference doesn't branch
-        // on `rope_type`; only `default` (which the chandra checkpoint
-        // ships) and `mrope` are valid. Reject yarn / longrope upfront with
-        // a clear error rather than silently parsing them and producing
-        // garbage logits at runtime.
+        // Only `default` (which the chandra checkpoint ships) and `mrope`
+        // are valid here. Reject yarn / longrope upfront with a clear
+        // error rather than silently parsing them and producing garbage
+        // logits at runtime.
         let rope_type = cfg.rope_parameters.rope_type.as_str();
         if !matches!(rope_type, "default" | "mrope") {
             return Err(Exception::custom(format!(
@@ -248,7 +247,6 @@ impl Attention {
 
         // Resolve position ids. MultimodalRope::cos_sin accepts either
         // 2D [B, L] (auto-expands to text-only mrope) or 3D [3, B, L].
-        // Matches mlx-vlm Python: `tile(expand_dims(arange(offset, offset+L), 0), (3, 1, 1))`.
         let offset = cache.as_ref().map(|c| c.offset()).unwrap_or(0);
         let owned_pos;
         let pos: &Array = if let Some(p) = position_ids {
@@ -360,6 +358,7 @@ mod tests {
     #![allow(clippy::print_stdout, reason = "test code")]
     #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
+    use crate::cache::KeyValueCache;
     use mlxr::{random::uniform, transforms::eval};
 
     fn synthetic_text_config() -> TextConfig {
@@ -527,7 +526,6 @@ mod tests {
 
     #[test]
     fn attention_prefill_then_decode_extends_cache() {
-        use crate::cache::KeyValueCache;
         let cfg = synthetic_text_config();
         let mut a = Attention::new(&cfg).unwrap();
 

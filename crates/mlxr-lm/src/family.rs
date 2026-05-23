@@ -39,11 +39,18 @@ pub(crate) fn read_eos_ids(dir: &Path) -> Vec<u32> {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return Vec::new();
     };
-    val.get("eos_token_id")
-        .and_then(|v| serde_json::from_value::<EosSpec>(v.clone()).ok())
-        .map(|spec| match spec {
-            EosSpec::Single(id) => vec![id],
-            EosSpec::Many(ids) => ids,
-        })
-        .unwrap_or_default()
+    let Some(eos) = val.get("eos_token_id") else {
+        return Vec::new();
+    };
+    match serde_json::from_value::<EosSpec>(eos.clone()) {
+        Ok(EosSpec::Single(id)) => vec![id],
+        Ok(EosSpec::Many(ids)) => ids,
+        Err(e) => {
+            log::warn!(
+                "config.json::eos_token_id parse failed ({e}); model will only \
+                 stop on family-default chat-EOS — generations may over-run."
+            );
+            Vec::new()
+        }
+    }
 }

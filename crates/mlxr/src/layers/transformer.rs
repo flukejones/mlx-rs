@@ -779,7 +779,7 @@ where
                 )))?;
             y = self.dropout2.forward(&y)?;
             x = x.add(&y)?;
-            x = self.ln2.forward(&x)?; // TODO: https://github.com/ml-explore/mlx/issues/1636
+            x = self.ln2.forward(&x)?;
 
             y = self.linear1.forward(&x)?;
             y = self.activation.forward(&y)?;

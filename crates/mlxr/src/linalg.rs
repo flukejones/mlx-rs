@@ -396,8 +396,6 @@ pub fn cholesky_device(
 }
 
 /// Compute the inverse of a real symmetric positive semi-definite matrix using it’s Cholesky decomposition.
-///
-/// Please see the python documentation for more details.
 #[generate_macro(customize(root = "$crate::linalg"))]
 #[default_device]
 pub fn cholesky_inv_device(
@@ -587,8 +585,6 @@ pub fn tri_inv_device(
 /// To construct the full permuation matrix do:
 ///
 /// ```rust,ignore
-/// // python
-/// // P = mx.put_along_axis(mx.zeros_like(L), p[..., None], mx.array(1.0), axis=-1)
 /// let p = mlxr::ops::put_along_axis(
 ///     mlxr::ops::zeros_like(&l),
 ///     p.index((Ellipsis, NewAxis)),
@@ -900,7 +896,6 @@ mod tests {
         // TODO: wait for random
     }
 
-    // The unit test below is adapted from the python unit test `test_linalg.py/test_lu`
     #[test]
     fn test_lu() {
         let scalar = array!(1.0);
@@ -914,7 +909,6 @@ mod tests {
         assert_array_all_close!(a, a_rec);
     }
 
-    // The unit test below is adapted from the python unit test `test_linalg.py/test_lu_factor`
     #[test]
     fn test_lu_factor() {
         crate::random::seed(7).unwrap();
@@ -942,7 +936,6 @@ mod tests {
         assert_array_all_close!(lhs, rhs);
     }
 
-    // The unit test below is adapted from the python unit test `test_linalg.py/test_solve`
     #[test]
     fn test_solve() {
         crate::random::seed(7).unwrap();
@@ -966,7 +959,6 @@ mod tests {
         assert_array_all_close!(result, expected);
     }
 
-    // The tests below are adapted from the python unit test `test_linalg.py/test_eig`
     #[test]
     fn test_eig() {
         use crate::ops::expand_dims;

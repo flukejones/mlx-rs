@@ -1,6 +1,6 @@
 //! Fast Fourier Transform (FFT) and its inverse (IFFT) for one, two, and `N` dimensions.
 //!
-//! Like all other functions in `mlx-rs`, three variants are provided for each FFT function, plus
+//! Like all other functions in `mlxr`, three variants are provided for each FFT function, plus
 //! each variant has a version that uses the default `StreamOrDevice` or takes a user-specified
 //! `StreamOrDevice`.
 //!

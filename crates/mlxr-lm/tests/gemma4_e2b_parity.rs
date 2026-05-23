@@ -3,7 +3,7 @@
 //!
 //! All tests `#[ignore]` by default — they need the checkpoint on
 //! disk. Loading covers the per-layer-embedding (PLE) binding path;
-//! generation covers the steel-prefill / sliding-cache paths.
+//! generation covers the chunked-prefill / sliding-cache paths.
 
 #![allow(clippy::missing_assert_message, reason = "test code")]
 

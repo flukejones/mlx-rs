@@ -265,18 +265,11 @@ impl Qwen35ImageProcessor {
             )));
         }
 
-        // Python:
-        //   patches = repeat(img[None, None, ...], tps, axis=1)        # shape (1, tps, C, H, W)
-        //   patches = reshape(patches, (1, grid_t, tps, C,
-        //                               grid_h//ms, ms, ps,
-        //                               grid_w//ms, ms, ps))
-        //   patches = transpose(patches, (0, 1, 4, 7, 5, 8, 3, 2, 6, 9))
-        //   flatten = reshape(patches, (1, grid_t*grid_h*grid_w, C*tps*ps*ps))
-        //
-        // The temporal axis just duplicates the single frame `tps` times so
-        // the reshape works out — but every patch ends up with the same `tps`
-        // copies side-by-side along the inner dim. We bake that duplication
-        // directly into the inner loop.
+        // The temporal axis duplicates the single frame `tps` times so
+        // the reshape works out — every patch ends up with the same
+        // `tps` copies side-by-side along the inner dim. We bake that
+        // duplication directly into the inner loop instead of
+        // materialising the repeat-then-reshape-then-transpose chain.
         let feature_dim = c * tps * ps * ps;
         let num_patches = grid_t * grid_h * grid_w;
         let mut out = vec![0_f32; num_patches * feature_dim];

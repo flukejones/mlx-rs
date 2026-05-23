@@ -53,10 +53,9 @@ fn build_rotary_freqs(dim: i32, seqlen: i32, theta: f32) -> Result<Array, Except
 /// (already concatenated from the H and W axis frequencies by
 /// [`VisionModel::rot_pos_emb`]).
 ///
-/// The Python reference does `cos = tile(expand_dims(cos, 1), (1, 1, 2))`;
-/// here `freqs` is already shaped to the full `head_dim` so we just take
-/// `cos = cos(freqs)`, `sin = sin(freqs)`, broadcast across `B`/`H`, and apply
-/// `x * cos + rotate_half(x) * sin`.
+/// `freqs` is already shaped to the full `head_dim` so we just take
+/// `cos = cos(freqs)`, `sin = sin(freqs)`, broadcast across `B`/`H`, and
+/// apply `x * cos + rotate_half(x) * sin`.
 pub fn apply_vision_rope(tensor: &Array, freqs: &Array) -> Result<Array, Exception> {
     let orig_dtype = tensor.dtype();
     let f32_freqs = freqs.as_dtype(Dtype::Float32)?;
@@ -462,10 +461,9 @@ fn rot_pos_emb(
 
     let h_emb = take_axis(&freq_table, &rows, 0)?;
     let w_emb = take_axis(&freq_table, &cols, 0)?;
-    // Python `apply_rotary_pos_emb_vision` tiles cos/sin along the head_dim
-    // axis by 2 *after* slicing the per-axis freqs out of the table. We bake
-    // that tiling into the rotary table directly so the head_dim of the
-    // returned tensor matches the tensor we're applying it to.
+    // Bake the cos/sin head_dim tiling (×2) into the rotary table
+    // directly, so the returned tensor's head_dim already matches the
+    // tensor we're applying it to.
     let halves = concatenate_axis(&[h_emb, w_emb], -1)?;
     concatenate_axis(&[&halves, &halves], -1)
 }

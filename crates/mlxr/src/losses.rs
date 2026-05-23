@@ -889,8 +889,6 @@ mod tests {
 
     use super::*;
 
-    // The following unit tests are adapted from the python API at: mlx/python/tests/test_losses.py
-
     #[test]
     fn test_cross_entropy() {
         // No weights, no label smoothing

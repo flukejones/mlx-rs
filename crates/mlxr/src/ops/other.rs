@@ -312,7 +312,6 @@ mod tests {
         assert_eq!(c_data, [true]);
     }
 
-    // This test is adapted from the python unit test `mlx/test/test_ops.py` `test_kron`
     #[test]
     fn test_kron() {
         // Basic vector test

@@ -7,7 +7,7 @@ use super::{VectorArray, SUCCESS};
 
 type Status = i32;
 
-pub trait Guard<T>: Default {
+pub(crate) trait Guard<T>: Default {
     type MutRawPtr;
 
     fn as_mut_raw_ptr(&mut self) -> Self::MutRawPtr;

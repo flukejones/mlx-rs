@@ -10,11 +10,10 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 
 thread_local! {
-    // Default random state — thread-local to mirror Python's
-    // `static thread_local PyKeySequence ks;`. mlx ≥ 0.31 made the GPU
-    // CommandEncoder map thread-local, so an `Array` (PRNG key) created
-    // on thread A cannot be evaluated on thread B. Each thread lazy-
-    // initialises its own state on first use.
+    // Default random state — kept thread-local because mlx ≥ 0.31 made
+    // the GPU CommandEncoder map thread-local: an `Array` (PRNG key)
+    // created on thread A cannot be evaluated on thread B. Each thread
+    // lazy-initialises its own state on first use.
     static THREAD_DEFAULT_STATE: RefCell<Option<RandomState>> = const { RefCell::new(None) };
 
     // Scoped override set by `with_random_state(...)`. Falls back to the
@@ -30,8 +29,8 @@ thread_local! {
 /// # Compilation Support
 ///
 /// `RandomState` implements `Updatable`, making it compatible with
-/// `compile_with_state`. This is the Rust equivalent of Python's
-/// `@partial(mx.compile, inputs=mx.random.state, outputs=mx.random.state)`.
+/// `compile_with_state` — pass it as an input/output so the JIT
+/// boundary threads the PRNG key forward without re-seeding.
 ///
 /// # Example
 ///

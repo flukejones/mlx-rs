@@ -35,9 +35,8 @@ use super::gated_delta::{
     gated_delta_update_metal, gated_delta_update_ops, make_gated_delta_kernel, ComputeGCache,
 };
 
-/// Process-wide compiled instance of the GDN scan kernel. Python's reference
-/// builds the kernel once at module-import time; we mirror that so all 24
-/// `GatedDeltaNet` blocks share one handle.
+/// Process-wide compiled instance of the GDN scan kernel — built once
+/// so all 24 `GatedDeltaNet` blocks share one handle.
 fn gdn_kernel() -> Result<&'static MetalKernel, Exception> {
     static KERNEL: OnceLock<MetalKernel> = OnceLock::new();
     if let Some(k) = KERNEL.get() {
@@ -51,10 +50,9 @@ fn gdn_kernel() -> Result<&'static MetalKernel, Exception> {
 /// `silu(gate.astype(f32)) * rms_norm(hidden, weight)` cast back to `hidden.dtype`.
 ///
 /// The trailing silu+multiply+cast triple runs through
-/// `transforms::compile` to match Python's `@partial(mx.compile,
-/// shapeless=True) _precise_swiglu`. `weight_f32` is the norm weight
-/// pre-cast to f32 (caller-cached) so this fn doesn't pay the cast
-/// launch per call.
+/// `transforms::compile` as a shape-compiled closure. `weight_f32` is
+/// the norm weight pre-cast to f32 (caller-cached) so this fn doesn't
+/// pay the cast launch per call.
 fn rms_norm_gated(
     cache: &mut PreciseSwigluCache,
     hidden: &Array,
@@ -66,14 +64,14 @@ fn rms_norm_gated(
     precise_swiglu(cache, hidden, gate, &normed)
 }
 
-pub type PreciseSwigluCompiled = Compiled<
+pub(crate) type PreciseSwigluCompiled = Compiled<
     fn((&Array, &Array, &Array)) -> Result<Array, Exception>,
     Box<dyn FnMut(&[Array]) -> Result<Vec<Array>, Exception> + Send + 'static>,
     ThreeArgs,
 >;
 
 #[derive(Default)]
-pub struct PreciseSwigluCache(pub Option<PreciseSwigluCompiled>);
+pub(crate) struct PreciseSwigluCache(pub(crate) Option<PreciseSwigluCompiled>);
 
 impl std::fmt::Debug for PreciseSwigluCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -83,9 +81,8 @@ impl std::fmt::Debug for PreciseSwigluCache {
     }
 }
 
-/// `silu(gate.astype(f32)) * x.astype(f32)` cast back to `h.dtype`. Mirrors
-/// Python's `_precise_swiglu`. Caller-owned cache, same shape as
-/// [`crate::activations::swiglu`].
+/// `silu(gate.astype(f32)) * x.astype(f32)` cast back to `h.dtype`.
+/// Caller-owned cache, same shape as [`crate::activations::swiglu`].
 fn precise_swiglu(
     cache: &mut PreciseSwigluCache,
     h: &Array,

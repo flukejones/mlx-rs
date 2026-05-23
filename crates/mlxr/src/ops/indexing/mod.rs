@@ -25,15 +25,15 @@
 //!
 //! # Single axis indexing
 //!
-//! | Indexing Operation | `mlx` (python) | `mlx-swift` | `mlx-rs` |
-//! |--------------------|--------|-------|------|
-//! | integer | `arr[1]` | `arr[1]` | `arr.index(1)` |
-//! | range expression | `arr[1:3]` | `arr[1..<3]` | `arr.index(1..3)` |
-//! | full range | `arr[:]` | `arr[0...]` | `arr.index(..)` |
-//! | range with stride | `arr[::2]` | `arr[.stride(by: 2)]` | `arr.index((..).stride_by(2))` |
-//! | ellipsis (consuming all axes) | `arr[...]` | `arr[.ellipsis]` | `arr.index(Ellipsis)` |
-//! | newaxis | `arr[None]` | `arr[.newAxis]` | `arr.index(NewAxis)` |
-//! | mlx array `i` | `arr[i]` | `arr[i]` | `arr.index(i)` |
+//! | Indexing Operation | Form |
+//! |--------------------|------|
+//! | integer | `arr.index(1)` |
+//! | range expression | `arr.index(1..3)` |
+//! | full range | `arr.index(..)` |
+//! | range with stride | `arr.index((..).stride_by(2))` |
+//! | ellipsis (consuming all axes) | `arr.index(Ellipsis)` |
+//! | newaxis | `arr.index(NewAxis)` |
+//! | array `i` | `arr.index(i)` |
 //!
 //! # Multi-axes indexing
 //!
@@ -43,8 +43,6 @@
 //! ## Examples
 //!
 //! ```rust
-//! // See the multi-dimensional example code for mlx python https://ml-explore.github.io/mlx/build/html/usage/indexing.html
-//!
 //! use mlxr::{Array, ops::indexing::*};
 //!
 //! let a = Array::from_iter(0..8, &[2, 2, 2]);
@@ -239,13 +237,10 @@ impl RangeIndex {
 #[derive(Debug, Clone)]
 pub enum ArrayIndexOp<'a> {
     /// An `Ellipsis` is used to consume all axes
-    ///
-    /// This is equivalent to `...` in python
+    /// Selects all remaining axes.
     Ellipsis,
 
-    /// A single index operation
-    ///
-    /// This is equivalent to `arr[1]` in python
+    /// Single-index lookup along this axis.
     TakeIndex {
         /// The index to take
         index: i32,
@@ -263,14 +258,10 @@ pub enum ArrayIndexOp<'a> {
         indices: &'a Array,
     },
 
-    /// Indexing with a range
-    ///
-    /// This is equivalent to `arr[1:3]` in python
+    /// Range-slice along this axis.
     Slice(RangeIndex),
 
-    /// New axis operation
-    ///
-    /// This is equivalent to `arr[None]` in python
+    /// Inserts a new size-1 axis at this position.
     ExpandDims,
 }
 

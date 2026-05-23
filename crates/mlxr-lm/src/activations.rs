@@ -40,7 +40,7 @@ use mlxr::{
 /// across every `swiglu`/`geglu`/`attention_gate` cache instance. Lets
 /// MLX's `compiler_cache` reuse a single compiled Metal kernel across
 /// all 30+ transformer layers instead of JIT-compiling 30 redundant
-/// copies. Mirrors Python's `@mx.compile`-decorator semantics.
+/// copies.
 fn swiglu_id() -> usize {
     static ID: OnceLock<usize> = OnceLock::new();
     *ID.get_or_init(allocate_compile_id)
@@ -270,7 +270,6 @@ fn geglu_inner((gate, up): (&Array, &Array)) -> Result<Array, Exception> {
 /// MoE forward). Staging the scalars into the input dtype keeps the
 /// graph in-place.
 fn gelu_approximate_in_dtype(x: &Array) -> Result<Array, Exception> {
-    use mlxr::ops::tanh;
     let dt = x.dtype();
     let cast = |c: f32| -> Result<Array, Exception> { Array::from_f32(c).as_dtype(dt) };
     let half = cast(0.5)?;

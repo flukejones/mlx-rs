@@ -11,7 +11,7 @@ use mlxr_codegen::{default_device, generate_macro};
 /// Optimized implementation of `NN.RoPE`.
 #[allow(
     clippy::too_many_arguments,
-    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+    reason = "mlx op signature: shape/dtype/stream params"
 )]
 #[generate_macro(customize(root = "$crate::fast"))]
 #[default_device]
@@ -65,7 +65,7 @@ pub fn rope_device<'a>(
 /// - `stream`: Stream to evaluate on
 #[allow(
     clippy::too_many_arguments,
-    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+    reason = "mlx op signature: shape/dtype/stream params"
 )]
 #[generate_macro(customize(root = "$crate::fast"))]
 #[default_device]
@@ -288,8 +288,8 @@ impl From<bool> for MetalKernelTemplateArg {
 
 /// Builder describing how to launch a [`MetalKernel`].
 ///
-/// Mirrors the Python `mx.fast.metal_kernel(...)(...)` call: declare each
-/// output's shape and dtype, the dispatch grid, threadgroup, optional template
+/// Declares each output's shape and dtype, the dispatch grid,
+/// threadgroup, optional template
 /// arguments, and an optional output initialiser.
 #[derive(Debug, Clone, Default)]
 pub struct MetalKernelConfig {
@@ -316,14 +316,14 @@ impl MetalKernelConfig {
         self
     }
 
-    /// Set the launch grid (`grid1`, `grid2`, `grid3`). Matches the Python
-    /// `grid=(g1, g2, g3)` argument.
+    /// Set the launch grid `(grid1, grid2, grid3)` — total threads
+    /// per dimension (NOT num threadgroups).
     pub fn grid(mut self, grid1: i32, grid2: i32, grid3: i32) -> Self {
         self.grid = (grid1, grid2, grid3);
         self
     }
 
-    /// Set the threadgroup size. Matches the Python `threadgroup=(t1, t2, t3)` argument.
+    /// Set the threadgroup size `(t1, t2, t3)`.
     pub fn thread_group(mut self, t1: i32, t2: i32, t3: i32) -> Self {
         self.thread_group = (t1, t2, t3);
         self
@@ -461,8 +461,6 @@ impl Drop for RawMetalKernelConfig {
 /// [`MetalKernel::apply`], passing a fresh [`MetalKernelConfig`] each time. The
 /// kernel is cached internally by `mlx`, so repeated launches with the same
 /// template arguments do not recompile.
-///
-/// This mirrors `mlx.core.fast.metal_kernel` from the Python API.
 pub struct MetalKernel {
     raw: mlxr_sys::mlx_fast_metal_kernel,
 }
@@ -620,7 +618,7 @@ impl Drop for StringVector {
     }
 }
 
-/// Convenience constructor mirroring `mx.fast.metal_kernel(...)` from the Python API.
+/// Convenience constructor for a JIT-compiled Metal kernel.
 pub fn metal_kernel(
     name: &str,
     input_names: &[&str],
@@ -677,7 +675,6 @@ mod tests {
         );
     }
 
-    // Test adapted from Python test_fast.py/test_rope - the Python test accepts both
     // int offset and array offset, which in C/Rust are separate functions
     #[test]
     fn test_rope_dynamic() {
@@ -772,7 +769,7 @@ mod tests {
     #[allow(non_snake_case, reason = "test mirrors ML tensor names (Q, K, V)")]
     fn test_fast_sdpa() {
         // This test just makes sure that `scaled_dot_product_attention` is callable
-        // in the various cases, based on the Python test `test_fast_sdpa`.
+        // in the various cases.
 
         let Dk = 64;
         let scale = 1.0 / (Dk as f32).sqrt();
@@ -800,7 +797,6 @@ mod tests {
         }
     }
 
-    // Test adapted from Python test `test_fast_sdpa.py/test_sdpa_attention_sinks`
     #[test]
     fn test_fast_sdpa_with_sinks() {
         let b = 2;

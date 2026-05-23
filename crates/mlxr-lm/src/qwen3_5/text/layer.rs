@@ -21,6 +21,8 @@ use mlxr::{
     Array,
 };
 
+use crate::cache::KeyValueCache;
+
 use super::cache::LayerCache;
 use super::config::TextConfig;
 use super::gated_delta_block::GatedDeltaNet;
@@ -452,8 +454,7 @@ where
         //   relies on `fast::scaled_dot_product_attention` to handle the
         //   trivial 1-row case.
         // - Linear-attention layers don't need a mask in single-batch /
-        //   non-chunked prefill, so we always pass `None` (the Python
-        //   reference's `create_ssm_mask` returns `None` here too).
+        //   non-chunked prefill, so we always pass `None`.
         let full_attn_mask = Self::build_full_attn_mask(&h, caches)?;
         let full_attn_mask_ref = full_attn_mask.as_ref();
         let ssm_mask_ref: Option<&Array> = None;
@@ -533,10 +534,7 @@ where
         let offset = caches
             .iter()
             .find_map(|c| match c {
-                LayerCache::FullAttention(kv) => {
-                    use crate::cache::KeyValueCache;
-                    Some(kv.offset())
-                }
+                LayerCache::FullAttention(kv) => Some(kv.offset()),
                 LayerCache::LinearAttention(_) => None,
             })
             .unwrap_or(0);

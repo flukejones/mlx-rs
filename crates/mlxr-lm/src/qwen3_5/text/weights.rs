@@ -73,7 +73,7 @@ fn safetensors_is_mlx_format(path: &Path) -> Result<bool, Error> {
     Ok(header.contains("\"__metadata__\"") && header.contains("\"format\":\"mlx\""))
 }
 
-/// Apply the Python `sanitize_key` mapping in place.
+/// Rewrite checkpoint key prefixes to match the Rust module tree.
 fn sanitize_key(key: &str) -> String {
     if key.contains("model.language_model") {
         return key.replace("model.language_model", "language_model.model");
@@ -100,7 +100,7 @@ fn strip_language_model_prefix(key: &str) -> &str {
 /// Bucket a sanitised key into either the language-model or vision-tower
 /// param-path namespace, with the appropriate prefix stripped.
 #[derive(Debug)]
-pub enum Bucketed {
+pub(crate) enum Bucketed {
     /// Routes to [`Qwen35Model`] under the returned path.
     Language(String),
     /// Routes to `VisionModel` under the returned path.
@@ -110,7 +110,7 @@ pub enum Bucketed {
     Other(String),
 }
 
-pub fn bucket_key(key: String) -> Bucketed {
+pub(crate) fn bucket_key(key: String) -> Bucketed {
     if let Some(rest) = key.strip_prefix("language_model.") {
         return Bucketed::Language(rest.to_owned());
     }
@@ -176,7 +176,7 @@ fn is_float(dtype: Dtype) -> bool {
 /// (`language_model.model.layers.0.self_attn.q_proj.weight`,
 /// `vision_tower.patch_embed.proj.weight`, `language_model.mtp.*`, ...).
 /// Caller buckets the result into the LM / vision-tower parameter walks.
-pub fn load_sanitized_weights(
+pub(crate) fn load_sanitized_weights(
     model_dir: impl AsRef<Path>,
 ) -> Result<HashMap<String, Array>, Error> {
     let model_dir = model_dir.as_ref();
@@ -204,8 +204,7 @@ pub fn load_sanitized_weights(
 
     let mut out: HashMap<String, Array> = HashMap::with_capacity(raw.len());
     for (mut k, v) in raw {
-        // Naming alignment between the Python checkpoint and the Rust
-        // parameter walk:
+        // Checkpoint-vs-Rust parameter-walk naming alignment:
         //
         //  - the GDN `norm` submodule stores its scale as `norm.weight` —
         //    Rust collapses it into a single `norm_weight` Param.

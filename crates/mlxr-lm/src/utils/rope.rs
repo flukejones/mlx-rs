@@ -82,9 +82,7 @@ impl Llama3Rope {
     ) -> Result<Self, Exception> {
         let half_dims = dims / 2;
 
-        // Compute freqs using MLX ops, matching Python:
-        //   freqs = base ** (mx.arange(0, dims, 2) / dims)
-        // which equals base^(2i/dims) for i in 0..half_dims
+        // freqs = base^(2i/dims) for i in 0..half_dims
         let indices = arange::<_, f32>(None, half_dims, None)?;
         let exponents = indices.multiply(Array::from_f32(2.0 / dims as f32))?;
         let freqs = Array::from_f32(base).power(&exponents)?;
@@ -93,8 +91,7 @@ impl Llama3Rope {
         let low_freq_wavelen = old_context_len / low_freq_factor;
         let high_freq_wavelen = old_context_len / high_freq_factor;
 
-        // wavelens = 2 * pi * freqs
-        // Apply piecewise scaling matching Python exactly:
+        // wavelens = 2 * pi * freqs; piecewise scaling:
         //   freqs = where(wavelens > low_freq_wavelen, freqs * factor, freqs)
         //   is_medium = (wavelens > high_freq_wavelen) & (wavelens < low_freq_wavelen)
         //   smooth_factors = (old_context_len / wavelens - low_freq_factor) / (high - low)

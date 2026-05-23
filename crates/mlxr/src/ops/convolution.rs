@@ -25,7 +25,7 @@ use mlxr_codegen::{default_device, generate_macro};
 #[default_device]
 #[allow(
     clippy::too_many_arguments,
-    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+    reason = "mlx op signature: shape/dtype/stream params"
 )]
 pub fn conv_general_device<'a>(
     array: impl AsRef<Array>,
@@ -208,7 +208,7 @@ pub fn conv3d_device(
 /// - stream: stream or device to evaluate on.
 #[allow(
     clippy::too_many_arguments,
-    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+    reason = "mlx op signature: shape/dtype/stream params"
 )]
 #[generate_macro]
 #[default_device]
@@ -259,7 +259,7 @@ pub fn conv_transpose1d_device(
 /// - stream: stream or device to evaluate on.
 #[allow(
     clippy::too_many_arguments,
-    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+    reason = "mlx op signature: shape/dtype/stream params"
 )]
 #[generate_macro]
 #[default_device]
@@ -314,7 +314,7 @@ pub fn conv_transpose2d_device(
 /// - stream: stream or device to evaluate on.
 #[allow(
     clippy::too_many_arguments,
-    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+    reason = "mlx op signature: shape/dtype/stream params"
 )]
 #[generate_macro]
 #[default_device]

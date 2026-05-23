@@ -416,7 +416,6 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    // The expected output for the test case below is obtained from the python binding.
     #[test]
     fn test_cubic() {
         // BHWC
@@ -432,7 +431,7 @@ mod tests {
 
         assert_eq!(result.shape(), &[4, 4]);
 
-        // Expected output from the python binding version 0.17.2
+        // Expected reference values captured at upstream MLX 0.17.2:
         // array([[0.683594, 1.01562, 1.5625, 1.89453],
         //     [1.34766, 1.67969, 2.22656, 2.55859],
         //     [2.44141, 2.77344, 3.32031, 3.65234],

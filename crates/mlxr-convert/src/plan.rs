@@ -42,8 +42,8 @@ pub trait Rewriter: Send + Sync {
 
     /// Rewrite one source key + tensor into one or more destination
     /// (key, tensor, quant_class) entries. Implementors should bail with
-    /// [`crate::Error::custom`] on unexpected shapes rather than silently
-    /// dropping tensors — silent drops are what the Python pipeline does.
+    /// [`crate::Error::custom`] on unexpected shapes rather than
+    /// silently dropping tensors.
     fn rewrite(&self, src_key: &str, src_tensor: Array) -> Result<RewriteOutput>;
 
     /// Whether the source key should be dropped entirely (vision-tower

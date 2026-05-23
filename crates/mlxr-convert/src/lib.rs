@@ -1,9 +1,9 @@
 //! In-tree bf16/fp16 → quantised safetensors converter for mlx-lm-supported
 //! checkpoints.
 //!
-//! The Python `mlxr_lm.convert` pipeline is model-coupled and silently drops
-//! tensors it doesn't recognise (MTP weights, exotic submodules). This
-//! crate is the Rust replacement, driven by a per-model [`Rewriter`] table.
+//! Per-model [`Rewriter`] tables decide which tensors are kept, dropped,
+//! or re-mapped. Unknown shapes hard-error rather than silently dropping
+//! tensors (MTP weights, exotic submodules) the way upstream converters do.
 //!
 //! Currently supports Qwen 3.6 MoE (with MTP). Other families are deferred
 //! until they're actually needed.

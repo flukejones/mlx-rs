@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn test_fftshift_1d() {
-        // Test 1D arrays (matches Python test)
+        // Test 1D arrays
         random::seed(42).unwrap();
         let r = random::uniform::<_, f32>(0.0, 1.0, &[100], None).unwrap();
         check_fftshift(&r, None);
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn test_fftshift_with_axes() {
-        // Test with specific axis (matches Python test)
+        // Test with specific axis
         random::seed(42).unwrap();
         let r = random::uniform::<_, f32>(0.0, 1.0, &[4, 6], None).unwrap();
         check_fftshift(&r, Some(&[0]));
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn test_fftshift_negative_axes() {
-        // Test with negative axes (matches Python test)
+        // Test with negative axes
         random::seed(42).unwrap();
         let r = random::uniform::<_, f32>(0.0, 1.0, &[4, 6], None).unwrap();
         check_fftshift(&r, Some(&[-1]));
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn test_fftshift_odd_lengths() {
-        // Test with odd lengths (matches Python test)
+        // Test with odd lengths
         random::seed(42).unwrap();
         let r = random::uniform::<_, f32>(0.0, 1.0, &[5, 7], None).unwrap();
         check_fftshift(&r, None);
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_ifftshift_1d() {
-        // Test 1D arrays (matches Python test)
+        // Test 1D arrays
         random::seed(42).unwrap();
         let r = random::uniform::<_, f32>(0.0, 1.0, &[100], None).unwrap();
 
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_ifftshift_with_axes() {
-        // Test with specific axis (matches Python test)
+        // Test with specific axis
         random::seed(42).unwrap();
         let r = random::uniform::<_, f32>(0.0, 1.0, &[4, 6], None).unwrap();
 
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_ifftshift_negative_axes() {
-        // Test with negative axes (matches Python test)
+        // Test with negative axes
         random::seed(42).unwrap();
         let r = random::uniform::<_, f32>(0.0, 1.0, &[4, 6], None).unwrap();
 
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn test_ifftshift_odd_lengths() {
-        // Test with odd lengths (matches Python test)
+        // Test with odd lengths
         random::seed(42).unwrap();
         let r = random::uniform::<_, f32>(0.0, 1.0, &[5, 7], None).unwrap();
 
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn test_fftshift_empty_array() {
-        // Test empty array (matches Python test)
+        // Test empty array
         let x = Array::from_slice::<f32>(&[], &[0]);
         let shifted = fftshift(&x, None).unwrap();
         assert!(shifted.array_eq(&x, None).unwrap().item::<bool>());

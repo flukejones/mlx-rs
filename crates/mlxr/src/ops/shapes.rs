@@ -592,8 +592,8 @@ pub fn move_axis_device(
 }
 
 /// Return a row-major (C-contiguous) copy of `a` if it isn't already.
-/// Equivalent to Python `mx.contiguous`. When `allow_col_major` is
-/// `true`, column-major arrays pass through unchanged.
+/// When `allow_col_major` is `true`, column-major arrays pass through
+/// unchanged.
 #[generate_macro]
 #[default_device]
 pub fn contiguous_device(

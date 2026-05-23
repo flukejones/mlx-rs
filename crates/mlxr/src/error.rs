@@ -223,6 +223,10 @@ impl From<Exception> for String {
     }
 }
 
+// FFI callback slots — the only allowed `thread_local!` in the crate.
+// mlx-c's error handler is a C callback; we stash the most recent
+// failure here so the next safe Rust call can rehydrate it as an
+// Exception. See CLAUDE.md for the no-thread_local rule.
 thread_local! {
     static CLOSURE_ERROR: Cell<Option<Exception>> = const { Cell::new(None) };
     static LAST_MLX_ERROR: Cell<*const c_char> = const { Cell::new(std::ptr::null()) };

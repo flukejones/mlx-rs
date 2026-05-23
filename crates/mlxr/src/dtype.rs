@@ -117,7 +117,7 @@ pub(crate) trait TypePromotion {
 impl TypePromotion for Dtype {
     #[allow(
         clippy::match_same_arms,
-        reason = "explicit pairwise promotion table mirroring Python; merging arms would obscure the lookup semantics"
+        reason = "explicit pairwise promotion table; merging arms would obscure the lookup semantics"
     )]
     fn promote_with(self, other: Self) -> Self {
         use crate::dtype::Dtype::{

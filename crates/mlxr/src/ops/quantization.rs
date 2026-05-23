@@ -36,9 +36,6 @@ fn optional_dtype_none() -> mlxr_sys::mlx_optional_dtype {
 ///
 /// > `quantized` currently only supports 2D inputs with dimensions which are multiples of 32
 ///
-/// For details, please see [this
-/// documentation](https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.quantize.html)
-///
 /// # Params
 ///
 /// - `w`: The input matrix
@@ -77,7 +74,7 @@ pub fn quantize_device(
 /// bits and is packed in an unsigned 32 bit integer.
 #[allow(
     clippy::too_many_arguments,
-    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+    reason = "mlx op signature: shape/dtype/stream params"
 )]
 #[generate_macro]
 #[default_device]
@@ -116,9 +113,6 @@ pub fn quantized_matmul_device<'a>(
 
 /// Dequantize the matrix `w` using the provided `scales` and `biases` and the `group_size` and
 /// `bits` configuration.
-///
-/// For details, please see [this
-/// documentation](https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.dequantize.html)
 #[generate_macro]
 #[default_device]
 pub fn dequantize_device<'a>(
@@ -170,7 +164,7 @@ pub fn dequantize_device<'a>(
 /// - `sorted_indices`: If true, indicates the indices are sorted (default: false)
 #[allow(
     clippy::too_many_arguments,
-    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+    reason = "mlx op signature: shape/dtype/stream params"
 )]
 #[generate_macro]
 #[default_device]
@@ -245,7 +239,7 @@ pub fn gather_qmm_device<'b, 'lhs, 'rhs>(
 #[cfg(not(target_os = "macos"))]
 #[allow(
     clippy::too_many_arguments,
-    reason = "mlx op mirrors Python signature: shape/dtype/stream params"
+    reason = "mlx op signature: shape/dtype/stream params"
 )]
 #[generate_macro]
 #[default_device]
@@ -320,7 +314,6 @@ mod tests {
         }
     }
 
-    // Test adapted from Python test `test_quantized.py/test_qmm`
     #[test]
     fn test_quantized_matmul() {
         random::seed(0).unwrap();
@@ -347,7 +340,6 @@ mod tests {
         assert!(max_diff < 1e-3, "max_diff: {max_diff}");
     }
 
-    // Test adapted from Python test `test_quantized.py/test_gather_qmm`
     #[test]
     fn test_gather_qmm() {
         use crate::ops::{gather_mm, gather_qmm, swap_axes};

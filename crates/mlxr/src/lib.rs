@@ -11,9 +11,6 @@
 //!
 //! # Quick Start
 //!
-//! See also [MLX python
-//! documentation](https://ml-explore.github.io/mlx/build/html/usage/quick_start.html)
-//!
 //! ## Basics
 //!
 //! ```rust
@@ -56,9 +53,6 @@
 //! `jvp`, and friends.
 //!
 //! # Lazy Evaluation
-//!
-//! See also [MLX python
-//! documentation](https://ml-explore.github.io/mlx/build/html/usage/lazy_evaluation.html)
 //!
 //! ## Why Lazy Evaluation
 //!
@@ -198,9 +192,6 @@
 //!
 //! # Unified Memory
 //!
-//! See also [MLX python
-//! documentation](https://ml-explore.github.io/mlx/build/html/usage/unified_memory.html)
-//!
 //! Apple silicon has a unified memory architecture. The CPU and GPU have direct
 //! access to the same memory pool. MLX is designed to take advantage of that.
 //!
@@ -232,24 +223,13 @@
 //!
 //! In the above, both the CPU and the GPU will perform the same add operation.
 //!
-//! TODO: The remaining python documentations states that the stream can be used
-//! to parallelize operations without worrying about racing conditions. We
-//! should check if this is true given that we've already observed data racing
-//! when executing unit tests in parallel.
-//!
 //! # Indexing Arrays
-//!
-//! See also [MLX python
-//! documentation](https://ml-explore.github.io/mlx/build/html/usage/indexing.html)
 //!
 //! Please refer to the indexing modules ([`ops::indexing`]) for more details.
 //!
 //! # Saving and Loading
 //!
-//! See also [MLX python
-//! documentation](https://ml-explore.github.io/mlx/build/html/usage/saving_and_loading.html)
-//!
-//! `mlx-rs` supports loading from `.npy` and `.safetensors` files and saving to
+//! `mlxr` supports loading from `.npy` and `.safetensors` files and saving to
 //! `.safetensors` files. Module parameters and optimizer states can also be saved
 //! and loaded from `.safetensors` files.
 //!
@@ -262,15 +242,9 @@
 //!
 //! # Function Transforms
 //!
-//! See also [MLX python
-//! documentation](https://ml-explore.github.io/mlx/build/html/usage/function_transforms.html)
-//!
 //! Please refer to the transforms module ([`transforms`]) for more details.
 //!
 //! # Compilation
-//!
-//! See also [MLX python
-//! documentation](https://ml-explore.github.io/mlx/build/html/usage/compile.html)
 //!
 //! Please refer to the compilation module ([`transforms::compile`]) for more
 //! details.

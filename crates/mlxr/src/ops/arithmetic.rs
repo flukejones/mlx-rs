@@ -1232,10 +1232,6 @@ pub fn rsqrt_device(a: impl AsRef<Array>, #[optional] stream: impl AsRef<Stream>
 }
 
 /// Element-wise logistic sigmoid.
-///
-/// See the [python API
-/// docs](https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.sigmoid.html#mlx.core.sigmoid)
-/// for more information
 #[generate_macro]
 #[default_device]
 pub fn sigmoid_device(
@@ -1273,10 +1269,6 @@ pub fn sinh_device(a: impl AsRef<Array>, #[optional] stream: impl AsRef<Stream>)
 }
 
 /// Perform the softmax along the given axis.
-///
-/// See the [python API
-/// docs](https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.softmax.html#mlx.core.softmax)
-/// for more information.
 #[generate_macro]
 #[default_device]
 pub fn softmax_axes_device(
@@ -1396,10 +1388,6 @@ pub fn imag_device(a: impl AsRef<Array>, #[optional] stream: impl AsRef<Stream>)
 }
 
 /// Matrix multiplication with block masking.
-///
-/// See the [python API docs](
-/// https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.block_masked_mm.html#mlx.core.block_masked_mm
-/// ) for more information.
 #[generate_macro]
 #[default_device]
 pub fn block_masked_mm_device<'mo, 'lhs, 'rhs>(
@@ -2999,7 +2987,6 @@ mod tests {
         assert_eq!(out_holder[0].item::<f32>(), 1.0);
     }
 
-    // The tests below are adapted from the python unit test `test_blas.py/test_segmented_mm`
     #[test]
     fn test_segmented_mm() {
         use crate::ops::{indexing::*, stack_axis};
@@ -3028,10 +3015,8 @@ mod tests {
             stack_axis(&results, 0).unwrap()
         }
 
-        // Test shapes from Python test
         let shapes = [(10, 10, 10), (10, 10, 100), (100, 100, 100)];
 
-        // Segment patterns from Python test
         let all_segments: Vec<Vec<f32>> = vec![
             vec![0.0, 0.0, 1.0],
             vec![0.0, 0.5, 1.0],
@@ -3101,7 +3086,6 @@ mod tests {
 
     #[test]
     fn test_segmented_mm_batched_error() {
-        // Batched input should fail (matches Python test)
         let a = ones::<f32>(&[2, 10, 10]).unwrap();
         let segments = Array::from_slice(&[0u32, 5, 5, 10], &[2, 2]);
         let result = segmented_mm(&a, &a, &segments);
@@ -3111,7 +3095,6 @@ mod tests {
         );
     }
 
-    // Tests adapted from Python test `test_blas.py/test_gather_matmul`
     #[test]
     fn test_gather_mm() {
         use crate::ops::indexing::take_axis;
@@ -3186,7 +3169,6 @@ mod tests {
         );
     }
 
-    // Test adapted from Python test `test_blas.py/test_gather_mm_sorted`
     #[test]
     fn test_gather_mm_sorted() {
         use crate::ops::indexing::take_axis;

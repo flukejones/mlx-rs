@@ -577,7 +577,6 @@ where
     fn training_mode(&mut self, _mode: bool) {}
 }
 
-// The uint tests below are ported from the python codebase
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test code")]

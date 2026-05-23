@@ -397,8 +397,6 @@ fn test_adamw() {
     assert_save_and_load(optimizer, AdamW::new(0.1)).unwrap();
 }
 
-// This unit test is adapted from the python unit test `test_adamax` in
-// `mlx/python/tests/test_optimizers.py`.
 #[test]
 fn test_adamax() {
     mlxr::random::seed(75).unwrap();
@@ -455,8 +453,6 @@ fn test_adamax() {
     assert_save_and_load(optimizer, Adamax::new(0.1)).unwrap();
 }
 
-// This unit test is adapted from the python unit test `test_rmsprop` in
-// `tests/test_optimizer.py`.
 #[test]
 fn test_rmsprop() {
     const LR: f32 = 1e-2;
@@ -486,8 +482,6 @@ fn test_rmsprop() {
     assert_save_and_load(optim, RmsPropBuilder::new(LR).alpha(ALPHA).build().unwrap()).unwrap();
 }
 
-// This unit test is adapted from the python unit test `test_sgd` in
-// `mlx/python/tests/test_optimizers.py`
 #[test]
 fn test_sgd() {
     let (mut model, gradients) = create_default_test_model_and_grads();

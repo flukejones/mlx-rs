@@ -169,7 +169,7 @@ fn test_random_normal() {
 #[allow(non_snake_case, reason = "test mirrors ML tensor names (Q, K, V)")]
 fn test_fast_sdpa_using_macros() -> Result<(), Exception> {
     // This test just makes sure that `scaled_dot_product_attention` is callable
-    // in the various cases, based on the Python test `test_fast_sdpa`.
+    // in the various cases.
 
     let Dk = 64;
     let scale = 1.0 / (Dk as f32).sqrt();

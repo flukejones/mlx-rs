@@ -132,8 +132,7 @@ impl LayerRope {
     /// Same as [`forward`] but takes a 0-D `Array` offset, routing
     /// through `mlx::fast::rope_dynamic` instead of `rope`. Lets the
     /// per-step decode offset stay on-device so MLX's compile cache
-    /// reuses the same kernel across decode steps (Python parity:
-    /// `mx.fast.rope(x, offset=mx.array(cache.offset))`).
+    /// reuses the same kernel across decode steps.
     pub fn forward_dynamic(&self, x: &Array, offset: &Array) -> Result<Array, Exception> {
         match self {
             Self::Plain(r) => fast::rope_dynamic(
@@ -381,17 +380,15 @@ impl Attention {
         let L = shape[1];
 
         // Pre-update cache offset is what the RoPE applied to fresh
-        // queries needs (mirrors mlxr_lm Python: `offset = cache.offset`).
+        // queries needs.
         let pre_offset = match (offset, cache.as_ref()) {
             (Some(o), _) => o,
             (None, Some(c)) => c.offset(),
             (None, None) => 0,
         };
-        // Python passes `mx.array(cache.offset)` to `mx.fast.rope` so
-        // the offset stays on-device; that triggers the dynamic-RoPE
-        // kernel which lets MLX reuse the compiled rope graph across
-        // decode steps regardless of offset value. Wrapping the i32
-        // in a 0-D Array here matches that.
+        // Keep the offset on-device (0-D Array) so MLX dispatches the
+        // dynamic-RoPE kernel and reuses one compiled rope graph across
+        // decode steps regardless of offset value.
         let pre_offset_arr = Array::from_int(pre_offset);
 
         let queries = self
@@ -556,7 +553,8 @@ impl Module<&Array> for Mlp {
     }
 }
 
-/// fp16-safe additive residual (Python `clip_residual`).
+/// fp16-safe additive residual: promotes to f32, clips to fp16 range,
+/// casts back. No-op for non-fp16 inputs.
 fn clip_residual(x: &Array, y: &Array) -> Result<Array, Exception> {
     if x.dtype() != Dtype::Float16 {
         return x.add(y);
@@ -571,7 +569,7 @@ fn clip_residual(x: &Array, y: &Array) -> Result<Array, Exception> {
 /// per-expert scores, picks top-`k` via `argpartition`, softmaxes the
 /// top-k, and scales by per-expert biases.
 #[derive(Debug, ModuleParameters, Quantizable)]
-pub struct Router {
+pub(crate) struct Router {
     pub eps: f32,
     pub top_k: i32,
     pub root_size: f32,
@@ -675,7 +673,7 @@ impl Router {
 /// Sparse MoE wrapping `GemmaSwitchGlu`. Each token's top-k expert outputs
 /// are weighted by the router's softmaxed scores and summed.
 #[derive(Debug, ModuleParameters)]
-pub struct Experts {
+pub(crate) struct Experts {
     #[param]
     pub switch_glu: GemmaSwitchGlu,
 }
@@ -742,7 +740,7 @@ pub struct DecoderLayer {
     #[param]
     pub post_feedforward_layernorm: layers::RmsNorm,
 
-    /// Multiplicative per-layer scalar (`layer_scalar` in Python).
+    /// Multiplicative per-layer scalar applied to the residual stream.
     #[param]
     pub layer_scalar: Param<Array>,
 
@@ -750,10 +748,10 @@ pub struct DecoderLayer {
     // `enable_moe_block=false`.
     #[quantizable]
     #[param]
-    pub router: Option<Router>,
+    pub(crate) router: Option<Router>,
     #[quantizable]
     #[param]
-    pub experts: Option<Experts>,
+    pub(crate) experts: Option<Experts>,
     #[param]
     pub post_feedforward_layernorm_1: Option<layers::RmsNorm>,
     #[param]
@@ -936,8 +934,8 @@ impl DecoderLayer {
             let mid = self.pre_feedforward_layernorm.forward(&h)?;
             self.mlp.forward(&mid)?
         };
-        // Both branches share the final post_feedforward_layernorm before
-        // the residual add — matches Python `gemma4_text.DecoderLayer`.
+        // Both branches share the final post_feedforward_layernorm
+        // before the residual add.
         let ff_out = self.post_feedforward_layernorm.forward(&ff_mid)?;
 
         // Fast path: non-fp16 dtype + no per-layer input gating (i.e.

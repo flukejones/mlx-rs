@@ -98,11 +98,11 @@ pub struct TextConfig {
     /// output (`output = o_proj(attn_out * sigmoid(gate))`). Always true for
     /// Qwen3.5.
     ///
-    /// Qwen 3.6 configs also carry `output_gate_type: "swish"` — vestigial,
-    /// HF transformers and Python mlxr_lm both unconditionally compute
-    /// `output * sigmoid(gate)` regardless of that string. Field is silently
-    /// dropped by serde here; do not re-parse without confirming the
-    /// reference path actually branches on it.
+    /// Qwen 3.6 configs also carry `output_gate_type: "swish"` — vestigial;
+    /// upstream implementations unconditionally compute
+    /// `output * sigmoid(gate)` regardless. Field is silently dropped by
+    /// serde here; do not re-parse without confirming the reference path
+    /// actually branches on it.
     #[serde(default = "default_attn_output_gate")]
     pub attn_output_gate: bool,
 
@@ -164,8 +164,7 @@ pub enum EosTokenId {
 
 impl EosTokenId {
     /// Returns every EOS id as a flat list, appending [`QWEN_CHAT_EOS_TOKEN_ID`]
-    /// if not already present — mirrors `resolve_qwen_eos_token_id` from the
-    /// Python implementation.
+    /// if not already present.
     pub fn into_vec_with_chat_eos(self) -> Vec<u32> {
         let mut v = match self {
             Self::Single(x) => vec![x],

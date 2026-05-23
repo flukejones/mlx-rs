@@ -139,10 +139,10 @@ const fn default_vocab_size_per_layer_input() -> i32 {
     262144
 }
 
-/// Outer multimodal-wrapper config schema (`gemma4.ModelArgs` in
-/// Python). HF Gemma 4 checkpoints store all text-model architecture
-/// fields under `text_config`; the wrapper carries the `quantization`
-/// block, and audio/vision configs we don't load.
+/// Outer multimodal-wrapper config schema. HF Gemma 4 checkpoints
+/// store all text-model architecture fields under `text_config`; the
+/// wrapper carries the `quantization` block, and audio/vision configs
+/// we don't load.
 #[derive(Debug, Clone, Deserialize)]
 struct OuterConfig {
     pub text_config: Option<Gemma4Config>,
@@ -176,8 +176,7 @@ impl Gemma4Config {
         Ok(cfg)
     }
 
-    /// Pattern-derived layer-type table when `layer_types` is absent.
-    /// Mirrors mlxr_lm Python:
+    /// Pattern-derived layer-type table when `layer_types` is absent:
     /// `pattern = ["sliding"]*(P-1) + ["full"]`, tiled to N layers.
     pub fn layer_types_resolved(&self) -> Vec<LayerKind> {
         if let Some(explicit) = &self.layer_types {

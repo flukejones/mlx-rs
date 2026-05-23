@@ -146,10 +146,6 @@ macro_rules! impl_module {
 ///
 /// The input is expected to be `NLC`. The output will have the same N/C dimensions with the new `L
 /// = floor((L - kernel)/stride) + 1`
-///
-/// See [MaxPool1d python
-/// docs](https://ml-explore.github.io/mlx/build/html/python/nn/_autosummary/mlx.nn.MaxPool1d.html)
-/// for more information.
 #[derive(Debug, Clone, ModuleParameters)]
 #[module(root = crate)]
 pub struct MaxPool1d {
@@ -177,10 +173,6 @@ impl_module!(MaxPool1d);
 ///
 /// The input is expected to be `NHWC`. The output will have the same N/C dimensions with the new
 /// `H/W = floor((H/W - kernel)/stride) + 1`
-///
-/// See [MaxPool2d python
-/// docs](https://ml-explore.github.io/mlx/build/html/python/nn/_autosummary/mlx.nn.MaxPool2d.html)
-/// for more information.
 #[derive(Debug, Clone, ModuleParameters)]
 #[module(root = crate)]
 pub struct MaxPool2d {
@@ -216,10 +208,6 @@ impl_module!(MaxPool2d);
 ///
 /// The input is expected to be `NLC`. The output will have the same N/C dimensions with the new `L =
 /// floor((L - kernel)/stride) + 1`
-///
-/// See [AvgPool2d python
-/// docs](https://ml-explore.github.io/mlx/build/html/python/nn/_autosummary/mlx.nn.AvgPool2d.html)
-/// for more information.
 #[derive(Debug, Clone, ModuleParameters)]
 #[module(root = crate)]
 pub struct AvgPool1d {
@@ -247,10 +235,6 @@ impl_module!(AvgPool1d);
 ///
 /// The input is expected to be `NHWC`. The output will have the same N/C dimensions with the new
 /// `H/W = floor((H/W - kernel)/stride) + 1`
-///
-/// See [AvgPool2d python
-/// docs](https://ml-explore.github.io/mlx/build/html/python/nn/_autosummary/mlx.nn.AvgPool2d.html)
-/// for more information.
 #[derive(Debug, Clone, ModuleParameters)]
 #[module(root = crate)]
 pub struct AvgPool2d {

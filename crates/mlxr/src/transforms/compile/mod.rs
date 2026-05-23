@@ -1,8 +1,5 @@
 //! Compilation of functions.
 //!
-//! See also [MLX python
-//! documentation](https://ml-explore.github.io/mlx/build/html/usage/compile.html).
-//!
 //! MLX has a [`compile()`] function transformation which compiles computation
 //! graphs. Function compilation results in smaller graphs by merging common
 //! work and fusing certain operations. In many cases this can lead to big
@@ -139,7 +136,7 @@
 //! update to a container of arrays, as is commonly done when training the
 //! parameters of a [`crate::module::Module`].
 //!
-//! See mlx-rs/mlx-tests/tests/test_compile_with_state.rs for more examples.
+//! See `crates/mlxr-tests/tests/test_compile_with_state.rs` for more examples.
 //!
 
 use super::{Closure, Guarded, VectorArray};
@@ -250,9 +247,8 @@ fn next_compile_id() -> usize {
 
 /// Public hook to bump the global counter once and reuse the id, so
 /// many callers of the same logical operation share one compiled-graph
-/// slot in MLX's `compiler_cache`. Mirrors Python's `@mx.compile`
-/// decorator semantics — without this, every per-layer cache instance
-/// burns a fresh JIT compile.
+/// slot in MLX's `compiler_cache`. Without this every per-layer cache
+/// instance burns a fresh JIT compile.
 ///
 /// Stash the returned id in a `OnceLock<usize>` keyed to the logical
 /// operation (e.g. `static SWIGLU_ID: OnceLock<usize>`); pass the same

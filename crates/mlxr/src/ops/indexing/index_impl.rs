@@ -700,9 +700,8 @@ where
 
 // Implement private bindings
 impl Array {
-    // This is exposed in the c api but not found in the swift or python api
-    //
-    // Thie is not the same as rust slice. Slice in python is more like `StepBy` iterator in rust
+    // C-API only; not the same as Rust `slice` — closer to a strided
+    // `StepBy` iterator.
     pub(crate) fn slice_device(
         &self,
         start: &[i32],
@@ -924,8 +923,6 @@ fn get_item_slice(src: &Array, range: RangeIndex, stream: impl AsRef<Stream>) ->
     src.slice_device(&starts, &ends, &strides, stream)
 }
 
-// See `mlx_get_item` in python/src/indexing.cpp and `getItem` in
-// mlx-swift/Sources/MLX/MLXArray+Indexing.swift
 fn get_item<'a>(
     src: &Array,
     index: impl ArrayIndex<'a>,
@@ -943,8 +940,6 @@ fn get_item<'a>(
     }
 }
 
-// See `mlx_get_item_nd` in python/src/indexing.cpp and `getItemNd` in
-// mlx-swift/Sources/MLX/MLXArray+Indexing.swift
 fn get_item_nd(
     src: &Array,
     operations: &[ArrayIndexOp<'_>],

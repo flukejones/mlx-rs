@@ -353,7 +353,6 @@ fn render_svg(
     root.fill(&WHITE)?;
     let panes = root.split_evenly((3, 1));
 
-    // ---- Pane 0: temperature vs time ----
     let mut chart = ChartBuilder::on(&panes[0])
         .caption("Temp (°C) — GPU red, CPU blue", ("sans-serif", 18))
         .margin(10)
@@ -376,7 +375,6 @@ fn render_svg(
         )))?;
     }
 
-    // ---- Pane 1: power vs time ----
     let mut chart2 = ChartBuilder::on(&panes[1])
         .caption("Power (W) — GPU magenta, sys green", ("sans-serif", 18))
         .margin(10)
@@ -399,7 +397,6 @@ fn render_svg(
         )))?;
     }
 
-    // ---- Pane 2: memory vs time ----
     let mut chart3 = ChartBuilder::on(&panes[2])
         .caption(
             "Memory (GB) — sys-RAM cyan, swap orange, MLX-active purple, MLX-cache grey",

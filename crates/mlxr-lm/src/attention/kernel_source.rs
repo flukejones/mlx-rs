@@ -23,9 +23,9 @@ pub const KERNEL_HEADER: &str = concat!(
 // kernel body can use unqualified names.
 using namespace mlx::steel;
 
-// QuantBlockLoaderT — mlx-lm extension. Mirrors upstream BlockLoaderT
-// (loader.h:142-261) but reads packed `(wq, scales, biases)` triples
-// and dequantises into threadgroup `T` memory.
+// QuantBlockLoaderT — extends upstream BlockLoaderT (loader.h:142-261)
+// to read packed `(wq, scales, biases)` triples and dequantise into
+// threadgroup `T` memory.
 //
 // Source layout (matches mlx::quantize affine output):
 //  - wq      : uint32_t [B, H, L, BD/PACK]   PACK = 32/BITS

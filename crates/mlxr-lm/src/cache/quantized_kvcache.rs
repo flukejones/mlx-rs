@@ -84,8 +84,8 @@ pub struct QuantizedKVCache {
 
 impl QuantizedKVCache {
     /// New empty cache with the default step (256), default
-    /// `group_size = 64`, default `bits = 8` (Python's default; ~2× memory
-    /// reduction, drop-in lossless).
+    /// `group_size = 64`, default `bits = 8` (~2× memory reduction,
+    /// drop-in lossless).
     pub fn new() -> Self {
         Self::with_config(DEFAULT_KV_CACHE_STEP, 64, 8)
     }

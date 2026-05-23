@@ -12,10 +12,7 @@ use crate::{
 use mlxr_codegen::{generate_builder, Buildable, Builder};
 use mlxr_macros::ModuleParameters;
 
-/// Applies the element-wise sigmoid logistic sigmoid.
-///
-/// For details, please see
-/// [this documentation](https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.sigmoid.html)
+/// Applies the element-wise logistic sigmoid.
 ///
 /// This is:
 ///
@@ -293,9 +290,6 @@ impl Module<&Array> for Glu {
 }
 
 /// Applies the element-wise logistic sigmoid.
-///
-/// For details, please see
-/// [this documentation](https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.sigmoid.html)
 ///
 /// This is:
 ///
@@ -1249,8 +1243,6 @@ mod tests {
         );
     }
 
-    // The unit test below is adapted from the python binding:
-    // mlx/python/tests/test_nn.py
     #[test]
     fn test_celu() {
         let x = array!([1.0, -1.0, 0.0]);

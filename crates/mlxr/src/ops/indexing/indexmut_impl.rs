@@ -42,7 +42,6 @@ impl Array {
     }
 }
 
-// See `updateSlice` in the swift binding or `mlx_slice_update` in the python binding
 fn update_slice(
     src: &Array,
     operations: &[ArrayIndexOp<'_>],

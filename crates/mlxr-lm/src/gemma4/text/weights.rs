@@ -245,7 +245,8 @@ pub(crate) fn load_gemma4_model_sanitized(model_dir: impl AsRef<Path>) -> Result
         for (k, v) in weights {
             if is_shared_kv_layer_key(&k, num_layers, num_shared) {
                 // KV-shared layers reuse an earlier layer's K/V; the
-                // checkpoint keeps the unused weights to mirror Python.
+                // checkpoint still carries the duplicate weights, drop
+                // them silently so loader stays clean.
                 continue;
             }
             if let Some(slot) = params.get_mut(&*k) {

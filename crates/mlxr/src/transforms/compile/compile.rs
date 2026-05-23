@@ -28,7 +28,7 @@ pub type BoxedSliceTryFn =
 ///
 /// The returned closure holds the [`Compiled`] state for its lifetime so
 /// the underlying `mlx_closure` from `mlx_detail_compile` is reused
-/// across invocations — Python's `mx.compile` decorator semantics.
+/// across invocations.
 pub fn compile<F, A, O, E>(
     f: F,
     shapeless: impl Into<Option<bool>>,
@@ -59,11 +59,10 @@ pub trait Compile<A, O, E>: Sized {
     fn compile(self, shapeless: bool) -> Self::Output;
 
     /// Like [`Self::compile`] but pins the compile-cache id to `id`
-    /// instead of allocating a fresh one. Mirrors Python's
-    /// `@mx.compile` decorator: one cache entry per logical function
-    /// shared across every caller. Use this when the same activation
-    /// runs from many module instances and you want MLX's compiler
-    /// cache to reuse one compiled metal kernel.
+    /// instead of allocating a fresh one. Use this when the same
+    /// activation runs from many module instances and you want MLX's
+    /// compiler cache to reuse one compiled Metal kernel: pass a
+    /// stable per-activation id so every instance hits the same slot.
     fn compile_with_id(self, id: usize, shapeless: bool) -> Self::Output;
 }
 
