@@ -84,7 +84,7 @@ Closed-form value sets should be enums; unknown inputs should fail at the type-s
 ## FFI and bindgen
 
 - **`mlxr-sys` is the only crate that talks to mlx-c directly.** Anything else importing `mlx_sys::*` types is a layering violation; wrap in `mlxr` first.
-- **Verify new bindings come from the bindgen step** (`cargo xtask`), not hand-written `extern "C"` blocks.
+- **Verify new bindings come from the bindgen step** (`cargo xtask mlx-c-diff`), not hand-written `extern "C"` blocks.
 - **Flag FFI calls outside `unsafe` blocks.** Even when bindgen wraps them, raw mlx-c calls returning status codes must check the result before treating output pointers as valid.
 - **Check `Drop` impls on FFI-owned handles.** `mlx_*_free` must be called exactly once. Double-free crashes are silent until tests run under address sanitizer.
 - **Verify mlx-c version bump touches `[workspace.metadata.mlx]` + the submodule SHA + README claim simultaneously.** Drift between them is a recurring bug.
@@ -170,7 +170,7 @@ When N is known at compile time, draining FFI vectors or iterators through a `Ve
 
 ## Imports and paths
 
-- **Flag inline multi-segment path qualifiers** in fn signatures, type annotations, struct fields, generic args, callsites. `fn foo(b: std::collections::HashMap<K, V>)` should be `use std::collections::HashMap;` at the top + `fn foo(b: HashMap<K, V>)`. Single-segment `crate::Foo` / `super::Foo` is fine.
+- **Flag inline multi-segment path qualifiers** in fn signatures, type annotations, struct fields, generic args, callsites. `fn foo(b: std::collections::HashMap<K, V>)` should be `use std::collections::HashMap;` at the top + `fn foo(b: HashMap<K, V>)`. Single-segment `crate::Foo` / `super::Foo` is fine. **Enforced by `cargo run -q -p xtask -- check-paths`**; the pre-commit hook (install once via `cargo run -q -p xtask -- install-hooks`) blocks any new violations in the staged file set. Bypass for a single commit with `git commit --no-verify` only after deliberate discussion. The check skips `use` statements, doc/line/block comments, attributes, and vendored `mlx-c/`.
 - **Flag `use` statements inside fn bodies.** Imports belong at the file top. Exceptions: `#[cfg(test)] mod tests { use super::*; … }` and `#[cfg(...)]`-gated fns whose imports are also `#[cfg(...)]`-only.
 - **Check for `use std::fmt::Result`** — shadows the prelude `Result`. Should be `use std::fmt;` then `fmt::Result`.
 - **Verify aliased `Result` keeps `std::result::Result` qualified** — `pub type Result<T> = std::result::Result<T, MyError>;` is correct.

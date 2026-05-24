@@ -2,10 +2,14 @@
 #![allow(clippy::print_stderr, reason = "xtask: CLI tool, stderr is the output")]
 #![allow(clippy::unwrap_used, reason = "xtask: panic-on-error is idiomatic")]
 
+mod check_paths;
+mod install_hooks;
+
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::process::ExitCode;
 
 fn get_repo_root() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -450,11 +454,78 @@ fn print_diff(old: &str, new: &str, current_tag: &str, target_tag: &str, root_di
     }
 }
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    let target_tag = args.get(1).cloned();
+fn print_help() {
+    eprintln!("usage: cargo xtask <subcommand> [args...]");
+    eprintln!();
+    eprintln!("subcommands:");
+    eprintln!("  mlx-c-diff [tag]        Diff current vs upstream mlx-c bindings.");
+    eprintln!("                          Tag defaults to upstream's latest.");
+    eprintln!("  check-paths             Scan crates/ + examples/ for inline");
+    eprintln!("                          multi-segment path qualifiers");
+    eprintln!("                          (see CODE_REVIEW.md \"Imports and paths\").");
+    eprintln!("  check-paths --staged <files...>");
+    eprintln!("                          Same, but only lint the given file list");
+    eprintln!("                          (pre-commit hook entry point).");
+    eprintln!("  install-hooks           Write .git/hooks/pre-commit invoking");
+    eprintln!("                          `cargo xtask check-paths --staged`.");
+}
+
+fn main() -> ExitCode {
+    let mut args = env::args().skip(1);
+    let Some(subcommand) = args.next() else {
+        print_help();
+        return ExitCode::from(2);
+    };
 
     let root_dir = get_repo_root();
+    match subcommand.as_str() {
+        "check-paths" => {
+            let rest: Vec<String> = args.collect();
+            let restrict = if rest.first().map(String::as_str) == Some("--staged") {
+                let paths: Vec<PathBuf> = rest[1..]
+                    .iter()
+                    .map(|p| {
+                        if Path::new(p).is_absolute() {
+                            PathBuf::from(p)
+                        } else {
+                            root_dir.join(p)
+                        }
+                    })
+                    .collect();
+                Some(paths)
+            } else {
+                None
+            };
+            match check_paths::run(&root_dir, restrict.as_deref()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(_) => ExitCode::from(1),
+            }
+        }
+        "install-hooks" => match install_hooks::run(&root_dir) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("install-hooks: {e}");
+                ExitCode::from(1)
+            }
+        },
+        "mlx-c-diff" => {
+            let target_tag = args.next();
+            mlx_c_diff(&root_dir, target_tag);
+            ExitCode::SUCCESS
+        }
+        "-h" | "--help" | "help" => {
+            print_help();
+            ExitCode::SUCCESS
+        }
+        other => {
+            eprintln!("xtask: unknown subcommand `{other}`");
+            print_help();
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn mlx_c_diff(root_dir: &Path, target_tag: Option<String>) {
     let mlx_c_dir = root_dir.join("crates/mlxr-sys/src/mlx-c");
 
     println!("\x1b[33mChecking for mlx-c updates...\x1b[0m\n");
@@ -476,13 +547,13 @@ fn main() {
     }
 
     println!("\x1b[33mGenerating bindings for {current_tag}...\x1b[0m");
-    let current_bindings = generate_bindings(&root_dir);
+    let current_bindings = generate_bindings(root_dir);
 
     println!("\x1b[33mChecking out {target_tag}...\x1b[0m");
     checkout_tag(&mlx_c_dir, &target_tag);
 
     println!("\x1b[33mGenerating bindings for {target_tag}...\x1b[0m");
-    let target_bindings = generate_bindings(&root_dir);
+    let target_bindings = generate_bindings(root_dir);
 
     // Restore original
     println!("\x1b[33mRestoring {current_tag}...\x1b[0m");
@@ -498,7 +569,7 @@ fn main() {
             &target_bindings,
             &current_tag,
             &target_tag,
-            &root_dir,
+            root_dir,
         );
     }
 

@@ -19,7 +19,7 @@ sha = "68cf2fddd8de5edd8ab3d926391772b2e2cedad8"
 ```
 
 Bumping mlx-c → bump that single source of truth and run
-`cargo xtask [<tag>]` to advance the git submodule to the matching
+`cargo xtask mlx-c-diff [<tag>]` to advance the git submodule to the matching
 tag (defaults to the latest upstream tag) and regenerate the bindings.
 
 ## Features
