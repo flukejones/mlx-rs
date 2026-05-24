@@ -16,13 +16,14 @@
 //! [`apply_multimodal_rotary_pos_emb`].
 
 use mlxr::{
-    error::Exception,
     ops::{
         arange, broadcast_to, concatenate_axis, cos as cos_op, expand_dims, matmul, r#where,
         reshape, sin as sin_op, split, split_sections, swap_axes,
     },
     Array, Dtype,
 };
+
+use crate::error::Error;
 
 /// Stateless multimodal RoPE generator.
 ///
@@ -48,21 +49,21 @@ impl MultimodalRope {
     /// - `base`: rotary base (`rope_theta`).
     /// - `mrope_section`: the three axis lengths from `config.json`. Their sum
     ///   must equal `rotary_dim / 2`.
-    pub fn new(rotary_dim: i32, base: f32, mrope_section: &[i32]) -> Result<Self, Exception> {
+    pub fn new(rotary_dim: i32, base: f32, mrope_section: &[i32]) -> Result<Self, Error> {
         if rotary_dim <= 0 || rotary_dim % 2 != 0 {
-            return Err(Exception::custom(
+            return Err(Error::config(
                 "MultimodalRope: rotary_dim must be positive and even",
             ));
         }
         if mrope_section.len() != 3 {
-            return Err(Exception::custom(
+            return Err(Error::config(
                 "MultimodalRope: mrope_section must have exactly 3 entries",
             ));
         }
         let half = rotary_dim / 2;
         let section_sum: i32 = mrope_section.iter().sum();
         if section_sum != half {
-            return Err(Exception::custom(format!(
+            return Err(Error::config(format!(
                 "MultimodalRope: mrope_section sums to {section_sum}, expected {half} (rotary_dim/2)"
             )));
         }
@@ -92,7 +93,7 @@ impl MultimodalRope {
     ///   text-only path) or 3-D `[3, B, S]` (the multimodal path).
     ///
     /// Both returned arrays have shape `[B, S, rotary_dim]` and dtype f32.
-    pub fn cos_sin(&self, position_ids: &Array) -> Result<(Array, Array), Exception> {
+    pub fn cos_sin(&self, position_ids: &Array) -> Result<(Array, Array), Error> {
         let pos = match position_ids.ndim() {
             2 => {
                 let expanded = expand_dims(position_ids, 0)?;
@@ -102,14 +103,14 @@ impl MultimodalRope {
             3 => {
                 let shape = position_ids.shape();
                 if shape[0] != 3 {
-                    return Err(Exception::custom(
+                    return Err(Error::shape(
                         "MultimodalRope: 3-D position_ids must have shape [3, B, S]",
                     ));
                 }
                 position_ids.clone()
             }
             n => {
-                return Err(Exception::custom(format!(
+                return Err(Error::shape(format!(
                     "MultimodalRope: position_ids ndim {n} not in {{2, 3}}",
                 )))
             }
@@ -142,7 +143,7 @@ impl MultimodalRope {
     }
 
     /// For each feature `i ∈ [0, half)`, pick `freqs[axis_index[i]]`.
-    fn select_per_axis(&self, freqs: &Array) -> Result<Array, Exception> {
+    fn select_per_axis(&self, freqs: &Array) -> Result<Array, Error> {
         // freqs: [3, B, S, half]
         let parts = split(freqs, 3, 0)?;
         let t = parts[0].squeeze_axes(&[0])?;
@@ -154,7 +155,7 @@ impl MultimodalRope {
         let mask_w = self.axis_index.eq(Array::from_int(2))?;
 
         let pick_w = r#where(&mask_w, &w, &t)?;
-        r#where(&mask_h, &h, &pick_w)
+        Ok(r#where(&mask_h, &h, &pick_w)?)
     }
 }
 
@@ -195,7 +196,7 @@ pub fn apply_multimodal_rotary_pos_emb(
     k: &Array,
     cos: &Array,
     sin: &Array,
-) -> Result<(Array, Array), Exception> {
+) -> Result<(Array, Array), Error> {
     let cos = expand_dims(cos, 1)?;
     let sin = expand_dims(sin, 1)?;
     let rotary_dim = cos.shape()[3];
@@ -205,11 +206,11 @@ pub fn apply_multimodal_rotary_pos_emb(
     Ok((q_embed, k_embed))
 }
 
-fn apply_one(x: &Array, cos: &Array, sin: &Array, rotary_dim: i32) -> Result<Array, Exception> {
+fn apply_one(x: &Array, cos: &Array, sin: &Array, rotary_dim: i32) -> Result<Array, Error> {
     let last = *x
         .shape()
         .last()
-        .ok_or_else(|| Exception::custom("apply_rope: x has no axes"))?;
+        .ok_or_else(|| Error::shape("apply_rope: x has no axes"))?;
     let dtype = x.dtype();
     if rotary_dim == last {
         let rotated = rotate(x, cos, sin, dtype)?;
@@ -219,21 +220,21 @@ fn apply_one(x: &Array, cos: &Array, sin: &Array, rotary_dim: i32) -> Result<Arr
     let x_rot = &parts[0];
     let x_pass = &parts[1];
     let rotated = rotate(x_rot, cos, sin, dtype)?;
-    concatenate_axis(&[&rotated, x_pass], -1)
+    Ok(concatenate_axis(&[&rotated, x_pass], -1)?)
 }
 
-fn rotate(x: &Array, cos: &Array, sin: &Array, dtype: Dtype) -> Result<Array, Exception> {
+fn rotate(x: &Array, cos: &Array, sin: &Array, dtype: Dtype) -> Result<Array, Error> {
     let x_f32 = x.as_dtype(Dtype::Float32)?;
     let lhs = x_f32.multiply(cos)?;
     let rh = rotate_half(&x_f32)?;
     let rhs = rh.multiply(sin)?;
-    lhs.add(&rhs)?.as_dtype(dtype)
+    Ok(lhs.add(&rhs)?.as_dtype(dtype)?)
 }
 
-fn rotate_half(x: &Array) -> Result<Array, Exception> {
+fn rotate_half(x: &Array) -> Result<Array, Error> {
     let halves = split(x, 2, -1)?;
     let neg_x2 = halves[1].negative()?;
-    concatenate_axis(&[&neg_x2, &halves[0]], -1)
+    Ok(concatenate_axis(&[&neg_x2, &halves[0]], -1)?)
 }
 
 #[cfg(test)]

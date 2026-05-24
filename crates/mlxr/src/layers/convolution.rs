@@ -1,7 +1,7 @@
 use crate::module::{Module, Param};
 use crate::{
-    error::Exception,
-    ops::{conv1d, conv2d, zeros},
+    error::{Exception, Result},
+    ops::{self, conv1d, conv2d, zeros},
     random::uniform,
     Array,
 };
@@ -49,7 +49,7 @@ pub struct Conv1dBuilder {
     pub groups: i32,
 }
 
-fn build_conv1d(builder: Conv1dBuilder) -> Result<Conv1d, Exception> {
+fn build_conv1d(builder: Conv1dBuilder) -> Result<Conv1d> {
     let input_channels = builder.input_channels;
     let output_channels = builder.output_channels;
     let kernel_size = builder.kernel_size;
@@ -131,7 +131,7 @@ impl Module<&Array> for Conv1d {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let mut y = conv1d(
             x,
             self.weight.as_ref(),
@@ -188,7 +188,7 @@ pub struct Conv2dBuilder {
     pub groups: i32,
 }
 
-fn build_conv2d(builder: Conv2dBuilder) -> Result<Conv2d, Exception> {
+fn build_conv2d(builder: Conv2dBuilder) -> Result<Conv2d> {
     let input_channels = builder.input_channels;
     let output_channels = builder.output_channels;
     let kernel_size: (i32, i32) = builder.kernel_size.into();
@@ -279,7 +279,7 @@ impl Module<&Array> for Conv2d {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let mut y = conv2d(
             x,
             self.weight.as_ref(),
@@ -336,7 +336,7 @@ pub struct Conv3dBuilder {
     pub groups: i32,
 }
 
-fn build_conv3d(builder: Conv3dBuilder) -> Result<Conv3d, Exception> {
+fn build_conv3d(builder: Conv3dBuilder) -> Result<Conv3d> {
     let input_channels = builder.input_channels;
     let output_channels = builder.output_channels;
     let kernel_size: (i32, i32, i32) = builder.kernel_size.into();
@@ -429,8 +429,8 @@ impl Module<&Array> for Conv3d {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
-        let mut y = crate::ops::conv3d(
+    fn forward(&mut self, x: &Array) -> Result<Array> {
+        let mut y = ops::conv3d(
             x,
             self.weight.as_ref(),
             self.stride,
@@ -456,14 +456,14 @@ mod tests {
     #![allow(clippy::print_stdout, reason = "test code")]
     #![allow(clippy::print_stderr, reason = "test code")]
     use crate::module::Module;
-    use crate::{random::uniform, Dtype};
+    use crate::{random, random::uniform, Dtype};
     use float_eq::assert_float_eq;
 
-    use crate::layers::Conv1d;
+    use crate::layers::{Conv1d, Conv2d};
 
     #[test]
     fn test_conv1d() {
-        crate::random::seed(819).unwrap();
+        random::seed(819).unwrap();
         let a = uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
         assert_eq!(a.shape(), &[2, 8, 16]);
         assert_eq!(a.dtype(), Dtype::Float32);
@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn test_conv2d() {
-        crate::random::seed(62).unwrap();
+        random::seed(62).unwrap();
         let a = uniform::<_, f32>(0.0, 1.0, &[2, 8, 8, 4], None).unwrap();
         assert_eq!(a.shape(), &[2, 8, 8, 4]);
         assert_eq!(a.dtype(), Dtype::Float32);
@@ -508,10 +508,7 @@ mod tests {
             267.522_2,
             abs <= 5.350_444
         );
-        let result = crate::layers::Conv2d::new(4, 2, (8, 8))
-            .unwrap()
-            .forward(&a)
-            .unwrap();
+        let result = Conv2d::new(4, 2, (8, 8)).unwrap().forward(&a).unwrap();
         assert_eq!(result.shape(), &[2, 1, 1, 2]);
         assert_eq!(result.dtype(), Dtype::Float32);
         assert_float_eq!(

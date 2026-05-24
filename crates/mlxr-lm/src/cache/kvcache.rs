@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 
 use mlxr::{
-    error::Exception,
     fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask},
     ops::{
         indexing::{Ellipsis, IndexOp, TryIndexMutOp},
@@ -18,7 +17,7 @@ use crate::error::Error;
 
 use super::io::parse_meta;
 use super::kernels::{cached_attention_kernel, SUPPORTED_HEAD_DIMS};
-use super::trait_def::KeyValueCache;
+use super::trait_def::{assert_mask_matches_keys, ceil_step, KeyValueCache};
 
 /// Default step in tokens for [`KVCache`]'s pre-allocated buffer growth.
 pub const DEFAULT_KV_CACHE_STEP: i32 = 256;
@@ -132,12 +131,12 @@ impl KVCache {
     }
 
     /// Allocate fresh `[B, H, capacity, D]` zero buffers matching `template`.
-    fn alloc_like(template: &Array, capacity: i32) -> Result<Array, Exception> {
+    fn alloc_like(template: &Array, capacity: i32) -> Result<Array, Error> {
         let shape = template.shape();
         let mut buf_shape = shape.to_vec();
         let t_axis = buf_shape.len() - 2;
         buf_shape[t_axis] = capacity;
-        zeros_dtype(&buf_shape, template.dtype())
+        Ok(zeros_dtype(&buf_shape, template.dtype())?)
     }
 
     /// Grow the pre-allocated buffers so they have room for `additional`
@@ -150,9 +149,9 @@ impl KVCache {
         new_tokens: &Array,
         new_values: &Array,
         step: i32,
-    ) -> Result<(), Exception> {
+    ) -> Result<(), Error> {
         let required = offset + new_tokens.shape()[new_tokens.shape().len() - 2];
-        let target_cap = super::trait_def::ceil_step(required, step);
+        let target_cap = ceil_step(required, step);
 
         let current_cap = keys
             .as_ref()
@@ -234,11 +233,7 @@ impl KeyValueCache for KVCache {
         m
     }
 
-    fn update_and_fetch(
-        &mut self,
-        keys: Array,
-        values: Array,
-    ) -> Result<(Array, Array), Exception> {
+    fn update_and_fetch(&mut self, keys: Array, values: Array) -> Result<(Array, Array), Error> {
         let key_shape = keys.shape();
         let t_axis = key_shape.len() - 2;
         let s = key_shape[t_axis];
@@ -279,7 +274,7 @@ impl KeyValueCache for KVCache {
         values: Array,
         scale: f32,
         mask: Option<&Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         // Pre-update offset → steel kernel `ql_off` (causal diagonal shift).
         let ql_off = self.offset;
         let (k_full, v_full) = self.update_and_fetch(keys, values)?;
@@ -314,14 +309,14 @@ impl KeyValueCache for KVCache {
             );
         }
 
-        super::trait_def::assert_mask_matches_keys(mask, &k_full);
-        scaled_dot_product_attention(
+        assert_mask_matches_keys(mask, &k_full);
+        Ok(scaled_dot_product_attention(
             queries,
             k_full,
             v_full,
             scale,
             mask.map(ScaledDotProductAttentionMask::Array),
             None,
-        )
+        )?)
     }
 }

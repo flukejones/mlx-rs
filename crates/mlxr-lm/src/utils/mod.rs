@@ -4,13 +4,13 @@ use mlxr::{
     ops::indexing::{IndexOp, NewAxis},
 };
 use mlxr::{
-    error::Exception,
     ops::{expand_dims, quantized_matmul, reshape, softmax_axis},
     Array, Dtype,
 };
 
 #[cfg(any(feature = "qwen3_5", feature = "gemma4"))]
 use crate::cache::KeyValueCache;
+use crate::error::Error;
 
 pub mod rope;
 pub mod tokenizer;
@@ -70,8 +70,8 @@ macro_rules! tri {
 
 //     return out
 
-fn index_out_of_bound_exception() -> Exception {
-    Exception::custom("index out of bound")
+fn index_out_of_bound_error() -> Error {
+    Error::out_of_bounds("index out of bound")
 }
 
 #[allow(
@@ -86,12 +86,12 @@ pub(crate) fn quantized_scaled_dot_product_attention(
     mask: Option<&Array>,
     group_size: i32,
     bits: i32,
-) -> Result<Array, Exception> {
+) -> Result<Array, Error> {
     let q_shape = queries.shape();
-    let B = *q_shape.first().ok_or_else(index_out_of_bound_exception)?;
-    let n_q_heads = *q_shape.get(1).ok_or_else(index_out_of_bound_exception)?;
-    let L = *q_shape.get(2).ok_or_else(index_out_of_bound_exception)?;
-    let D = *q_shape.get(3).ok_or_else(index_out_of_bound_exception)?;
+    let B = *q_shape.first().ok_or_else(index_out_of_bound_error)?;
+    let n_q_heads = *q_shape.get(1).ok_or_else(index_out_of_bound_error)?;
+    let L = *q_shape.get(2).ok_or_else(index_out_of_bound_error)?;
+    let D = *q_shape.get(3).ok_or_else(index_out_of_bound_error)?;
 
     let q_keys_shape = q_keys.keys.shape();
     let n_kv_heads = q_keys_shape[q_keys_shape.len() - 3];
@@ -134,7 +134,10 @@ pub(crate) fn quantized_scaled_dot_product_attention(
             // f64 array from `from_f64` lands on the Metal stream and is
             // rejected under mlx v0.31. Build as f32 then cast to scores'
             // dtype.
-            let finfo_min = scores.dtype().finfo_min()? as f32;
+            let finfo_min = scores
+                .dtype()
+                .finfo_min()
+                .map_err(|e| Error::Exception(e.into()))? as f32;
             let sentinel = Array::from_f32(finfo_min).as_dtype(scores.dtype())?;
             scores = mlxr::ops::r#where(mask, scores, sentinel)?;
         } else {
@@ -215,7 +218,7 @@ pub(crate) fn create_causal_mask(
     offset: Option<i32>,
     window_size: Option<i32>,
     lengths: Option<Array>,
-) -> Result<Array, Exception> {
+) -> Result<Array, Error> {
     let offset = offset.unwrap_or(0);
 
     let rinds = arange!(stop = offset + N)?;
@@ -244,7 +247,7 @@ pub(crate) fn create_causal_mask(
 pub(crate) fn create_attention_mask<C>(
     h: &Array,
     cache: &[Option<C>],
-) -> Result<Option<Array>, Exception>
+) -> Result<Option<Array>, Error>
 where
     C: KeyValueCache,
 {

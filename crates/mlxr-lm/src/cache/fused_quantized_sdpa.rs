@@ -2,11 +2,12 @@
 //! end-to-end with K/V held as packed `(wq, scales, biases)` triples.
 //! n_q=1 decode only; prefill falls back to ops-composed.
 
-use mlxr::error::Exception;
 use mlxr::fast::{metal_kernel, MetalKernel, MetalKernelConfig};
 use mlxr::{Array, Dtype, Stream};
 
-type Result<T> = std::result::Result<T, Exception>;
+use crate::error::Error;
+
+type Result<T> = std::result::Result<T, Error>;
 
 const KERNEL_NAME: &str = "fused_qsdpa_decode_v10";
 
@@ -228,7 +229,7 @@ const KERNEL_SOURCE: &str = r#"
 /// Compile a fresh kernel handle. Caller caches it for the lifetime of
 /// the cache layer.
 pub fn make_fused_qsdpa_kernel() -> Result<MetalKernel> {
-    metal_kernel(
+    Ok(metal_kernel(
         KERNEL_NAME,
         &[
             "q",
@@ -248,7 +249,7 @@ pub fn make_fused_qsdpa_kernel() -> Result<MetalKernel> {
         "",
         true,
         false,
-    )
+    )?)
 }
 
 /// Inputs to [`fused_qsdpa_decode`].
@@ -278,12 +279,12 @@ pub struct FusedQsdpaInputs<'a> {
 pub fn fused_qsdpa_decode(kernel: &MetalKernel, inputs: FusedQsdpaInputs<'_>) -> Result<Array> {
     let q_shape = inputs.q.shape();
     if q_shape.len() != 4 {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "fused_qsdpa_decode: q must be 4-D [B, H_q, 1, D], got {q_shape:?}"
         )));
     }
     if q_shape[2] != 1 {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "fused_qsdpa_decode: n_q must be 1 (decode-path only), got {}",
             q_shape[2]
         )));
@@ -291,13 +292,13 @@ pub fn fused_qsdpa_decode(kernel: &MetalKernel, inputs: FusedQsdpaInputs<'_>) ->
     let b = q_shape[0];
     let h_q = q_shape[1];
     if h_q != inputs.h_q {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "fused_qsdpa_decode: q[1]={h_q} != cfg h_q={}",
             inputs.h_q
         )));
     }
     if inputs.h_q % inputs.h_kv != 0 {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "fused_qsdpa_decode: H_q={} not divisible by H_KV={}",
             inputs.h_q, inputs.h_kv
         )));
@@ -306,13 +307,13 @@ pub fn fused_qsdpa_decode(kernel: &MetalKernel, inputs: FusedQsdpaInputs<'_>) ->
     let n_k = inputs.k_wq.shape()[2];
     let pack_factor = 32 / inputs.bits;
     if inputs.head_dim % pack_factor != 0 {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "fused_qsdpa_decode: head_dim={} not divisible by pack_factor={}",
             inputs.head_dim, pack_factor
         )));
     }
     if inputs.head_dim % inputs.group_size != 0 {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "fused_qsdpa_decode: head_dim={} not divisible by group_size={}",
             inputs.head_dim, inputs.group_size
         )));
@@ -320,7 +321,7 @@ pub fn fused_qsdpa_decode(kernel: &MetalKernel, inputs: FusedQsdpaInputs<'_>) ->
 
     let out_dtype = inputs.q.dtype();
     if !matches!(out_dtype, Dtype::Float32 | Dtype::Float16 | Dtype::Bfloat16) {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "fused_qsdpa_decode: unsupported q dtype {out_dtype:?}"
         )));
     }
@@ -377,7 +378,7 @@ pub fn fused_qsdpa_decode(kernel: &MetalKernel, inputs: FusedQsdpaInputs<'_>) ->
     )?;
     outs.into_iter()
         .next()
-        .ok_or_else(|| Exception::custom("fused_qsdpa_decode: no outputs"))
+        .ok_or_else(|| Error::shape("fused_qsdpa_decode: no outputs"))
 }
 
 #[cfg(test)]

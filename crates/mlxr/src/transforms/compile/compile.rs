@@ -2,7 +2,10 @@
 
 use std::marker::PhantomData;
 
-use crate::{error::Exception, Array};
+use crate::{
+    error::{Exception, Result},
+    Array,
+};
 
 use super::{next_compile_id, Closure, Compiled, CompiledState, Guarded, VectorArray};
 
@@ -17,8 +20,7 @@ pub type BoxedSliceFn = Box<dyn FnMut(&[Array]) -> Vec<Array> + Send + 'static>;
 
 /// Boxed adapter from the per-arity user closure to the slice-based one MLX
 /// invokes internally (fallible path).
-pub type BoxedSliceTryFn =
-    Box<dyn FnMut(&[Array]) -> Result<Vec<Array>, Exception> + Send + 'static>;
+pub type BoxedSliceTryFn = Box<dyn FnMut(&[Array]) -> Result<Vec<Array>> + Send + 'static>;
 
 /// Returns a compiled function that produces the same output as `f`.
 ///
@@ -32,7 +34,7 @@ pub type BoxedSliceTryFn =
 pub fn compile<F, A, O, E>(
     f: F,
     shapeless: impl Into<Option<bool>>,
-) -> impl for<'a> FnMut(<F::Output as CallMut<O, E>>::Args<'a>) -> Result<O, Exception>
+) -> impl for<'a> FnMut(<F::Output as CallMut<O, E>>::Args<'a>) -> Result<O>
 where
     F: Compile<A, O, E> + 'static + Copy,
     F::Output: CallMut<O, E>,
@@ -77,7 +79,7 @@ pub trait CallMut<O, E> {
     type Args<'a>;
 
     /// Invokes the compiled function on `args`.
-    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<O, Exception>;
+    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<O>;
 }
 
 /// Shape markers used to discriminate the per-arity [`CallMut`] impls on
@@ -203,7 +205,7 @@ where
 
 impl<F> Compile<&[Array], Vec<Array>, Exception> for F
 where
-    F: FnMut(&[Array]) -> Result<Vec<Array>, Exception> + Send + 'static,
+    F: FnMut(&[Array]) -> Result<Vec<Array>> + Send + 'static,
 {
     type Output = Compiled<F, F, shape::ArraySlice>;
 
@@ -227,7 +229,7 @@ where
 
 impl<F> Compile<&Array, Array, Exception> for F
 where
-    F: FnMut(&Array) -> Result<Array, Exception> + Send + 'static,
+    F: FnMut(&Array) -> Result<Array> + Send + 'static,
 {
     type Output = Compiled<F, BoxedSliceTryFn, shape::OneArg>;
 
@@ -252,7 +254,7 @@ where
 
 impl<F> Compile<(&Array, &Array), Array, Exception> for F
 where
-    F: FnMut((&Array, &Array)) -> Result<Array, Exception> + Send + 'static,
+    F: FnMut((&Array, &Array)) -> Result<Array> + Send + 'static,
 {
     type Output = Compiled<F, BoxedSliceTryFn, shape::TwoArgs>;
 
@@ -278,7 +280,7 @@ where
 
 impl<F> Compile<(&Array, &Array, &Array), Array, Exception> for F
 where
-    F: FnMut((&Array, &Array, &Array)) -> Result<Array, Exception> + Send + 'static,
+    F: FnMut((&Array, &Array, &Array)) -> Result<Array> + Send + 'static,
 {
     type Output = Compiled<F, BoxedSliceTryFn, shape::ThreeArgs>;
 
@@ -312,7 +314,7 @@ where
 {
     type Args<'a> = &'a [Array];
 
-    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Vec<Array>, Exception> {
+    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Vec<Array>> {
         self.state.call_mut_with(args)
     }
 }
@@ -323,7 +325,7 @@ where
 {
     type Args<'a> = &'a Array;
 
-    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Array, Exception> {
+    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Array> {
         self.state.call_mut_with_one(std::slice::from_ref(args))
     }
 }
@@ -334,7 +336,7 @@ where
 {
     type Args<'a> = (&'a Array, &'a Array);
 
-    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Array, Exception> {
+    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Array> {
         self.state.call_mut_with_one(&[args.0, args.1])
     }
 }
@@ -345,29 +347,29 @@ where
 {
     type Args<'a> = (&'a Array, &'a Array, &'a Array);
 
-    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Array, Exception> {
+    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Array> {
         self.state.call_mut_with_one(&[args.0, args.1, args.2])
     }
 }
 
 impl<F, G> CallMut<Vec<Array>, Exception> for Compiled<F, G, shape::ArraySlice>
 where
-    G: FnMut(&[Array]) -> Result<Vec<Array>, Exception> + 'static,
+    G: FnMut(&[Array]) -> Result<Vec<Array>> + 'static,
 {
     type Args<'a> = &'a [Array];
 
-    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Vec<Array>, Exception> {
+    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Vec<Array>> {
         self.state.fallible_call_mut_with(args)
     }
 }
 
 impl<F, G> CallMut<Array, Exception> for Compiled<F, G, shape::OneArg>
 where
-    G: FnMut(&[Array]) -> Result<Vec<Array>, Exception> + 'static,
+    G: FnMut(&[Array]) -> Result<Vec<Array>> + 'static,
 {
     type Args<'a> = &'a Array;
 
-    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Array, Exception> {
+    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Array> {
         self.state
             .fallible_call_mut_with_one(std::slice::from_ref(args))
     }
@@ -375,22 +377,22 @@ where
 
 impl<F, G> CallMut<Array, Exception> for Compiled<F, G, shape::TwoArgs>
 where
-    G: FnMut(&[Array]) -> Result<Vec<Array>, Exception> + 'static,
+    G: FnMut(&[Array]) -> Result<Vec<Array>> + 'static,
 {
     type Args<'a> = (&'a Array, &'a Array);
 
-    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Array, Exception> {
+    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Array> {
         self.state.fallible_call_mut_with_one(&[args.0, args.1])
     }
 }
 
 impl<F, G> CallMut<Array, Exception> for Compiled<F, G, shape::ThreeArgs>
 where
-    G: FnMut(&[Array]) -> Result<Vec<Array>, Exception> + 'static,
+    G: FnMut(&[Array]) -> Result<Vec<Array>> + 'static,
 {
     type Args<'a> = (&'a Array, &'a Array, &'a Array);
 
-    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Array, Exception> {
+    fn call_mut<'a>(&mut self, args: Self::Args<'a>) -> Result<Array> {
         self.state
             .fallible_call_mut_with_one(&[args.0, args.1, args.2])
     }
@@ -401,10 +403,7 @@ where
 // ---------------------------------------------------------------------------
 
 #[inline]
-fn apply_compiled(
-    compiled: &Closure<'_>,
-    args: &[impl AsRef<Array>],
-) -> Result<Vec<Array>, Exception> {
+fn apply_compiled(compiled: &Closure<'_>, args: &[impl AsRef<Array>]) -> Result<Vec<Array>> {
     let inner_inputs_vector = VectorArray::try_from_iter(args.iter())?;
     let result_vector = VectorArray::try_from_op(|res| unsafe {
         mlxr_sys::mlx_closure_apply(res, compiled.as_ptr(), inner_inputs_vector.as_ptr())
@@ -415,10 +414,7 @@ fn apply_compiled(
 /// Single-output variant of [`apply_compiled`]. Reads the C-vector
 /// directly, no `Vec` allocation on the hot path.
 #[inline]
-fn apply_compiled_one(
-    compiled: &Closure<'_>,
-    args: &[impl AsRef<Array>],
-) -> Result<Array, Exception> {
+fn apply_compiled_one(compiled: &Closure<'_>, args: &[impl AsRef<Array>]) -> Result<Array> {
     let inner_inputs_vector = VectorArray::try_from_iter(args.iter())?;
     let result_vector = VectorArray::try_from_op(|res| unsafe {
         mlxr_sys::mlx_closure_apply(res, compiled.as_ptr(), inner_inputs_vector.as_ptr())
@@ -431,7 +427,7 @@ fn build_compiled(
     inner_closure: Closure<'_>,
     fun_id: usize,
     shapeless: bool,
-) -> Result<Closure<'static>, Exception> {
+) -> Result<Closure<'static>> {
     Closure::try_from_op(|res| unsafe {
         let constants: &[u64] = &[];
         mlxr_sys::mlx_detail_compile(
@@ -446,10 +442,7 @@ fn build_compiled(
 }
 
 impl<F> CompiledState<F> {
-    pub(super) fn call_mut_with(
-        &mut self,
-        args: &[impl AsRef<Array>],
-    ) -> Result<Vec<Array>, Exception>
+    pub(super) fn call_mut_with(&mut self, args: &[impl AsRef<Array>]) -> Result<Vec<Array>>
     where
         F: FnMut(&[Array]) -> Vec<Array> + 'static,
     {
@@ -463,10 +456,7 @@ impl<F> CompiledState<F> {
         result
     }
 
-    pub(super) fn call_mut_with_one(
-        &mut self,
-        args: &[impl AsRef<Array>],
-    ) -> Result<Array, Exception>
+    pub(super) fn call_mut_with_one(&mut self, args: &[impl AsRef<Array>]) -> Result<Array>
     where
         F: FnMut(&[Array]) -> Vec<Array> + 'static,
     {
@@ -483,9 +473,9 @@ impl<F> CompiledState<F> {
     pub(super) fn fallible_call_mut_with(
         &mut self,
         args: &[impl AsRef<Array>],
-    ) -> Result<Vec<Array>, Exception>
+    ) -> Result<Vec<Array>>
     where
-        F: FnMut(&[Array]) -> Result<Vec<Array>, Exception> + 'static,
+        F: FnMut(&[Array]) -> Result<Vec<Array>> + 'static,
     {
         if let Some(compiled) = self.cached_compiled.as_ref() {
             return apply_compiled(compiled, args);
@@ -497,12 +487,9 @@ impl<F> CompiledState<F> {
         result
     }
 
-    pub(super) fn fallible_call_mut_with_one(
-        &mut self,
-        args: &[impl AsRef<Array>],
-    ) -> Result<Array, Exception>
+    pub(super) fn fallible_call_mut_with_one(&mut self, args: &[impl AsRef<Array>]) -> Result<Array>
     where
-        F: FnMut(&[Array]) -> Result<Vec<Array>, Exception> + 'static,
+        F: FnMut(&[Array]) -> Result<Vec<Array>> + 'static,
     {
         if let Some(compiled) = self.cached_compiled.as_ref() {
             return apply_compiled_one(compiled, args);
@@ -527,7 +514,7 @@ mod tests {
     )]
     use crate::{
         array,
-        error::Exception,
+        error::Result,
         ops::{multiply, ones},
         Array,
     };
@@ -575,7 +562,7 @@ mod tests {
 
     #[test]
     fn test_compile_with_error() {
-        let f = |inputs: &[Array]| -> Result<Vec<Array>, Exception> {
+        let f = |inputs: &[Array]| -> Result<Vec<Array>> {
             multiply(&inputs[0], &inputs[1]).map(|x| vec![x])
         };
 

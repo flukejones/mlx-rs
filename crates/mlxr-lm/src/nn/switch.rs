@@ -30,6 +30,7 @@ use mlxr::quantization::{MaybeQuantized, Quantizable};
 use mlxr::Array;
 
 use crate::activations::{geglu, swiglu, GegluCache, SwigluCache};
+use crate::error::Error;
 
 /// Index-count threshold below which `gather_qmm` runs without
 /// pre-sorting by expert id. Argsort + take_axis costs more than the
@@ -59,7 +60,7 @@ impl SwitchLinear {
         output_dims: i32,
         num_experts: i32,
         bias: bool,
-    ) -> Result<Self, Exception> {
+    ) -> Result<Self, Error> {
         let scale = (1.0 / input_dims as f32).sqrt();
         let weight = mlxr::random::uniform::<_, f32>(
             -scale,
@@ -80,7 +81,7 @@ impl SwitchLinear {
 
     /// Dense `gather_mm`-based apply. `x` carries the per-token leading
     /// dims plus `[..., 1, 1, input_dims]`; `indices.shape = [..., top_k]`.
-    pub fn apply(&self, x: &Array, indices: &Array, sorted: bool) -> Result<Array, Exception> {
+    pub fn apply(&self, x: &Array, indices: &Array, sorted: bool) -> Result<Array, Error> {
         let w = swap_axes(self.weight.as_ref(), -1, -2)?;
         let mut y = gather_mm(x, &w, None, Some(indices), Some(sorted))?;
         if let Some(b) = self.bias.as_ref() {
@@ -94,7 +95,7 @@ impl SwitchLinear {
 
 impl Quantizable for SwitchLinear {
     type Quantized = QuantizedSwitchLinear;
-    type QuantizationError = Exception;
+    type QuantizationError = Error;
 
     fn try_into_quantized(
         self,
@@ -129,7 +130,7 @@ impl QuantizedSwitchLinear {
         linear: SwitchLinear,
         group_size: i32,
         bits: i32,
-    ) -> Result<Self, Exception> {
+    ) -> Result<Self, Error> {
         let (packed_w, scales, biases) = quantize(linear.weight.as_ref(), group_size, bits)?;
         Ok(Self {
             group_size,
@@ -144,7 +145,7 @@ impl QuantizedSwitchLinear {
     }
 
     /// Hot-path runtime entry on every quantised MoE checkpoint.
-    pub fn apply(&self, x: &Array, indices: &Array, sorted: bool) -> Result<Array, Exception> {
+    pub fn apply(&self, x: &Array, indices: &Array, sorted: bool) -> Result<Array, Error> {
         let mut y = gather_qmm(
             x,
             self.inner.weight.as_ref(),
@@ -175,7 +176,7 @@ pub(crate) fn apply_proj(
     x: &Array,
     indices: &Array,
     sorted: bool,
-) -> Result<Array, Exception> {
+) -> Result<Array, Error> {
     match proj {
         MaybeQuantized::Original(d) => d.apply(x, indices, sorted),
         MaybeQuantized::Quantized(q) => q.apply(x, indices, sorted),
@@ -188,7 +189,7 @@ pub(crate) fn apply_proj(
 /// Implementors own a compiled-graph cache so the activation kernel
 /// is built once per layer and reused across decode steps.
 pub trait SwitchActivation: ModuleParameters {
-    fn activate(&mut self, gate: &Array, up: &Array) -> Result<Array, Exception>;
+    fn activate(&mut self, gate: &Array, up: &Array) -> Result<Array, Error>;
 }
 
 /// `gelu_approx(gate) * up` — gemma4 MoE activation.
@@ -198,8 +199,8 @@ pub struct GegluActivation {
 }
 
 impl SwitchActivation for GegluActivation {
-    fn activate(&mut self, gate: &Array, up: &Array) -> Result<Array, Exception> {
-        geglu(&mut self.cache, gate, up)
+    fn activate(&mut self, gate: &Array, up: &Array) -> Result<Array, Error> {
+        Ok(geglu(&mut self.cache, gate, up)?)
     }
 }
 
@@ -210,8 +211,8 @@ pub struct SwigluActivation {
 }
 
 impl SwitchActivation for SwigluActivation {
-    fn activate(&mut self, gate: &Array, up: &Array) -> Result<Array, Exception> {
-        swiglu(&mut self.cache, gate, up)
+    fn activate(&mut self, gate: &Array, up: &Array) -> Result<Array, Error> {
+        Ok(swiglu(&mut self.cache, gate, up)?)
     }
 }
 
@@ -225,11 +226,11 @@ fn combine_with_weights(
     indices: &Array,
     top_k_weights: &Array,
     sorted: bool,
-) -> Result<Array, Exception> {
+) -> Result<Array, Error> {
     let y = apply_proj(down_proj, activated, indices, sorted)?;
     let y = y.squeeze_axes(&[-2])?;
     let w = expand_dims_axes(top_k_weights, &[-1])?;
-    sum_axes(&w.multiply(&y)?, &[-2], false)
+    Ok(sum_axes(&w.multiply(&y)?, &[-2], false)?)
 }
 
 // ─── PackedSwitchFfn: gemma4 layout ───────────────────────────────
@@ -257,7 +258,7 @@ impl<A: SwitchActivation + Default> PackedSwitchFfn<A> {
         hidden_dims: i32,
         num_experts: i32,
         bias: bool,
-    ) -> Result<Self, Exception> {
+    ) -> Result<Self, Error> {
         Ok(Self {
             gate_up_proj: MaybeQuantized::Original(SwitchLinear::new(
                 input_dims,
@@ -282,7 +283,7 @@ impl<A: SwitchActivation> PackedSwitchFfn<A> {
     /// Full MoE forward returning `[..., K, D]` per-expert outputs.
     /// Caller does the `sum_k(weights * y)` combine. Use
     /// [`Self::forward_with_combine`] for the fused decode path.
-    pub fn forward(&mut self, x: &Array, indices: &Array) -> Result<Array, Exception> {
+    pub fn forward(&mut self, x: &Array, indices: &Array) -> Result<Array, Error> {
         let x_exp = expand_dims_axes(x, &[-2, -3])?;
         let do_sort = indices.size() >= SORT_THRESHOLD;
         let top_k_arr = self.top_k_arr.get_or_init(|| {
@@ -306,7 +307,7 @@ impl<A: SwitchActivation> PackedSwitchFfn<A> {
             y = scatter_unsort(&y, inv, indices.shape())?;
         }
 
-        y.squeeze_axes(&[-2])
+        Ok(y.squeeze_axes(&[-2])?)
     }
 
     /// Decode-only fused path: gate+up + activation + fused
@@ -317,7 +318,7 @@ impl<A: SwitchActivation> PackedSwitchFfn<A> {
         x: &Array,
         indices: &Array,
         top_k_weights: &Array,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         let x_exp = expand_dims_axes(x, &[-2, -3])?;
         let do_sort = indices.size() >= SORT_THRESHOLD;
         if do_sort {
@@ -336,18 +337,18 @@ impl<A: SwitchActivation> PackedSwitchFfn<A> {
         x: &Array,
         indices: &Array,
         top_k_weights: &Array,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         let y = self.forward(x, indices)?;
         let w = expand_dims_axes(top_k_weights, &[-1])?;
-        sum_axes(&w.multiply(&y)?, &[-2], false)
+        Ok(sum_axes(&w.multiply(&y)?, &[-2], false)?)
     }
 }
 
 impl<A: SwitchActivation> Quantizable for PackedSwitchFfn<A> {
     type Quantized = Self;
-    type QuantizationError = Exception;
+    type QuantizationError = Error;
 
-    fn try_into_quantized(self, group_size: i32, bits: i32) -> Result<Self, Exception> {
+    fn try_into_quantized(self, group_size: i32, bits: i32) -> Result<Self, Error> {
         Ok(Self {
             gate_up_proj: self.gate_up_proj.try_into_quantized(group_size, bits)?,
             down_proj: self.down_proj.try_into_quantized(group_size, bits)?,
@@ -384,7 +385,7 @@ impl<A: SwitchActivation + Default> SplitSwitchFfn<A> {
         hidden_dims: i32,
         num_experts: i32,
         bias: bool,
-    ) -> Result<Self, Exception> {
+    ) -> Result<Self, Error> {
         Ok(Self {
             gate_proj: MaybeQuantized::Original(SwitchLinear::new(
                 input_dims,
@@ -413,7 +414,7 @@ impl<A: SwitchActivation + Default> SplitSwitchFfn<A> {
 
 impl<A: SwitchActivation> SplitSwitchFfn<A> {
     /// Full MoE forward returning `[..., K, D]` per-expert outputs.
-    pub fn forward(&mut self, x: &Array, indices: &Array) -> Result<Array, Exception> {
+    pub fn forward(&mut self, x: &Array, indices: &Array) -> Result<Array, Error> {
         let x_exp = expand_dims_axes(x, &[-2, -3])?;
         let do_sort = indices.size() >= SORT_THRESHOLD;
         let top_k_arr = self.top_k_arr.get_or_init(|| {
@@ -437,7 +438,7 @@ impl<A: SwitchActivation> SplitSwitchFfn<A> {
             y = scatter_unsort(&y, inv, indices.shape())?;
         }
 
-        y.squeeze_axes(&[-2])
+        Ok(y.squeeze_axes(&[-2])?)
     }
 
     /// Decode-only fused path: same shape contract as
@@ -447,7 +448,7 @@ impl<A: SwitchActivation> SplitSwitchFfn<A> {
         x: &Array,
         indices: &Array,
         top_k_weights: &Array,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         let x_exp = expand_dims_axes(x, &[-2, -3])?;
         let do_sort = indices.size() >= SORT_THRESHOLD;
         if do_sort {
@@ -466,18 +467,18 @@ impl<A: SwitchActivation> SplitSwitchFfn<A> {
         x: &Array,
         indices: &Array,
         top_k_weights: &Array,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         let y = self.forward(x, indices)?;
         let w = expand_dims_axes(top_k_weights, &[-1])?;
-        sum_axes(&w.multiply(&y)?, &[-2], false)
+        Ok(sum_axes(&w.multiply(&y)?, &[-2], false)?)
     }
 }
 
 impl<A: SwitchActivation> Quantizable for SplitSwitchFfn<A> {
     type Quantized = Self;
-    type QuantizationError = Exception;
+    type QuantizationError = Error;
 
-    fn try_into_quantized(self, group_size: i32, bits: i32) -> Result<Self, Exception> {
+    fn try_into_quantized(self, group_size: i32, bits: i32) -> Result<Self, Error> {
         Ok(Self {
             gate_proj: self.gate_proj.try_into_quantized(group_size, bits)?,
             up_proj: self.up_proj.try_into_quantized(group_size, bits)?,
@@ -510,11 +511,7 @@ pub(crate) fn gather_sort(
     Ok((x_sorted, idx_sorted, inv_order))
 }
 
-pub(crate) fn scatter_unsort(
-    x: &Array,
-    inv_order: &Array,
-    shape: &[i32],
-) -> Result<Array, Exception> {
+pub(crate) fn scatter_unsort(x: &Array, inv_order: &Array, shape: &[i32]) -> Result<Array, Error> {
     let unsorted = take_axis(x, inv_order, 0)?;
-    unflatten(&unsorted, 0, shape)
+    Ok(unflatten(&unsorted, 0, shape)?)
 }

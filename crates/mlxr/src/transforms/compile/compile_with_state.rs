@@ -13,7 +13,7 @@ use std::{
 };
 
 use crate::{
-    error::Exception,
+    error::{Exception, Result},
     transforms::compile::{next_compile_id, CompiledState},
     utils::Updatable,
     Array,
@@ -24,7 +24,7 @@ use super::{update_by_replace_with_ref_to_new_array, Closure, Compiled, Guarded,
 /// `extract` callback for the single-Array output variants. Moves the
 /// lone function output out of the owned Vec without cloning.
 #[inline]
-fn take_one_output(mut outputs: Vec<Array>) -> Result<Array, Exception> {
+fn take_one_output(mut outputs: Vec<Array>) -> Result<Array> {
     if outputs.len() != 1 {
         return Err(Exception::custom(format!(
             "compile_with_state: traced single-output function returned {} arrays",
@@ -39,7 +39,7 @@ fn take_one_output(mut outputs: Vec<Array>) -> Result<Array, Exception> {
 pub fn compile_with_state<F, U, A, O, E>(
     f: F,
     shapeless: impl Into<Option<bool>>,
-) -> impl for<'a> FnMut(&mut U, F::Args<'a>) -> Result<O, Exception>
+) -> impl for<'a> FnMut(&mut U, F::Args<'a>) -> Result<O>
 where
     F: CompileWithState<U, A, O, E> + Copy + 'static,
     U: Updatable,
@@ -192,7 +192,7 @@ where
 
 impl<F, U> CompileWithState<U, &[Array], Vec<Array>, Exception> for F
 where
-    F: FnMut(&mut U, &[Array]) -> Result<Vec<Array>, Exception> + 'static,
+    F: FnMut(&mut U, &[Array]) -> Result<Vec<Array>> + 'static,
     U: Updatable,
 {
     type Args<'a> = &'a [Array];
@@ -218,7 +218,7 @@ where
 
 impl<F, U> CompileWithState<U, &Array, Array, Exception> for F
 where
-    F: FnMut(&mut U, &Array) -> Result<Array, Exception> + 'static,
+    F: FnMut(&mut U, &Array) -> Result<Array> + 'static,
     U: Updatable,
 {
     type Args<'a> = &'a Array;
@@ -228,7 +228,7 @@ where
         shapeless: bool,
     ) -> impl CallMutWithState<U, Self::Args<'args>, Array, Exception> {
         let id = next_compile_id();
-        let f = move |state: &mut U, args: &[Array]| -> Result<Vec<Array>, Exception> {
+        let f = move |state: &mut U, args: &[Array]| -> Result<Vec<Array>> {
             let result = (self)(state, &args[0])?;
             Ok(vec![result])
         };
@@ -248,7 +248,7 @@ where
 
 impl<F, U> CompileWithState<U, (&Array, &Array), Array, Exception> for F
 where
-    F: FnMut(&mut U, (&Array, &Array)) -> Result<Array, Exception> + 'static,
+    F: FnMut(&mut U, (&Array, &Array)) -> Result<Array> + 'static,
     U: Updatable,
 {
     type Args<'a> = (&'a Array, &'a Array);
@@ -258,7 +258,7 @@ where
         shapeless: bool,
     ) -> impl CallMutWithState<U, Self::Args<'args>, Array, Exception> {
         let id = next_compile_id();
-        let f = move |state: &mut U, args: &[Array]| -> Result<Vec<Array>, Exception> {
+        let f = move |state: &mut U, args: &[Array]| -> Result<Vec<Array>> {
             let result = (self)(state, (&args[0], &args[1]))?;
             Ok(vec![result])
         };
@@ -278,7 +278,7 @@ where
 
 impl<F, U> CompileWithState<U, (&Array, &Array, &Array), Array, Exception> for F
 where
-    F: FnMut(&mut U, (&Array, &Array, &Array)) -> Result<Array, Exception> + 'static,
+    F: FnMut(&mut U, (&Array, &Array, &Array)) -> Result<Array> + 'static,
     U: Updatable,
 {
     type Args<'a> = (&'a Array, &'a Array, &'a Array);
@@ -288,7 +288,7 @@ where
         shapeless: bool,
     ) -> impl CallMutWithState<U, Self::Args<'args>, Array, Exception> {
         let id = next_compile_id();
-        let f = move |state: &mut U, args: &[Array]| -> Result<Vec<Array>, Exception> {
+        let f = move |state: &mut U, args: &[Array]| -> Result<Vec<Array>> {
             let result = (self)(state, (&args[0], &args[1], &args[2]))?;
             Ok(vec![result])
         };
@@ -309,7 +309,7 @@ where
 /// A trait for functions that can be called with state.
 pub trait CallMutWithState<U, A, O, E> {
     /// Call the function with the given state and arguments.
-    fn call_mut(&mut self, state: &mut U, args: A) -> Result<O, Exception>;
+    fn call_mut(&mut self, state: &mut U, args: A) -> Result<O>;
 }
 
 impl<U, F, G> CallMutWithState<U, &[Array], Vec<Array>, ()> for Compiled<F, G>
@@ -318,7 +318,7 @@ where
     G: FnMut(&mut U, &[Array]) -> Vec<Array>,
     U: Updatable,
 {
-    fn call_mut(&mut self, state: &mut U, args: &[Array]) -> Result<Vec<Array>, Exception> {
+    fn call_mut(&mut self, state: &mut U, args: &[Array]) -> Result<Vec<Array>> {
         self.state.retry_call_mut_with_state(state, args, Ok)
     }
 }
@@ -329,7 +329,7 @@ where
     G: FnMut(&mut U, &[Array]) -> Vec<Array>,
     U: Updatable,
 {
-    fn call_mut(&mut self, state: &mut U, args: &Array) -> Result<Array, Exception> {
+    fn call_mut(&mut self, state: &mut U, args: &Array) -> Result<Array> {
         self.state
             .retry_call_mut_with_state(state, std::slice::from_ref(args), take_one_output)
     }
@@ -341,7 +341,7 @@ where
     G: FnMut(&mut U, &[Array]) -> Vec<Array>,
     U: Updatable,
 {
-    fn call_mut(&mut self, state: &mut U, args: (&Array, &Array)) -> Result<Array, Exception> {
+    fn call_mut(&mut self, state: &mut U, args: (&Array, &Array)) -> Result<Array> {
         self.state
             .retry_call_mut_with_state(state, &[args.0, args.1], take_one_output)
     }
@@ -353,11 +353,7 @@ where
     G: FnMut(&mut U, &[Array]) -> Vec<Array>,
     U: Updatable,
 {
-    fn call_mut(
-        &mut self,
-        state: &mut U,
-        args: (&Array, &Array, &Array),
-    ) -> Result<Array, Exception> {
+    fn call_mut(&mut self, state: &mut U, args: (&Array, &Array, &Array)) -> Result<Array> {
         self.state
             .retry_call_mut_with_state(state, &[args.0, args.1, args.2], take_one_output)
     }
@@ -365,11 +361,11 @@ where
 
 impl<U, F, G> CallMutWithState<U, &[Array], Vec<Array>, Exception> for Compiled<F, G>
 where
-    F: FnMut(&mut U, &[Array]) -> Result<Vec<Array>, Exception>,
-    G: FnMut(&mut U, &[Array]) -> Result<Vec<Array>, Exception>,
+    F: FnMut(&mut U, &[Array]) -> Result<Vec<Array>>,
+    G: FnMut(&mut U, &[Array]) -> Result<Vec<Array>>,
     U: Updatable,
 {
-    fn call_mut(&mut self, state: &mut U, args: &[Array]) -> Result<Vec<Array>, Exception> {
+    fn call_mut(&mut self, state: &mut U, args: &[Array]) -> Result<Vec<Array>> {
         self.state
             .retry_fallible_call_mut_with_state(state, args, Ok)
     }
@@ -377,11 +373,11 @@ where
 
 impl<U, F, G> CallMutWithState<U, &Array, Array, Exception> for Compiled<F, G>
 where
-    F: FnMut(&mut U, &Array) -> Result<Array, Exception>,
-    G: FnMut(&mut U, &[Array]) -> Result<Vec<Array>, Exception>,
+    F: FnMut(&mut U, &Array) -> Result<Array>,
+    G: FnMut(&mut U, &[Array]) -> Result<Vec<Array>>,
     U: Updatable,
 {
-    fn call_mut(&mut self, state: &mut U, args: &Array) -> Result<Array, Exception> {
+    fn call_mut(&mut self, state: &mut U, args: &Array) -> Result<Array> {
         self.state.retry_fallible_call_mut_with_state(
             state,
             std::slice::from_ref(args),
@@ -392,11 +388,11 @@ where
 
 impl<U, F, G> CallMutWithState<U, (&Array, &Array), Array, Exception> for Compiled<F, G>
 where
-    F: FnMut(&mut U, (&Array, &Array)) -> Result<Array, Exception>,
-    G: FnMut(&mut U, &[Array]) -> Result<Vec<Array>, Exception>,
+    F: FnMut(&mut U, (&Array, &Array)) -> Result<Array>,
+    G: FnMut(&mut U, &[Array]) -> Result<Vec<Array>>,
     U: Updatable,
 {
-    fn call_mut(&mut self, state: &mut U, args: (&Array, &Array)) -> Result<Array, Exception> {
+    fn call_mut(&mut self, state: &mut U, args: (&Array, &Array)) -> Result<Array> {
         self.state
             .retry_fallible_call_mut_with_state(state, &[args.0, args.1], take_one_output)
     }
@@ -404,15 +400,11 @@ where
 
 impl<U, F, G> CallMutWithState<U, (&Array, &Array, &Array), Array, Exception> for Compiled<F, G>
 where
-    F: FnMut(&mut U, (&Array, &Array, &Array)) -> Result<Array, Exception>,
-    G: FnMut(&mut U, &[Array]) -> Result<Vec<Array>, Exception>,
+    F: FnMut(&mut U, (&Array, &Array, &Array)) -> Result<Array>,
+    G: FnMut(&mut U, &[Array]) -> Result<Vec<Array>>,
     U: Updatable,
 {
-    fn call_mut(
-        &mut self,
-        state: &mut U,
-        args: (&Array, &Array, &Array),
-    ) -> Result<Array, Exception> {
+    fn call_mut(&mut self, state: &mut U, args: (&Array, &Array, &Array)) -> Result<Array> {
         self.state.retry_fallible_call_mut_with_state(
             state,
             &[args.0, args.1, args.2],
@@ -435,8 +427,8 @@ fn call_mut_with_state_inner<U, R>(
     state: Rc<RefCell<&mut U>>,
     args: &[impl AsRef<Array>],
     num_function_outputs: Rc<Cell<Option<usize>>>,
-    extract: impl FnOnce(Vec<Array>) -> Result<R, Exception>,
-) -> Result<R, Exception>
+    extract: impl FnOnce(Vec<Array>) -> Result<R>,
+) -> Result<R>
 where
     U: Updatable,
 {
@@ -509,8 +501,8 @@ impl<F> CompiledState<F> {
         &mut self,
         state: &mut U,
         args: &[impl AsRef<Array>],
-        extract: impl Fn(Vec<Array>) -> Result<R, Exception> + Copy,
-    ) -> Result<R, Exception>
+        extract: impl Fn(Vec<Array>) -> Result<R> + Copy,
+    ) -> Result<R>
     where
         F: FnMut(&mut U, &[Array]) -> Vec<Array>,
         U: Updatable,
@@ -531,10 +523,10 @@ impl<F> CompiledState<F> {
         &mut self,
         state: &mut U,
         args: &[impl AsRef<Array>],
-        extract: impl Fn(Vec<Array>) -> Result<R, Exception> + Copy,
-    ) -> Result<R, Exception>
+        extract: impl Fn(Vec<Array>) -> Result<R> + Copy,
+    ) -> Result<R>
     where
-        F: FnMut(&mut U, &[Array]) -> Result<Vec<Array>, Exception>,
+        F: FnMut(&mut U, &[Array]) -> Result<Vec<Array>>,
         U: Updatable,
     {
         self.fallible_call_mut_with_state(state, args, extract)
@@ -553,8 +545,8 @@ impl<F> CompiledState<F> {
         &mut self,
         state: &mut U,
         args: &[impl AsRef<Array>],
-        extract: impl FnOnce(Vec<Array>) -> Result<R, Exception>,
-    ) -> Result<R, Exception>
+        extract: impl FnOnce(Vec<Array>) -> Result<R>,
+    ) -> Result<R>
     where
         F: FnMut(&mut U, &[Array]) -> Vec<Array>,
         U: Updatable,
@@ -639,10 +631,10 @@ impl<F> CompiledState<F> {
         &mut self,
         state: &mut U,
         args: &[impl AsRef<Array>],
-        extract: impl FnOnce(Vec<Array>) -> Result<R, Exception>,
-    ) -> Result<R, Exception>
+        extract: impl FnOnce(Vec<Array>) -> Result<R>,
+    ) -> Result<R>
     where
-        F: FnMut(&mut U, &[Array]) -> Result<Vec<Array>, Exception>,
+        F: FnMut(&mut U, &[Array]) -> Result<Vec<Array>>,
         U: Updatable,
     {
         let args_len = args.len();
@@ -654,7 +646,7 @@ impl<F> CompiledState<F> {
         let num_fn_outputs_clone = Rc::clone(&num_function_outputs);
 
         let state_clone = Rc::clone(&state);
-        let inner = move |tracers: &[Array]| -> Result<Vec<Array>, Exception> {
+        let inner = move |tracers: &[Array]| -> Result<Vec<Array>> {
             // put the tracers in their appropriate places:
             // - arguments to the function
             // - inner state

@@ -3,7 +3,6 @@
 
 use mlxr::{
     builder::Builder,
-    error::Exception,
     fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask},
     layers,
     macros::{ModuleParameters, Quantizable},
@@ -19,6 +18,7 @@ use crate::activations::{attention_gate, swiglu, AttentionGateCache, SwigluCache
 use crate::attention::{attention_dispatch, AttentionInputs};
 use crate::cache::kernels::{cached_attention_kernel, SUPPORTED_HEAD_DIMS};
 use crate::cache::{KVCache, KeyValueCache};
+use crate::error::Error;
 use crate::utils::create_attention_mask;
 
 /// SwiGLU feed-forward block: `down(silu(gate(x)) * up(x))`.
@@ -42,7 +42,7 @@ pub struct Mlp {
 
 impl Mlp {
     /// Build a freshly-initialised MLP with the given inner widths.
-    pub fn new(dim: i32, hidden_dim: i32) -> Result<Self, Exception> {
+    pub fn new(dim: i32, hidden_dim: i32) -> Result<Self, Error> {
         let gate_proj = layers::LinearBuilder::new(dim, hidden_dim)
             .bias(false)
             .build()?;
@@ -63,14 +63,14 @@ impl Mlp {
 
 impl Module<&Array> for Mlp {
     type Output = Array;
-    type Error = Exception;
+    type Error = Error;
 
     /// SwiGLU forward: `down_proj(silu(gate_proj(x)) * up_proj(x))`.
-    fn forward(&mut self, x: &Array) -> Result<Array, Exception> {
+    fn forward(&mut self, x: &Array) -> Result<Array, Error> {
         let gate = self.gate_proj.forward(x)?;
         let up = self.up_proj.forward(x)?;
         let activated = swiglu(&mut self.swiglu_cache, &gate, &up)?;
-        self.down_proj.forward(&activated)
+        Ok(self.down_proj.forward(&activated)?)
     }
 
     fn training_mode(&mut self, mode: bool) {
@@ -133,7 +133,7 @@ pub struct Attention {
 
 impl Attention {
     /// Build a freshly-initialised attention block from a [`TextConfig`].
-    pub fn new(cfg: &TextConfig) -> Result<Self, Exception> {
+    pub fn new(cfg: &TextConfig) -> Result<Self, Error> {
         let dim = cfg.hidden_size;
         let n_heads = cfg.num_attention_heads;
         let n_kv_heads = cfg.num_key_value_heads;
@@ -211,7 +211,7 @@ impl Attention {
         mask: Option<&Array>,
         cache: Option<&mut KVCache>,
         position_ids: Option<&Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         let shape = x.shape();
         let b = shape[0];
         let l = shape[1];
@@ -317,7 +317,7 @@ impl Attention {
         let output = reshape(&output, &[b, l, -1])?;
 
         let gated = attention_gate(&mut self.attention_gate_cache, &output, &gate)?;
-        self.o_proj.forward(&gated)
+        Ok(self.o_proj.forward(&gated)?)
     }
 
     /// Toggle training mode on every quantisable parameter.
@@ -336,10 +336,7 @@ impl Attention {
 ///
 /// This mirrors `mlxr_lm::utils::create_attention_mask` but specialises the
 /// cache type to [`KVCache`] so callers don't need a generic.
-pub fn full_attention_mask(
-    h: &Array,
-    cache: &[Option<KVCache>],
-) -> Result<Option<Array>, Exception> {
+pub fn full_attention_mask(h: &Array, cache: &[Option<KVCache>]) -> Result<Option<Array>, Error> {
     create_attention_mask(h, cache)
 }
 
@@ -349,6 +346,7 @@ mod tests {
     #![allow(clippy::missing_assert_message, reason = "test code")]
     #![allow(clippy::print_stdout, reason = "test code")]
     #![allow(clippy::print_stderr, reason = "test code")]
+    use super::super::config::RopeParameters;
     use super::*;
     use crate::cache::KeyValueCache;
     use mlxr::{random::uniform, transforms::eval};
@@ -389,7 +387,7 @@ mod tests {
             "partial_rotary_factor": 1.0,
             "type": "yarn"
         });
-        let err = serde_json::from_value::<super::super::config::RopeParameters>(json).unwrap_err();
+        let err = serde_json::from_value::<RopeParameters>(json).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("yarn"), "unexpected error: {msg}");
     }

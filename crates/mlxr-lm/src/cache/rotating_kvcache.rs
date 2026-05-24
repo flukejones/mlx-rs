@@ -25,7 +25,6 @@
 use std::collections::HashMap;
 
 use mlxr::{
-    error::Exception,
     fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask},
     ops::{
         concatenate_axis,
@@ -36,8 +35,9 @@ use mlxr::{
 };
 
 use super::kernels::{cached_attention_kernel, SUPPORTED_HEAD_DIMS};
-use super::trait_def::KeyValueCache;
+use super::trait_def::{assert_mask_matches_keys, KeyValueCache};
 use crate::attention::{attention_dispatch, AttentionInputs};
+use crate::error::Error;
 
 /// Sliding-window KV cache. The oldest non-keep slot is overwritten
 /// on append once the window is full. Implemented as a 2× ring buffer
@@ -101,19 +101,19 @@ impl RotatingKVCache {
         self.keep + 2 * self.window()
     }
 
-    fn alloc_like(template: &Array, capacity: i32) -> Result<Array, Exception> {
+    fn alloc_like(template: &Array, capacity: i32) -> Result<Array, Error> {
         let shape = template.shape();
         let mut buf_shape = shape.to_vec();
         let t_axis = buf_shape.len() - 2;
         buf_shape[t_axis] = capacity;
-        zeros_dtype(&buf_shape, template.dtype())
+        Ok(zeros_dtype(&buf_shape, template.dtype())?)
     }
 
     /// Snapshot the current logical window (keep prefix + rotating
     /// region in temporal order) as a pair of fresh arrays. Used by the
     /// prefill path so attention can see `old_window ++ new` without
     /// having to write the new tokens back through the ring first.
-    fn snapshot_window(&self) -> Result<(Array, Array), Exception> {
+    fn snapshot_window(&self) -> Result<(Array, Array), Error> {
         let buf_k = self.keys.as_ref().expect("snapshot: buffer exists");
         let buf_v = self.values.as_ref().expect("snapshot: buffer exists");
         let keep = self.keep;
@@ -139,7 +139,7 @@ impl RotatingKVCache {
     /// Write one token (S=1 slice) into the ring buffer. Extracted from
     /// the decode loop so the prefill path can reuse the same eviction
     /// semantics without duplicating logic.
-    fn write_one(&mut self, token_k: Array, token_v: Array) -> Result<(), Exception> {
+    fn write_one(&mut self, token_k: Array, token_v: Array) -> Result<(), Error> {
         let keep = self.keep;
         let window = self.window();
         if self.offset < keep {
@@ -166,7 +166,7 @@ impl RotatingKVCache {
     /// Compact: copy the last `window` rotating slots to the first
     /// `window` rotating slots, then reset `write_head = window`.
     /// Called when `write_head` would otherwise exceed `2 * window`.
-    fn compact(&mut self) -> Result<(), Exception> {
+    fn compact(&mut self) -> Result<(), Error> {
         let window = self.window();
         let keep = self.keep;
         let buf_k = self.keys.as_mut().expect("compact: buffer exists");
@@ -229,11 +229,7 @@ impl KeyValueCache for RotatingKVCache {
         m
     }
 
-    fn update_and_fetch(
-        &mut self,
-        keys: Array,
-        values: Array,
-    ) -> Result<(Array, Array), Exception> {
+    fn update_and_fetch(&mut self, keys: Array, values: Array) -> Result<(Array, Array), Error> {
         let key_shape = keys.shape();
         let t_axis = key_shape.len() - 2;
         let s = key_shape[t_axis];
@@ -335,7 +331,7 @@ impl KeyValueCache for RotatingKVCache {
         values: Array,
         scale: f32,
         mask: Option<&Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         // Pre-update offset = steel `ql_off` (causal diagonal shift).
         let ql_off = self.offset;
         let (k_full, v_full) = self.update_and_fetch(keys, values)?;
@@ -369,14 +365,14 @@ impl KeyValueCache for RotatingKVCache {
             );
         }
 
-        super::trait_def::assert_mask_matches_keys(mask, &k_full);
-        scaled_dot_product_attention(
+        assert_mask_matches_keys(mask, &k_full);
+        Ok(scaled_dot_product_attention(
             queries,
             k_full,
             v_full,
             scale,
             mask.map(ScaledDotProductAttentionMask::Array),
             None,
-        )
+        )?)
     }
 }

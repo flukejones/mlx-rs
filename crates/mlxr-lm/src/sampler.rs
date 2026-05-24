@@ -1,6 +1,5 @@
 use mlxr::{
     argmax_axis, array, categorical,
-    error::Exception,
     layers::log_softmax,
     ops::{
         argsort_axis, cumsum,
@@ -10,13 +9,15 @@ use mlxr::{
     Array, Dtype,
 };
 
+use crate::error::Error;
+
 /// Argmax at `temp == 0.0`, categorical sampling otherwise.
-pub fn sample(logits: &Array, temp: f32) -> Result<Array, Exception> {
+pub fn sample(logits: &Array, temp: f32) -> Result<Array, Error> {
     if temp == 0.0 {
-        argmax_axis!(logits, -1)
+        Ok(argmax_axis!(logits, -1)?)
     } else {
         let logits = logits.multiply(array!(1.0 / temp))?;
-        categorical!(logits)
+        Ok(categorical!(logits)?)
     }
 }
 
@@ -61,12 +62,12 @@ impl Sampler {
 ///
 /// One-shot convenience: each call re-allocates the temperature and
 /// top-p scalar arrays. Use [`SamplerState`] in a hot decode loop.
-pub fn sample_with(logits: &Array, sampler: Sampler) -> Result<Array, Exception> {
+pub fn sample_with(logits: &Array, sampler: Sampler) -> Result<Array, Error> {
     match sampler {
-        Sampler::Greedy => argmax_axis!(logits, -1),
+        Sampler::Greedy => Ok(argmax_axis!(logits, -1)?),
         Sampler::Temperature(t) => {
             let scaled = multiply(logits, array!(1.0_f32 / t))?;
-            categorical!(scaled)
+            Ok(categorical!(scaled)?)
         }
         Sampler::TopP { temperature, p } => {
             let scaled = multiply(logits, array!(1.0_f32 / temperature))?;
@@ -112,9 +113,9 @@ impl SamplerState {
 
     /// Sample one token from the given logits, reusing cached scalar
     /// arrays.
-    pub fn sample(&mut self, logits: &Array) -> Result<Array, Exception> {
+    pub fn sample(&mut self, logits: &Array) -> Result<Array, Error> {
         if matches!(self.sampler, Sampler::Greedy) {
-            return argmax_axis!(logits, -1);
+            return Ok(argmax_axis!(logits, -1)?);
         }
         let dtype = logits.dtype();
         self.bind(dtype)?;
@@ -126,7 +127,7 @@ impl SamplerState {
         let scaled = multiply(logits, inv_temp)?;
         match self.sampler {
             Sampler::Greedy => unreachable!("greedy handled above"),
-            Sampler::Temperature(_) => categorical!(&scaled),
+            Sampler::Temperature(_) => Ok(categorical!(&scaled)?),
             Sampler::TopP { .. } => self.top_p_sample(&scaled),
         }
     }
@@ -153,9 +154,9 @@ impl SamplerState {
         &mut self,
         logits: &Array,
         keep_mask: Option<&Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         if matches!(self.sampler, Sampler::Greedy) {
-            return Err(Exception::custom(
+            return Err(Error::config(
                 "masked_log_probs: Sampler::Greedy has no temperature; greedy callers go through the argmax path",
             ));
         }
@@ -168,7 +169,7 @@ impl SamplerState {
         masked_temp_log_probs(logits, keep_mask, inv_temp)
     }
 
-    fn bind(&mut self, dtype: Dtype) -> Result<(), Exception> {
+    fn bind(&mut self, dtype: Dtype) -> Result<(), Error> {
         if self.bound_dtype == Some(dtype) {
             return Ok(());
         }
@@ -184,7 +185,7 @@ impl SamplerState {
         Ok(())
     }
 
-    fn top_p_sample(&self, logits: &Array) -> Result<Array, Exception> {
+    fn top_p_sample(&self, logits: &Array) -> Result<Array, Error> {
         let p = self
             .top_p_threshold
             .as_ref()
@@ -202,14 +203,14 @@ impl SamplerState {
         let sorted_pick = categorical!(&masked)?;
         let pick = sorted_pick.index((Ellipsis, NewAxis));
         let token = take_along_axis(&order, &pick, -1)?;
-        token.squeeze_axes(&[-1])
+        Ok(token.squeeze_axes(&[-1])?)
     }
 }
 
 /// Nucleus sampling: keep the smallest descending-prob set whose
 /// cumulative mass covers `p`, mask the rest with `-inf` in logit
 /// space, sample. Returns original token ids.
-pub fn top_p_sample(logits: &Array, p: f32) -> Result<Array, Exception> {
+pub fn top_p_sample(logits: &Array, p: f32) -> Result<Array, Error> {
     let probs = softmax_axis(logits, -1, true)?;
     // argsort is ascending; negate to get descending order of probs.
     let neg = probs.negative()?;
@@ -226,7 +227,7 @@ pub fn top_p_sample(logits: &Array, p: f32) -> Result<Array, Exception> {
     let sorted_pick = categorical!(&masked)?;
     let pick = sorted_pick.index((Ellipsis, NewAxis));
     let token = take_along_axis(&order, &pick, -1)?;
-    token.squeeze_axes(&[-1])
+    Ok(token.squeeze_axes(&[-1])?)
 }
 
 /// Log-probabilities over a single distribution after temperature
@@ -243,7 +244,7 @@ pub(crate) fn masked_temp_log_probs(
     logits: &Array,
     keep_mask: Option<&Array>,
     inv_temp: &Array,
-) -> Result<Array, Exception> {
+) -> Result<Array, Error> {
     let scaled = multiply(logits, inv_temp)?;
     let masked = if let Some(mask) = keep_mask {
         let neg_inf = Array::from_f32(f32::NEG_INFINITY).as_dtype(scaled.dtype())?;
@@ -251,7 +252,7 @@ pub(crate) fn masked_temp_log_probs(
     } else {
         scaled
     };
-    log_softmax(&masked, -1)
+    Ok(log_softmax(&masked, -1)?)
 }
 
 #[cfg(test)]

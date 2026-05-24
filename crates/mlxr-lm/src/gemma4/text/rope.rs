@@ -2,11 +2,12 @@
 //! `partial_rotary_factor × D` dimensions; remaining freqs are `inf`
 //! so `mx.fast.rope` leaves those positions untouched.
 
-use mlxr::error::Exception;
 use mlxr::layers::RopeInput;
 use mlxr::module::{Module, ModuleParamMut, ModuleParamRef, ModuleParameters};
 use mlxr::ops::{arange, concatenate_axis, full};
 use mlxr::{fast, Array};
+
+use crate::error::Error;
 
 const F32_INF: f32 = f32::INFINITY;
 
@@ -51,7 +52,7 @@ impl ProportionalRope {
         traditional: bool,
         base: f32,
         factor: f32,
-    ) -> Result<Self, Exception> {
+    ) -> Result<Self, Error> {
         assert!(rotated_dims <= dims, "rotated_dims must be ≤ dims");
         assert!(rotated_dims % 2 == 0, "rotated_dims must be even");
 
@@ -79,11 +80,11 @@ impl ProportionalRope {
 
 impl<'a> Module<RopeInput<'a>> for ProportionalRope {
     type Output = Array;
-    type Error = Exception;
+    type Error = Error;
 
     fn forward(&mut self, input: RopeInput<'a>) -> Result<Array, Self::Error> {
         let RopeInput { x, offset } = input;
-        fast::rope(
+        Ok(fast::rope(
             x,
             self.dims,
             self.traditional,
@@ -91,7 +92,7 @@ impl<'a> Module<RopeInput<'a>> for ProportionalRope {
             1.0,
             offset,
             Some(&self.freqs),
-        )
+        )?)
     }
 
     fn training_mode(&mut self, _mode: bool) {}

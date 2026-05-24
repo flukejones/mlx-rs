@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 
 use mlxr::{
-    error::Exception,
     fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask},
     ops::{
         dequantize,
@@ -26,7 +25,7 @@ use super::kernels::{
 };
 use super::kvcache::DEFAULT_KV_CACHE_STEP;
 use super::rotation;
-use super::trait_def::KeyValueCache;
+use super::trait_def::{assert_mask_matches_keys, ceil_step, KeyValueCache};
 
 /// Perf crossover for the fused qsdpa kernel. Past this, the per-
 /// simdgroup serial K-token processing loses to mlx's tiled
@@ -135,7 +134,7 @@ impl QuantizedKVCache {
     /// Get the cached rotation matrix cast to `dtype`, building it on
     /// first access. Used by the rotate / un-rotate paths so the cast
     /// launch happens once per dtype instead of every call.
-    fn rotation_for(&mut self, dtype: Dtype) -> Result<Option<&Array>, Exception> {
+    fn rotation_for(&mut self, dtype: Dtype) -> Result<Option<&Array>, Error> {
         let Some(pi) = self.rotation.as_ref() else {
             return Ok(None);
         };
@@ -237,7 +236,7 @@ impl QuantizedKVCache {
         &mut self,
         keys: Array,
         values: Array,
-    ) -> Result<((Array, Array, Array), (Array, Array, Array)), Exception> {
+    ) -> Result<((Array, Array, Array), (Array, Array, Array)), Error> {
         let s = keys.shape()[keys.shape().len() - 2];
 
         if self.dtype.is_none() {
@@ -353,9 +352,9 @@ impl QuantizedKVCache {
         new_v_wq: &Array,
         new_v_scales: &Array,
         new_v_biases: &Array,
-    ) -> Result<(), Exception> {
+    ) -> Result<(), Error> {
         let new_tokens = new_k_wq.shape()[new_k_wq.shape().len() - 2];
-        let target_cap = super::trait_def::ceil_step(self.offset + new_tokens, self.step);
+        let target_cap = ceil_step(self.offset + new_tokens, self.step);
 
         let current_cap = self
             .keys_wq
@@ -366,12 +365,12 @@ impl QuantizedKVCache {
             return Ok(());
         }
 
-        fn alloc_like(template: &Array, capacity: i32) -> Result<Array, Exception> {
+        fn alloc_like(template: &Array, capacity: i32) -> Result<Array, Error> {
             let shape = template.shape();
             let mut buf_shape = shape.to_vec();
             let t_axis = buf_shape.len() - 2;
             buf_shape[t_axis] = capacity;
-            zeros_dtype(&buf_shape, template.dtype())
+            Ok(zeros_dtype(&buf_shape, template.dtype())?)
         }
 
         let mut grown = [
@@ -488,11 +487,7 @@ impl KeyValueCache for QuantizedKVCache {
         m
     }
 
-    fn update_and_fetch(
-        &mut self,
-        keys: Array,
-        values: Array,
-    ) -> Result<(Array, Array), Exception> {
+    fn update_and_fetch(&mut self, keys: Array, values: Array) -> Result<(Array, Array), Error> {
         let ((k_wq, k_s, k_b), (v_wq, v_s, v_b)) = self.append_quantised(keys, values)?;
         let k_dense = dequantize(&k_wq, &k_s, &k_b, self.group_size, self.bits)?;
         let v_dense = dequantize(&v_wq, &v_s, &v_b, self.group_size, self.bits)?;
@@ -515,18 +510,18 @@ impl KeyValueCache for QuantizedKVCache {
         values: Array,
         scale: f32,
         mask: Option<&Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         if !self.use_quantized_matmul {
             let (k_full, v_full) = self.update_and_fetch(keys, values)?;
-            super::trait_def::assert_mask_matches_keys(mask, &k_full);
-            return scaled_dot_product_attention(
+            assert_mask_matches_keys(mask, &k_full);
+            return Ok(scaled_dot_product_attention(
                 queries,
                 k_full,
                 v_full,
                 scale,
                 mask.map(ScaledDotProductAttentionMask::Array),
                 None,
-            );
+            )?);
         }
 
         let ql_off = self.offset;
@@ -615,7 +610,7 @@ impl KeyValueCache for QuantizedKVCache {
 
         let out_dtype = out.dtype();
         match self.rotation_for(out_dtype)? {
-            Some(pi) => out.matmul(pi),
+            Some(pi) => Ok(out.matmul(pi)?),
             None => Ok(out),
         }
     }

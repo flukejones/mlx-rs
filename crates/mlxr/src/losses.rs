@@ -2,7 +2,7 @@
 
 use crate::{
     array,
-    error::{CrossEntropyBuildError, Exception},
+    error::{CrossEntropyBuildError, Exception, Result},
     ops::{
         abs, clip, exp, indexing::take_along_axis, log, logaddexp, logsumexp_axes, maximum,
         minimum, multiply, power, r#where, sqrt, square, sum_axes, sum_axis,
@@ -12,12 +12,7 @@ use crate::{
 use mlxr_codegen::{generate_builder, Buildable};
 
 #[inline]
-fn check_shape(
-    left: &Array,
-    right: &Array,
-    left_ident: &str,
-    right_ident: &str,
-) -> Result<(), Exception> {
+fn check_shape(left: &Array, right: &Array, left_ident: &str, right_ident: &str) -> Result<()> {
     if left.shape() != right.shape() {
         return Err(Exception::custom(format!(
             "The shape of the {} ({:?}) does not match the shape of the {} ({:?})",
@@ -43,7 +38,7 @@ pub enum LossReduction {
 
 impl LossReduction {
     /// Reduces the loss according to the reduction type.
-    pub fn reduce(&self, loss: Array) -> Result<Array, Exception> {
+    pub fn reduce(&self, loss: Array) -> Result<Array> {
         match self {
             Self::None => Ok(loss),
             Self::Sum => Ok(loss.sum(None)?),
@@ -86,7 +81,7 @@ generate_builder! {
 
 fn build_cross_entropy(
     builder: CrossEntropyBuilder<'_>,
-) -> Result<CrossEntropy<'_>, CrossEntropyBuildError> {
+) -> std::result::Result<CrossEntropy<'_>, CrossEntropyBuildError> {
     let axis = builder.axis;
     let label_smoothing = builder.label_smoothing;
     let reduction = builder.reduction;
@@ -122,11 +117,7 @@ impl<'a> CrossEntropy<'a> {
     ///
     /// - `logits`: unnormalized predicted logits
     /// - `targets`: target values, as class indices
-    pub fn apply(
-        &self,
-        logits: impl AsRef<Array>,
-        targets: impl AsRef<Array>,
-    ) -> Result<Array, Exception> {
+    pub fn apply(&self, logits: impl AsRef<Array>, targets: impl AsRef<Array>) -> Result<Array> {
         let logits = logits.as_ref();
         let targets = targets.as_ref();
 
@@ -207,11 +198,7 @@ impl<'a> BinaryCrossEntropy<'a> {
     ///
     /// - `logits`: unnormalized predicted logits
     /// - `targets`: binary target values in {0, 1}
-    pub fn apply(
-        &self,
-        logits: impl AsRef<Array>,
-        targets: impl AsRef<Array>,
-    ) -> Result<Array, Exception> {
+    pub fn apply(&self, logits: impl AsRef<Array>, targets: impl AsRef<Array>) -> Result<Array> {
         let logits = logits.as_ref();
         let targets = targets.as_ref();
         let weights = self.weights;
@@ -265,7 +252,7 @@ impl L1Loss {
         &self,
         predictions: impl AsRef<Array>,
         targets: impl AsRef<Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array> {
         let predictions = predictions.as_ref();
         let targets = targets.as_ref();
         let reduction = self.reduction;
@@ -302,7 +289,7 @@ impl MseLoss {
         &self,
         predictions: impl AsRef<Array>,
         targets: impl AsRef<Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array> {
         let predictions = predictions.as_ref();
         let targets = targets.as_ref();
         let reduction = self.reduction;
@@ -342,11 +329,7 @@ impl NllLoss {
     ///
     /// - `inputs`: predicted distribution in log space
     /// - `targets`: target values
-    pub fn apply(
-        &self,
-        inputs: impl AsRef<Array>,
-        targets: impl AsRef<Array>,
-    ) -> Result<Array, Exception> {
+    pub fn apply(&self, inputs: impl AsRef<Array>, targets: impl AsRef<Array>) -> Result<Array> {
         let inputs = inputs.as_ref();
         let targets = targets.as_ref();
         let axis = self.axis;
@@ -402,7 +385,7 @@ impl GaussianNllLoss {
         inputs: impl AsRef<Array>,
         targets: impl AsRef<Array>,
         vars: impl AsRef<Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array> {
         let inputs = inputs.as_ref();
         let targets = targets.as_ref();
         let vars = vars.as_ref();
@@ -461,11 +444,7 @@ impl KlDivLoss {
     ///
     /// - `inputs`: Log probabilities for the predicted distribution.
     /// - `targets`: Log probabilities for the target distribution.
-    pub fn apply(
-        &self,
-        inputs: impl AsRef<Array>,
-        targets: impl AsRef<Array>,
-    ) -> Result<Array, Exception> {
+    pub fn apply(&self, inputs: impl AsRef<Array>, targets: impl AsRef<Array>) -> Result<Array> {
         let inputs = inputs.as_ref();
         let targets = targets.as_ref();
         let axis = self.axis;
@@ -518,7 +497,7 @@ impl SmoothL1Loss {
         &self,
         predictions: impl AsRef<Array>,
         targets: impl AsRef<Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array> {
         let predictions = predictions.as_ref();
         let targets = targets.as_ref();
         let beta = self.beta;
@@ -594,7 +573,7 @@ impl TripletLoss {
         anchors: impl AsRef<Array>,
         positives: impl AsRef<Array>,
         negatives: impl AsRef<Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array> {
         let anchors = anchors.as_ref();
         let positives = positives.as_ref();
         let negatives = negatives.as_ref();
@@ -645,11 +624,7 @@ impl HingeLoss {
     ///
     /// - `inputs`: predicted values
     /// - `targets`: target values, -1 or 1
-    pub fn apply(
-        &self,
-        inputs: impl AsRef<Array>,
-        targets: impl AsRef<Array>,
-    ) -> Result<Array, Exception> {
+    pub fn apply(&self, inputs: impl AsRef<Array>, targets: impl AsRef<Array>) -> Result<Array> {
         let inputs = inputs.as_ref();
         let targets = targets.as_ref();
         let reduction = self.reduction;
@@ -691,11 +666,7 @@ impl HuberLoss {
     ///
     /// - `inputs`: predicted values
     /// - `targets`: target values
-    pub fn apply(
-        &self,
-        inputs: impl AsRef<Array>,
-        targets: impl AsRef<Array>,
-    ) -> Result<Array, Exception> {
+    pub fn apply(&self, inputs: impl AsRef<Array>, targets: impl AsRef<Array>) -> Result<Array> {
         let inputs = inputs.as_ref();
         let targets = targets.as_ref();
         let delta = self.delta;
@@ -738,11 +709,7 @@ impl LogCoshLoss {
     ///
     /// - `inputs`: predicted values
     /// - `targets`: target values
-    pub fn apply(
-        &self,
-        inputs: impl AsRef<Array>,
-        targets: impl AsRef<Array>,
-    ) -> Result<Array, Exception> {
+    pub fn apply(&self, inputs: impl AsRef<Array>, targets: impl AsRef<Array>) -> Result<Array> {
         let inputs = inputs.as_ref();
         let targets = targets.as_ref();
         let reduction = self.reduction;
@@ -791,14 +758,14 @@ impl CosineSimilarityLoss {
     ///
     /// - `x1`: first array
     /// - `x2`: second array
-    pub fn apply(&self, x1: impl AsRef<Array>, x2: impl AsRef<Array>) -> Result<Array, Exception> {
+    pub fn apply(&self, x1: impl AsRef<Array>, x2: impl AsRef<Array>) -> Result<Array> {
         let x1 = x1.as_ref();
         let x2 = x2.as_ref();
         let axis = self.axis;
         let eps = self.eps;
         let reduction = self.reduction;
 
-        fn l2_loss(a: &Array, axis: i32) -> Result<Array, Exception> {
+        fn l2_loss(a: &Array, axis: i32) -> Result<Array> {
             if a.dtype().is_complex() {
                 Ok(sqrt(&sum_axis(&abs(a)?.square()?, axis, None)?)?)
             } else {
@@ -854,7 +821,7 @@ impl MarginRankingLoss {
         inputs1: impl AsRef<Array>,
         inputs2: impl AsRef<Array>,
         targets: impl AsRef<Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array> {
         let inputs1 = inputs1.as_ref();
         let inputs2 = inputs2.as_ref();
         let targets = targets.as_ref();

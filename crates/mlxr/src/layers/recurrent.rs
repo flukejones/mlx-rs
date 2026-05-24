@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     array,
-    error::Exception,
+    error::{Exception, Result},
     module::{Module, Param},
     ops::{
         addmm,
@@ -16,7 +16,7 @@ use mlxr_codegen::{generate_builder, Buildable, Builder};
 use mlxr_macros::ModuleParameters;
 
 /// Type alias for the non-linearity function.
-pub type NonLinearity = dyn Fn(&Array, &Stream) -> Result<Array, Exception>;
+pub type NonLinearity = dyn Fn(&Array, &Stream) -> Result<Array>;
 
 /// An Elman recurrent layer.
 ///
@@ -81,7 +81,7 @@ impl std::fmt::Debug for RnnBuilder {
 }
 
 /// Build the [`Rnn`] module.
-fn build_rnn(builder: RnnBuilder) -> Result<Rnn, Exception> {
+fn build_rnn(builder: RnnBuilder) -> Result<Rnn> {
     let input_size = builder.input_size;
     let hidden_size = builder.hidden_size;
     let non_linearity = builder
@@ -123,7 +123,7 @@ impl Rnn {
     pub const DEFAULT_NONLINEARITY: Option<Arc<NonLinearity>> = None;
 
     /// Apply a single step of the RNN.
-    pub fn step(&mut self, x: &Array, hidden: Option<&Array>) -> Result<Array, Exception> {
+    pub fn step(&mut self, x: &Array, hidden: Option<&Array>) -> Result<Array> {
         let x = if let Some(bias) = &self.bias.value {
             addmm(bias, x, self.wxh.t(), None, None)?
         } else {
@@ -206,7 +206,7 @@ where
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, input: Input) -> Result<Array, Exception> {
+    fn forward(&mut self, input: Input) -> Result<Array> {
         let input = input.into();
         self.step(input.x, input.hidden)
     }
@@ -268,7 +268,7 @@ pub struct GruBuilder {
     pub bias: bool,
 }
 
-fn build_gru(builder: GruBuilder) -> Result<Gru, Exception> {
+fn build_gru(builder: GruBuilder) -> Result<Gru> {
     let input_size = builder.input_size;
     let hidden_size = builder.hidden_size;
 
@@ -297,7 +297,7 @@ impl Gru {
     pub const DEFAULT_BIAS: bool = true;
 
     /// Apply a single step of the GRU.
-    pub fn step(&mut self, x: &Array, hidden: Option<&Array>) -> Result<Array, Exception> {
+    pub fn step(&mut self, x: &Array, hidden: Option<&Array>) -> Result<Array> {
         let x = if let Some(b) = &self.bias.value {
             addmm(b, x, self.wx.t(), None, None)?
         } else {
@@ -368,7 +368,7 @@ where
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, input: Input) -> Result<Array, Exception> {
+    fn forward(&mut self, input: Input) -> Result<Array> {
         let input = input.into();
         self.step(input.x, input.hidden)
     }
@@ -413,7 +413,7 @@ pub struct LstmBuilder {
     pub bias: bool,
 }
 
-fn build_lstm(builder: LstmBuilder) -> Result<Lstm, Exception> {
+fn build_lstm(builder: LstmBuilder) -> Result<Lstm> {
     let input_size = builder.input_size;
     let hidden_size = builder.hidden_size;
     let scale = 1.0 / f32::sqrt(hidden_size as f32);
@@ -521,7 +521,7 @@ impl Lstm {
         x: &Array,
         hidden: Option<&Array>,
         cell: Option<&Array>,
-    ) -> Result<(Array, Array), Exception> {
+    ) -> Result<(Array, Array)> {
         let x = if let Some(b) = &self.bias.value {
             addmm(b, x, self.wx.t(), None, None)?
         } else {
@@ -569,7 +569,7 @@ where
     type Output = (Array, Array);
     type Error = Exception;
 
-    fn forward(&mut self, input: Input) -> Result<(Array, Array), Exception> {
+    fn forward(&mut self, input: Input) -> Result<(Array, Array)> {
         let input = input.into();
         self.step(input.x, input.hidden, input.cell)
     }

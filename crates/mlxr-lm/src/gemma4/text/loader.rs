@@ -2,7 +2,10 @@
 //! `weights::load_gemma4_model_sanitized` (one fn, called by the
 //! adapter directly).
 
-use crate::cache::{KVCache, RotatingKVCache};
+use mlxr::Array;
+
+use crate::cache::{KVCache, KeyValueCache, RotatingKVCache};
+use crate::error::Error;
 use crate::gemma4::text::config::{LayerKind, TextConfig};
 
 /// One cache slot per non-shared layer. Shared-KV layers share the
@@ -45,12 +48,8 @@ impl Default for Gemma4LayerCache {
     }
 }
 
-impl crate::cache::KeyValueCache for Gemma4LayerCache {
-    fn update_and_fetch(
-        &mut self,
-        keys: mlxr::Array,
-        values: mlxr::Array,
-    ) -> Result<(mlxr::Array, mlxr::Array), mlxr::error::Exception> {
+impl KeyValueCache for Gemma4LayerCache {
+    fn update_and_fetch(&mut self, keys: Array, values: Array) -> Result<(Array, Array), Error> {
         match self {
             Self::Global(c) => c.update_and_fetch(keys, values),
             Self::Sliding(c) => c.update_and_fetch(keys, values),

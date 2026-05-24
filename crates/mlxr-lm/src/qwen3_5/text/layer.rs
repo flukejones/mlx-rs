@@ -22,6 +22,7 @@ use mlxr::{
 };
 
 use crate::cache::KeyValueCache;
+use crate::error::Error;
 
 use super::cache::LayerCache;
 use super::config::TextConfig;
@@ -38,7 +39,7 @@ use super::text::{Attention, Mlp};
 #[derive(Debug, ModuleParameters, Quantizable)]
 pub struct DecoderLayer<F = Mlp>
 where
-    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+    F: for<'a> Module<&'a Array, Output = Array, Error = Error>
         + QuantizableTrait<Quantized = F, QuantizationError = Exception>
         + std::fmt::Debug,
 {
@@ -65,20 +66,16 @@ where
 
 impl<F> DecoderLayer<F>
 where
-    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+    F: for<'a> Module<&'a Array, Output = Array, Error = Error>
         + QuantizableTrait<Quantized = F, QuantizationError = Exception>
         + std::fmt::Debug,
 {
     /// Build a layer of the right kind for the given index. `make_ffn`
     /// constructs the per-layer FFN (typically `Mlp::new` for dense or
     /// `Qwen35MoeBlock::new` for the MoE variant).
-    pub fn new<MakeF>(
-        cfg: &TextConfig,
-        layer_idx: usize,
-        make_ffn: MakeF,
-    ) -> Result<Self, Exception>
+    pub fn new<MakeF>(cfg: &TextConfig, layer_idx: usize, make_ffn: MakeF) -> Result<Self, Error>
     where
-        MakeF: FnOnce(&TextConfig) -> Result<F, Exception>,
+        MakeF: FnOnce(&TextConfig) -> Result<F, Error>,
     {
         let is_linear = layer_is_linear(cfg, layer_idx);
         let (self_attn, linear_attn) = if is_linear {
@@ -111,7 +108,7 @@ where
         ssm_mask: Option<&Array>,
         cache: Option<&mut LayerCache>,
         position_ids: Option<&Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         let normed = self.input_layernorm.forward(x)?;
         let attn_out = if self.is_linear {
             let blk = self
@@ -132,7 +129,7 @@ where
         let mlp_out = self
             .mlp
             .forward(&self.post_attention_layernorm.forward(&h)?)?;
-        h.add(&mlp_out)
+        Ok(h.add(&mlp_out)?)
     }
 
     /// Toggle training mode on every parameter (attention/GDN, norms, FFN).
@@ -163,7 +160,7 @@ pub type DenseDecoderLayer = DecoderLayer<Mlp>;
 impl DecoderLayer<Mlp> {
     /// Convenience constructor for the dense (Mlp-FFN) layer; mirrors
     /// the pre-generic API.
-    pub fn new_dense(cfg: &TextConfig, layer_idx: usize) -> Result<Self, Exception> {
+    pub fn new_dense(cfg: &TextConfig, layer_idx: usize) -> Result<Self, Error> {
         Self::new(cfg, layer_idx, |c| {
             Mlp::new(c.hidden_size, c.intermediate_size)
         })
@@ -172,7 +169,7 @@ impl DecoderLayer<Mlp> {
 
 impl<F> DecoderLayer<F>
 where
-    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+    F: for<'a> Module<&'a Array, Output = Array, Error = Error>
         + QuantizableTrait<Quantized = F, QuantizationError = Exception>
         + std::fmt::Debug,
 {
@@ -180,9 +177,9 @@ where
     /// MTP heads in Qwen 3.6 always use standard QKV attention even when
     /// the corresponding main-decoder position would have been a linear
     /// (Mamba-style) layer.
-    pub fn new_self_attn<MakeF>(cfg: &TextConfig, make_ffn: MakeF) -> Result<Self, Exception>
+    pub fn new_self_attn<MakeF>(cfg: &TextConfig, make_ffn: MakeF) -> Result<Self, Error>
     where
-        MakeF: FnOnce(&TextConfig) -> Result<F, Exception>,
+        MakeF: FnOnce(&TextConfig) -> Result<F, Error>,
     {
         let input_layernorm = layers::RmsNormBuilder::new(cfg.hidden_size)
             .eps(cfg.rms_norm_eps)
@@ -217,7 +214,7 @@ where
 #[derive(Debug, ModuleParameters, Quantizable)]
 pub struct MtpHead<F = Mlp>
 where
-    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+    F: for<'a> Module<&'a Array, Output = Array, Error = Error>
         + QuantizableTrait<Quantized = F, QuantizationError = Exception>
         + std::fmt::Debug,
 {
@@ -237,13 +234,13 @@ where
 
 impl<F> MtpHead<F>
 where
-    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+    F: for<'a> Module<&'a Array, Output = Array, Error = Error>
         + QuantizableTrait<Quantized = F, QuantizationError = Exception>
         + std::fmt::Debug,
 {
-    pub fn new<MakeF>(cfg: &TextConfig, mut make_ffn: MakeF) -> Result<Self, Exception>
+    pub fn new<MakeF>(cfg: &TextConfig, mut make_ffn: MakeF) -> Result<Self, Error>
     where
-        MakeF: FnMut(&TextConfig) -> Result<F, Exception>,
+        MakeF: FnMut(&TextConfig) -> Result<F, Error>,
     {
         let h = cfg.hidden_size;
         let pre_fc_norm_hidden = layers::RmsNormBuilder::new(h)
@@ -284,9 +281,9 @@ where
         embed_next: &Array,
         caches: &mut [LayerCache],
         position_ids: Option<&Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         let h = self.run_inner(h_t, embed_next, caches, position_ids)?;
-        self.norm.forward(&h)
+        Ok(self.norm.forward(&h)?)
     }
 
     /// Run the MTP head over a multi-token prompt segment purely to
@@ -306,7 +303,7 @@ where
         h_full: &Array,
         embed_full: &Array,
         caches: &mut [LayerCache],
-    ) -> Result<(), Exception> {
+    ) -> Result<(), Error> {
         self.run_inner(h_full, embed_full, caches, None)?;
         Ok(())
     }
@@ -317,7 +314,7 @@ where
         embed_next: &Array,
         caches: &mut [LayerCache],
         position_ids: Option<&Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         let h_n = self.pre_fc_norm_hidden.forward(h_t)?;
         let e_n = self.pre_fc_norm_embedding.forward(embed_next)?;
         let combined = concatenate_axis(&[e_n, h_n], -1)?;
@@ -376,7 +373,7 @@ pub struct DecoderOutput {
 #[derive(Debug, ModuleParameters, Quantizable)]
 pub struct Qwen35Decoder<F = Mlp>
 where
-    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+    F: for<'a> Module<&'a Array, Output = Array, Error = Error>
         + QuantizableTrait<Quantized = F, QuantizationError = Exception>
         + std::fmt::Debug,
 {
@@ -397,16 +394,16 @@ where
 
 impl<F> Qwen35Decoder<F>
 where
-    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+    F: for<'a> Module<&'a Array, Output = Array, Error = Error>
         + QuantizableTrait<Quantized = F, QuantizationError = Exception>
         + std::fmt::Debug,
 {
     /// Build a freshly-initialised decoder. `make_ffn` is called once per
     /// layer to construct the FFN block (e.g. dense `Mlp::new` or MoE
     /// `Qwen35MoeBlock::new`).
-    pub fn new<MakeF>(cfg: &TextConfig, mut make_ffn: MakeF) -> Result<Self, Exception>
+    pub fn new<MakeF>(cfg: &TextConfig, mut make_ffn: MakeF) -> Result<Self, Error>
     where
-        MakeF: FnMut(&TextConfig) -> Result<F, Exception>,
+        MakeF: FnMut(&TextConfig) -> Result<F, Error>,
     {
         let embed_tokens = layers::Embedding::new(cfg.vocab_size, cfg.hidden_size)?;
         let layers = (0..cfg.num_hidden_layers as usize)
@@ -439,7 +436,7 @@ where
         inputs_embeds: Option<&Array>,
         caches: &mut [LayerCache],
         position_ids: Option<&Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         Ok(self
             .forward_pre_and_post_norm(inputs, inputs_embeds, caches, position_ids)?
             .post_norm)
@@ -455,17 +452,17 @@ where
         inputs_embeds: Option<&Array>,
         caches: &mut [LayerCache],
         position_ids: Option<&Array>,
-    ) -> Result<DecoderOutput, Exception> {
+    ) -> Result<DecoderOutput, Error> {
         let mut h = if let Some(e) = inputs_embeds {
             e.clone()
         } else {
-            let ids = inputs.ok_or_else(|| {
-                Exception::custom("Qwen35Decoder::forward: needs either inputs or inputs_embeds")
-            })?;
+            let ids = inputs.ok_or(Error::MissingInput(
+                "Qwen35Decoder::forward: needs either inputs or inputs_embeds",
+            ))?;
             self.embed_tokens.forward(ids)?
         };
         if caches.len() != self.layers.len() {
-            return Err(Exception::custom(format!(
+            return Err(Error::shape(format!(
                 "Qwen35Decoder::forward: expected {} caches, got {}",
                 self.layers.len(),
                 caches.len()
@@ -509,7 +506,7 @@ where
     /// Returns `None` for decode steps (`T == 1`) where the implicit causal
     /// handling inside `fast::scaled_dot_product_attention` already covers
     /// the trivial mask shape.
-    fn build_full_attn_mask(h: &Array, caches: &[LayerCache]) -> Result<Option<Array>, Exception> {
+    fn build_full_attn_mask(h: &Array, caches: &[LayerCache]) -> Result<Option<Array>, Error> {
         let shape = h.shape();
         let t = shape[1];
         if t <= 1 {
@@ -559,7 +556,7 @@ pub type DenseQwen35Decoder = Qwen35Decoder<Mlp>;
 
 impl Qwen35Decoder<Mlp> {
     /// Dense convenience constructor.
-    pub fn new_dense(cfg: &TextConfig) -> Result<Self, Exception> {
+    pub fn new_dense(cfg: &TextConfig) -> Result<Self, Error> {
         Self::new(cfg, |c| Mlp::new(c.hidden_size, c.intermediate_size))
     }
 }
@@ -575,7 +572,7 @@ impl Qwen35Decoder<Mlp> {
 #[derive(Debug, ModuleParameters, Quantizable)]
 pub struct Qwen35Model<F = Mlp>
 where
-    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+    F: for<'a> Module<&'a Array, Output = Array, Error = Error>
         + QuantizableTrait<Quantized = F, QuantizationError = Exception>
         + std::fmt::Debug,
 {
@@ -598,16 +595,16 @@ where
 
 impl<F> Qwen35Model<F>
 where
-    F: for<'a> Module<&'a Array, Output = Array, Error = Exception>
+    F: for<'a> Module<&'a Array, Output = Array, Error = Error>
         + QuantizableTrait<Quantized = F, QuantizationError = Exception>
         + std::fmt::Debug,
 {
     /// Build a freshly-initialised language model. `make_ffn` is called
     /// once per decoder layer (and once more per MTP layer when the
     /// config enables an MTP head) to construct the FFN block.
-    pub fn new<MakeF>(cfg: TextConfig, mut make_ffn: MakeF) -> Result<Self, Exception>
+    pub fn new<MakeF>(cfg: TextConfig, mut make_ffn: MakeF) -> Result<Self, Error>
     where
-        MakeF: FnMut(&TextConfig) -> Result<F, Exception>,
+        MakeF: FnMut(&TextConfig) -> Result<F, Error>,
     {
         let model = Qwen35Decoder::<F>::new(&cfg, &mut make_ffn)?;
         let lm_head = if !cfg.tie_word_embeddings {
@@ -639,7 +636,7 @@ where
         inputs_embeds: Option<&Array>,
         caches: &mut [LayerCache],
         position_ids: Option<&Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         let (_, logits) =
             self.forward_hidden_and_logits(inputs, inputs_embeds, caches, position_ids)?;
         Ok(logits)
@@ -659,7 +656,7 @@ where
         inputs_embeds: Option<&Array>,
         caches: &mut [LayerCache],
         position_ids: Option<&Array>,
-    ) -> Result<(Array, Array), Exception> {
+    ) -> Result<(Array, Array), Error> {
         let DecoderOutput { post_norm, .. } =
             self.model
                 .forward_pre_and_post_norm(inputs, inputs_embeds, caches, position_ids)?;
@@ -670,13 +667,13 @@ where
     /// Project a hidden state to vocab logits via the LM head (tied
     /// embed lookup or untied `lm_head` linear, whichever the cfg
     /// selected).
-    pub fn apply_lm_head(&mut self, hidden: &Array) -> Result<Array, Exception> {
+    pub fn apply_lm_head(&mut self, hidden: &Array) -> Result<Array, Error> {
         if let Some(head) = self.lm_head.as_mut() {
-            head.forward(hidden)
+            Ok(head.forward(hidden)?)
         } else {
             match &mut self.model.embed_tokens {
-                MaybeQuantized::Original(e) => e.as_linear(hidden),
-                MaybeQuantized::Quantized(q) => q.as_linear(hidden),
+                MaybeQuantized::Original(e) => Ok(e.as_linear(hidden)?),
+                MaybeQuantized::Quantized(q) => Ok(q.as_linear(hidden)?),
             }
         }
     }
@@ -684,10 +681,10 @@ where
     /// Embed token ids via the (possibly quantised) `embed_tokens` table.
     /// Needed by the MTP head — it consumes `embed(token_t+1)` as one of
     /// its two inputs.
-    pub fn embed_tokens(&mut self, ids: &Array) -> Result<Array, Exception> {
+    pub fn embed_tokens(&mut self, ids: &Array) -> Result<Array, Error> {
         match &mut self.model.embed_tokens {
-            MaybeQuantized::Original(e) => e.forward(ids),
-            MaybeQuantized::Quantized(q) => q.forward(ids),
+            MaybeQuantized::Original(e) => Ok(e.forward(ids)?),
+            MaybeQuantized::Quantized(q) => Ok(q.forward(ids)?),
         }
     }
 
@@ -707,7 +704,7 @@ where
 
 impl Qwen35Model<Mlp> {
     /// Dense convenience constructor; mirrors the pre-generic API.
-    pub fn new_dense(cfg: TextConfig) -> Result<Self, Exception> {
+    pub fn new_dense(cfg: TextConfig) -> Result<Self, Error> {
         Self::new(cfg, |c| Mlp::new(c.hidden_size, c.intermediate_size))
     }
 }
@@ -718,11 +715,12 @@ mod tests {
     #![allow(clippy::missing_assert_message, reason = "test code")]
     #![allow(clippy::print_stdout, reason = "test code")]
     #![allow(clippy::print_stderr, reason = "test code")]
+    use super::super::config::ModelConfig;
     use super::*;
     use crate::qwen3_5::text::cache::make_caches;
     use mlxr::{random::uniform, transforms::eval, Array};
 
-    fn synthetic_config(layer_types: Vec<&str>) -> super::super::config::ModelConfig {
+    fn synthetic_config(layer_types: Vec<&str>) -> ModelConfig {
         let layers: Vec<String> = layer_types.into_iter().map(String::from).collect();
         let n = layers.len() as i32;
         let json = serde_json::json!({

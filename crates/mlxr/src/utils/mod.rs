@@ -5,7 +5,11 @@ use mlxr_sys::mlx_vector_array;
 
 use crate::error::set_closure_error;
 use crate::module::ModuleParameters;
-use crate::{complex64, error::Exception, Array, FromNested};
+use crate::{
+    complex64,
+    error::{Exception, Result},
+    Array, FromNested,
+};
 use std::marker::PhantomData;
 #[cfg(feature = "optimizers")]
 use std::{collections::HashMap, rc::Rc};
@@ -52,9 +56,7 @@ impl VectorArray {
         self.c_vec
     }
 
-    pub(crate) fn try_from_iter(
-        iter: impl Iterator<Item = impl AsRef<Array>>,
-    ) -> Result<Self, Exception> {
+    pub(crate) fn try_from_iter(iter: impl Iterator<Item = impl AsRef<Array>>) -> Result<Self> {
         Self::try_from_op(|res| unsafe {
             let mut status = SUCCESS;
             for arr in iter {
@@ -67,7 +69,7 @@ impl VectorArray {
         })
     }
 
-    pub(crate) fn try_into_values<T>(self) -> Result<T, Exception>
+    pub(crate) fn try_into_values<T>(self) -> Result<T>
     where
         T: FromIterator<Array>,
     {
@@ -77,13 +79,13 @@ impl VectorArray {
                 .map(|i| {
                     Array::try_from_op(|res| mlxr_sys::mlx_vector_array_get(res, self.c_vec, i))
                 })
-                .collect::<Result<T, Exception>>()
+                .collect::<Result<T>>()
         }
     }
 
     /// Drain a single-element vector into one Array. Errors if length != 1.
     /// Allocation-free: no Vec is built, the C-vector is read directly.
-    pub(crate) fn try_into_one(self) -> Result<Array, Exception> {
+    pub(crate) fn try_into_one(self) -> Result<Array> {
         let size = unsafe { mlxr_sys::mlx_vector_array_size(self.c_vec) };
         if size != 1 {
             return Err(Exception::custom(format!(
@@ -98,7 +100,7 @@ impl VectorArray {
     ///
     /// Allocation-free on the happy path: each element is read directly
     /// into the stack-allocated array slot, no intermediate `Vec`.
-    pub(crate) fn try_into_array<const N: usize>(self) -> Result<[Array; N], Exception> {
+    pub(crate) fn try_into_array<const N: usize>(self) -> Result<[Array; N]> {
         use std::mem::MaybeUninit;
 
         let size = unsafe { mlxr_sys::mlx_vector_array_size(self.c_vec) };
@@ -272,7 +274,7 @@ impl<'a> Closure<'a> {
 
     pub(crate) fn new_fallible<F>(closure: F) -> Self
     where
-        F: FnMut(&[Array]) -> Result<Vec<Array>, Exception> + 'a,
+        F: FnMut(&[Array]) -> Result<Vec<Array>> + 'a,
     {
         let c_closure = new_mlx_fallible_closure(closure);
         Self {
@@ -312,7 +314,7 @@ where
 
 fn new_mlx_fallible_closure<'a, F>(closure: F) -> mlxr_sys::mlx_closure
 where
-    F: FnMut(&[Array]) -> Result<Vec<Array>, Exception> + 'a,
+    F: FnMut(&[Array]) -> Result<Vec<Array>> + 'a,
 {
     let boxed = Box::new(closure);
     let raw = Box::into_raw(boxed);
@@ -338,7 +340,7 @@ fn new_mlx_vector_array(arrays: Vec<Array>) -> mlx_vector_array {
     }
 }
 
-fn mlx_vector_array_values(vector_array: mlx_vector_array) -> Result<Vec<Array>, Exception> {
+fn mlx_vector_array_values(vector_array: mlx_vector_array) -> Result<Vec<Array>> {
     unsafe {
         let size = mlxr_sys::mlx_vector_array_size(vector_array);
         (0..size)
@@ -382,7 +384,7 @@ extern "C" fn trampoline_fallible<'a, F>(
     payload: *mut std::ffi::c_void,
 ) -> i32
 where
-    F: FnMut(&[Array]) -> Result<Vec<Array>, Exception> + 'a,
+    F: FnMut(&[Array]) -> Result<Vec<Array>> + 'a,
 {
     unsafe {
         let raw_closure: *mut F = payload.cast();

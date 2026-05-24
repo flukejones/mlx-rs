@@ -1,6 +1,6 @@
 use crate::{
     array,
-    error::Exception,
+    error::{Exception, Result},
     macros::ModuleParameters,
     module::Module,
     ops::{
@@ -55,7 +55,7 @@ impl Upsample {
         Self { scale_factor, mode }
     }
 
-    fn forward_inner(&self, x: &Array, scale: &[f32]) -> Result<Array, Exception> {
+    fn forward_inner(&self, x: &Array, scale: &[f32]) -> Result<Array> {
         match self.mode {
             UpsampleMode::Nearest => upsample_nearest(x, scale),
             UpsampleMode::Linear { align_corners } => {
@@ -72,7 +72,7 @@ impl Module<&Array> for Upsample {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Self::Output, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let dimensions = x.ndim() - 2;
 
         if dimensions == 0 {
@@ -100,7 +100,7 @@ impl Module<&Array> for Upsample {
     non_snake_case,
     reason = "local bindings mirror ML tensor names (N, C, H, W)"
 )]
-fn upsample_nearest(x: &Array, scale: &[f32]) -> Result<Array, Exception> {
+fn upsample_nearest(x: &Array, scale: &[f32]) -> Result<Array> {
     let dimensions = x.ndim() - 2;
     if dimensions != scale.len() {
         return Err(Exception::custom(format!(
@@ -150,7 +150,7 @@ fn upsample_nearest(x: &Array, scale: &[f32]) -> Result<Array, Exception> {
 
 type IndexWeight = (Array, Array);
 
-type IndicesFn = fn(i32, f32, bool, usize, usize) -> Result<Vec<IndexWeight>, Exception>;
+type IndicesFn = fn(i32, f32, bool, usize, usize) -> Result<Vec<IndexWeight>>;
 
 #[allow(
     non_snake_case,
@@ -161,7 +161,7 @@ fn interpolate(
     scale: &[f32],
     indices_fn: IndicesFn,
     align_corners: bool,
-) -> Result<Array, Exception> {
+) -> Result<Array> {
     let dimensions = x.ndim() - 2;
     if dimensions != scale.len() {
         return Err(Exception::custom(format!(
@@ -231,12 +231,7 @@ fn product<T>(values: &[Vec<T>]) -> Vec<Vec<&T>> {
     result
 }
 
-fn nearest_indices(
-    dimension: i32,
-    scale: f32,
-    dim: usize,
-    ndim: usize,
-) -> Result<Array, Exception> {
+fn nearest_indices(dimension: i32, scale: f32, dim: usize, ndim: usize) -> Result<Array> {
     let i = scaled_indices(dimension, scale, true, dim, ndim)?;
     i.as_type::<i32>()
 }
@@ -247,7 +242,7 @@ fn linear_indices(
     align_corners: bool,
     dim: usize,
     ndim: usize,
-) -> Result<Vec<IndexWeight>, Exception> {
+) -> Result<Vec<IndexWeight>> {
     let mut indices = scaled_indices(dimension, scale, align_corners, dim, ndim)?;
     indices = clip(&indices, (0, dimension - 1))?;
     let indices_left = floor(&indices)?;
@@ -270,7 +265,7 @@ fn cubic_indices(
     align_corners: bool,
     dim: usize,
     ndim: usize,
-) -> Result<Vec<IndexWeight>, Exception> {
+) -> Result<Vec<IndexWeight>> {
     let indices = scaled_indices(dimension, scale, align_corners, dim, ndim)?;
 
     // SAFETY: arith ops with scalars won't panic
@@ -298,7 +293,7 @@ fn cubic_indices(
     ])
 }
 
-fn compiled_get_weight1(ind: &Array, grid: &Array) -> Result<Array, Exception> {
+fn compiled_get_weight1(ind: &Array, grid: &Array) -> Result<Array> {
     // PyTorch uses -0.5 for antialiasing=true (compatibility with PIL)
     // and uses -0.75 for antialiasing=false (compatibility with OpenCV)
 
@@ -311,7 +306,7 @@ fn compiled_get_weight1(ind: &Array, grid: &Array) -> Result<Array, Exception> {
     compiled((ind, grid))
 }
 
-fn compiled_get_weight2(ind: &Array, grid: &Array) -> Result<Array, Exception> {
+fn compiled_get_weight2(ind: &Array, grid: &Array) -> Result<Array> {
     let get_weight2 = |(ind_, grid_): (&Array, &Array)| {
         let a = -0.75;
         let x = abs(ind_ - grid_)?;
@@ -331,7 +326,7 @@ fn scaled_indices(
     align_corners: bool,
     dim: usize,
     ndim: usize,
-) -> Result<Array, Exception> {
+) -> Result<Array> {
     let M = (scale * N as f32) as i32;
 
     let indices = if align_corners {

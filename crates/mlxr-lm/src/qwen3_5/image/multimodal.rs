@@ -10,13 +10,14 @@
 //! client is the sole caller today and operates one image at a time.
 
 use mlxr::{
-    error::Exception,
     ops::{
         broadcast_to, concatenate_axis, cumsum, expand_dims, indexing::take_axis, maximum, r#where,
         reshape,
     },
     Array, Dtype,
 };
+
+use crate::error::Error;
 
 /// Splice `image_features` into `inputs_embeds` at every position where
 /// `input_ids` equals `image_token_id` (or `video_token_id`).
@@ -34,10 +35,10 @@ pub fn merge_input_ids_with_image_features(
     input_ids: &Array,
     image_token_id: u32,
     video_token_id: u32,
-) -> Result<Array, Exception> {
+) -> Result<Array, Error> {
     let emb_shape = inputs_embeds.shape();
     if emb_shape.len() != 3 {
-        return Err(Exception::custom(
+        return Err(Error::shape(
             "merge_input_ids_with_image_features: inputs_embeds must be [B, S, hidden]",
         ));
     }
@@ -53,7 +54,7 @@ pub fn merge_input_ids_with_image_features(
     // Count image-token slots so we can sanity-check the vision-feature count.
     let n_special: i32 = is_special.sum(None)?.item::<i32>();
     if (n_special as i64) * (hidden as i64) != image_features.size() as i64 {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "merge_input_ids_with_image_features: image_features has {} elements but \
              input_ids contains {n_special} special positions × {hidden} hidden = {}",
             image_features.size(),
@@ -95,7 +96,7 @@ pub fn merge_input_ids_with_image_features(
     )?;
 
     let _ = is_special_b; // (kept for documentation; gathered/where covers it)
-    reshape(&merged, emb_shape)
+    Ok(reshape(&merged, emb_shape)?)
 }
 
 /// Compute the `mrope_position_ids` tensor `[3, B, S]` for a batch of one
@@ -134,7 +135,7 @@ pub fn get_rope_index_single_batch(
     image_token_id: u32,
     video_token_id: u32,
     vision_start_token_id: u32,
-) -> Result<(Vec<i32>, Vec<i32>, Vec<i32>, i32), Exception> {
+) -> Result<(Vec<i32>, Vec<i32>, Vec<i32>, i32), Error> {
     let s = input_ids.len();
     let mut t_pos = Vec::with_capacity(s);
     let mut h_pos = Vec::with_capacity(s);
@@ -155,7 +156,7 @@ pub fn get_rope_index_single_batch(
         if tok == vision_start_token_id {
             // Read the per-axis grid for this image.
             if img_idx >= image_grid_thw.len() {
-                return Err(Exception::custom(
+                return Err(Error::out_of_bounds(
                     "get_rope_index: vision_start token without matching grid_thw entry",
                 ));
             }
@@ -165,7 +166,7 @@ pub fn get_rope_index_single_batch(
             let merged_w = w / spatial_merge_size;
             let total_image_tokens = (t as usize) * (merged_h as usize) * (merged_w as usize);
             if i + total_image_tokens > s {
-                return Err(Exception::custom(format!(
+                return Err(Error::out_of_bounds(format!(
                     "get_rope_index: not enough image-token slots: need {total_image_tokens}, have {}",
                     s - i
                 )));
@@ -177,7 +178,7 @@ pub fn get_rope_index_single_batch(
                         if (input_ids[i] as u32) != image_token_id
                             && (input_ids[i] as u32) != video_token_id
                         {
-                            return Err(Exception::custom(format!(
+                            return Err(Error::shape(format!(
                                 "get_rope_index: expected image token at index {i}, got {}",
                                 input_ids[i]
                             )));
@@ -202,10 +203,10 @@ pub fn get_rope_index_single_batch(
 
 /// Convenience: pack `[3, 1, S]` into an MLX `Array` ready to feed the
 /// language model's mrope.
-pub fn pack_position_ids(t_pos: &[i32], h_pos: &[i32], w_pos: &[i32]) -> Result<Array, Exception> {
+pub fn pack_position_ids(t_pos: &[i32], h_pos: &[i32], w_pos: &[i32]) -> Result<Array, Error> {
     let s = t_pos.len() as i32;
     if h_pos.len() as i32 != s || w_pos.len() as i32 != s {
-        return Err(Exception::custom("pack_position_ids: axis length mismatch"));
+        return Err(Error::shape("pack_position_ids: axis length mismatch"));
     }
     let t_arr = Array::from_slice(t_pos, &[1, 1, s]);
     let h_arr = Array::from_slice(h_pos, &[1, 1, s]);
@@ -230,14 +231,12 @@ pub fn get_rope_index_batched(
     image_token_id: u32,
     video_token_id: u32,
     vision_start_token_id: u32,
-) -> Result<(Array, Vec<i32>), Exception> {
+) -> Result<(Array, Vec<i32>), Error> {
     if batch_rows.is_empty() {
-        return Err(Exception::custom(
-            "get_rope_index_batched: batch_rows is empty",
-        ));
+        return Err(Error::config("get_rope_index_batched: batch_rows is empty"));
     }
     if batch_rows.len() != image_grid_thw_per_row.len() {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "get_rope_index_batched: batch_rows.len()={} but image_grid_thw_per_row.len()={}",
             batch_rows.len(),
             image_grid_thw_per_row.len()
@@ -250,7 +249,7 @@ pub fn get_rope_index_batched(
     let mut deltas: Vec<i32> = Vec::with_capacity(batch_rows.len());
     for (ids, grids) in batch_rows.iter().zip(image_grid_thw_per_row.iter()) {
         if ids.len() != s {
-            return Err(Exception::custom(format!(
+            return Err(Error::shape(format!(
                 "get_rope_index_batched: row length mismatch: expected {s}, got {}",
                 ids.len()
             )));

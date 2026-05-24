@@ -1,6 +1,11 @@
 use std::iter::{once, zip};
 
-use crate::{error::Exception, module::Module, ops::as_strided, Array};
+use crate::{
+    error::{Exception, Result},
+    module::Module,
+    ops::as_strided,
+    Array,
+};
 use dyn_clone::DynClone;
 use mlxr_macros::ModuleParameters;
 
@@ -9,11 +14,11 @@ use crate::utils::SingleOrPair;
 /// Marker trait for pooling operations.
 pub trait Pooling
 where
-    Self: Fn(&Array, &[i32]) -> Result<Array, Exception> + DynClone,
+    Self: Fn(&Array, &[i32]) -> Result<Array> + DynClone,
 {
 }
 
-impl<T> Pooling for T where T: Fn(&Array, &[i32]) -> Result<Array, Exception> + DynClone {}
+impl<T> Pooling for T where T: Fn(&Array, &[i32]) -> Result<Array> + DynClone {}
 
 /// Abstract pooling layer.
 ///
@@ -80,7 +85,7 @@ impl Module<&Array> for Pool {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let shape = x.shape();
         let rest = &shape[1..shape.len() - 1];
 
@@ -131,7 +136,7 @@ macro_rules! impl_module {
             type Output = Array;
             type Error = Exception;
 
-            fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+            fn forward(&mut self, x: &Array) -> Result<Array> {
                 self.inner.forward(x)
             }
 

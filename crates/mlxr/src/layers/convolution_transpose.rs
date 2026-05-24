@@ -1,6 +1,6 @@
 use crate::module::{Module, Param};
 use crate::{
-    error::Exception,
+    error::{Exception, Result},
     ops::{conv_transpose1d, conv_transpose2d, conv_transpose3d, zeros},
     random::uniform,
     Array,
@@ -45,7 +45,7 @@ pub struct ConvTranspose1dBuilder {
     pub stride: i32,
 }
 
-fn build_conv_transpose_1d(builder: ConvTranspose1dBuilder) -> Result<ConvTranspose1d, Exception> {
+fn build_conv_transpose_1d(builder: ConvTranspose1dBuilder) -> Result<ConvTranspose1d> {
     let input_channels = builder.input_channels;
     let output_channels = builder.output_channels;
     let kernel_size = builder.kernel_size;
@@ -124,7 +124,7 @@ impl Module<&Array> for ConvTranspose1d {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let mut y = conv_transpose1d(
             x,
             self.weight.as_ref(),
@@ -178,7 +178,7 @@ pub struct ConvTranspose2dBuilder {
     stride: SingleOrPair<i32>,
 }
 
-fn build_conv_transpose_2d(builder: ConvTranspose2dBuilder) -> Result<ConvTranspose2d, Exception> {
+fn build_conv_transpose_2d(builder: ConvTranspose2dBuilder) -> Result<ConvTranspose2d> {
     let input_channels = builder.input_channels;
     let output_channels = builder.output_channels;
     let kernel_size: (i32, i32) = builder.kernel_size.into();
@@ -263,7 +263,7 @@ impl Module<&Array> for ConvTranspose2d {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let mut y = conv_transpose2d(
             x,
             self.weight.as_ref(),
@@ -317,7 +317,7 @@ pub struct ConvTranspose3dBuilder {
     pub stride: SingleOrTriple<i32>,
 }
 
-fn build_conv_transpose_3d(builder: ConvTranspose3dBuilder) -> Result<ConvTranspose3d, Exception> {
+fn build_conv_transpose_3d(builder: ConvTranspose3dBuilder) -> Result<ConvTranspose3d> {
     let input_channels = builder.input_channels;
     let output_channels = builder.output_channels;
     let kernel_size: (i32, i32, i32) = builder.kernel_size.into();
@@ -404,7 +404,7 @@ impl Module<&Array> for ConvTranspose3d {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let mut y = conv_transpose3d(
             x,
             self.weight.as_ref(),

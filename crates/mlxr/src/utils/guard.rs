@@ -1,9 +1,16 @@
 use half::{bf16, f16};
 use mlxr_sys::{__BindgenComplex, bfloat16_t, float16_t, mlx_array};
 
-use crate::{complex64, error::Exception, Array};
+use crate::{
+    complex64,
+    error::{
+        get_and_clear_last_mlx_error, setup_mlx_error_handler, Exception, Result, INIT_ERR_HANDLER,
+    },
+    transforms::ClosureValueAndGrad,
+    Array,
+};
 
-use super::{VectorArray, SUCCESS};
+use super::{io::SafeTensors, Closure, VectorArray, SUCCESS};
 
 type Status = i32;
 
@@ -14,19 +21,18 @@ pub(crate) trait Guard<T>: Default {
 
     fn set_init_success(&mut self, success: bool);
 
-    fn try_into_guarded(self) -> Result<T, Exception>;
+    fn try_into_guarded(self) -> Result<T>;
 }
 
 pub(crate) trait Guarded: Sized {
     type Guard: Guard<Self>;
 
     #[track_caller]
-    fn try_from_op<F>(f: F) -> Result<Self, Exception>
+    fn try_from_op<F>(f: F) -> Result<Self>
     where
         F: FnOnce(<Self::Guard as Guard<Self>>::MutRawPtr) -> Status,
     {
-        crate::error::INIT_ERR_HANDLER
-            .with(|init| init.call_once(crate::error::setup_mlx_error_handler));
+        INIT_ERR_HANDLER.with(|init| init.call_once(setup_mlx_error_handler));
 
         let mut guard = Self::Guard::default();
         let status = f(guard.as_mut_raw_ptr());
@@ -34,9 +40,7 @@ pub(crate) trait Guarded: Sized {
             guard.set_init_success(true);
             guard.try_into_guarded()
         } else {
-            // Err(crate::error::get_and_clear_last_mlx_error()
-            // .expect("MLX operation failed but no error was set"))
-            let what = crate::error::get_and_clear_last_mlx_error()
+            let what = get_and_clear_last_mlx_error()
                 .expect("MLX operation failed but no error was set")
                 .what;
             let location = std::panic::Location::caller();
@@ -88,7 +92,7 @@ impl Guard<Array> for MaybeUninitArray {
         self.init_success = success;
     }
 
-    fn try_into_guarded(self) -> Result<Array, Exception> {
+    fn try_into_guarded(self) -> Result<Array> {
         debug_assert!(self.init_success);
         unsafe { Ok(Array::from_ptr(self.ptr)) }
     }
@@ -141,7 +145,7 @@ impl Guard<Vec<Array>> for MaybeUninitVectorArray {
         self.init_success = success;
     }
 
-    fn try_into_guarded(mut self) -> Result<Vec<Array>, Exception> {
+    fn try_into_guarded(mut self) -> Result<Vec<Array>> {
         debug_assert!(self.init_success);
         self.init_success = false; // mlx_vector_array still needs to be freed after we extracted its elements
         unsafe {
@@ -168,7 +172,7 @@ impl Guard<VectorArray> for MaybeUninitVectorArray {
         self.init_success = success;
     }
 
-    fn try_into_guarded(self) -> Result<VectorArray, Exception> {
+    fn try_into_guarded(self) -> Result<VectorArray> {
         Ok(VectorArray { c_vec: self.ptr })
     }
 }
@@ -189,7 +193,7 @@ impl Guard<(Array, Array)> for (MaybeUninitArray, MaybeUninitArray) {
         self.1.set_init_success(success);
     }
 
-    fn try_into_guarded(self) -> Result<(Array, Array), Exception> {
+    fn try_into_guarded(self) -> Result<(Array, Array)> {
         Ok((self.0.try_into_guarded()?, self.1.try_into_guarded()?))
     }
 }
@@ -215,7 +219,7 @@ impl Guard<(Array, Array, Array)> for (MaybeUninitArray, MaybeUninitArray, Maybe
         self.2.set_init_success(success);
     }
 
-    fn try_into_guarded(self) -> Result<(Array, Array, Array), Exception> {
+    fn try_into_guarded(self) -> Result<(Array, Array, Array)> {
         Ok((
             self.0.try_into_guarded()?,
             self.1.try_into_guarded()?,
@@ -246,7 +250,7 @@ impl Guard<(Vec<Array>, Vec<Array>)> for (MaybeUninitVectorArray, MaybeUninitVec
         <MaybeUninitVectorArray as Guard<Vec<Array>>>::set_init_success(&mut self.1, success);
     }
 
-    fn try_into_guarded(self) -> Result<(Vec<Array>, Vec<Array>), Exception> {
+    fn try_into_guarded(self) -> Result<(Vec<Array>, Vec<Array>)> {
         Ok((self.0.try_into_guarded()?, self.1.try_into_guarded()?))
     }
 }
@@ -298,7 +302,7 @@ impl Guard<crate::Device> for MaybeUninitDevice {
         self.init_success = success;
     }
 
-    fn try_into_guarded(self) -> Result<crate::Device, Exception> {
+    fn try_into_guarded(self) -> Result<crate::Device> {
         debug_assert!(self.init_success);
         Ok(crate::Device { c_device: self.ptr })
     }
@@ -317,7 +321,7 @@ impl Guard<crate::DeviceType> for mlxr_sys::mlx_device_type {
 
     fn set_init_success(&mut self, _: bool) {}
 
-    fn try_into_guarded(self) -> Result<crate::DeviceType, Exception> {
+    fn try_into_guarded(self) -> Result<crate::DeviceType> {
         match self {
             mlxr_sys::mlx_device_type__MLX_CPU => Ok(crate::DeviceType::Cpu),
             mlxr_sys::mlx_device_type__MLX_GPU => Ok(crate::DeviceType::Gpu),
@@ -376,7 +380,7 @@ impl Guard<crate::Stream> for MaybeUninitStream {
         self.init_success = success;
     }
 
-    fn try_into_guarded(self) -> Result<crate::Stream, Exception> {
+    fn try_into_guarded(self) -> Result<crate::Stream> {
         debug_assert!(self.init_success);
         Ok(crate::Stream { c_stream: self.ptr })
     }
@@ -421,7 +425,7 @@ impl Drop for MaybeUninitSafeTensors {
     }
 }
 
-impl Guard<crate::utils::io::SafeTensors> for MaybeUninitSafeTensors {
+impl Guard<SafeTensors> for MaybeUninitSafeTensors {
     type MutRawPtr = (
         *mut mlxr_sys::mlx_map_string_to_array,
         *mut mlxr_sys::mlx_map_string_to_string,
@@ -435,16 +439,16 @@ impl Guard<crate::utils::io::SafeTensors> for MaybeUninitSafeTensors {
         self.init_success = success;
     }
 
-    fn try_into_guarded(self) -> Result<crate::utils::io::SafeTensors, Exception> {
+    fn try_into_guarded(self) -> Result<SafeTensors> {
         debug_assert!(self.init_success);
-        Ok(crate::utils::io::SafeTensors {
+        Ok(SafeTensors {
             c_metadata: self.c_metadata,
             c_data: self.c_data,
         })
     }
 }
 
-impl Guarded for crate::utils::io::SafeTensors {
+impl Guarded for SafeTensors {
     type Guard = MaybeUninitSafeTensors;
 }
 
@@ -480,7 +484,7 @@ impl Drop for MaybeUninitClosure {
     }
 }
 
-impl<'a> Guard<crate::utils::Closure<'a>> for MaybeUninitClosure {
+impl<'a> Guard<Closure<'a>> for MaybeUninitClosure {
     type MutRawPtr = *mut mlxr_sys::mlx_closure;
 
     fn as_mut_raw_ptr(&mut self) -> Self::MutRawPtr {
@@ -491,16 +495,16 @@ impl<'a> Guard<crate::utils::Closure<'a>> for MaybeUninitClosure {
         self.init_success = success;
     }
 
-    fn try_into_guarded(self) -> Result<crate::utils::Closure<'a>, Exception> {
+    fn try_into_guarded(self) -> Result<Closure<'a>> {
         debug_assert!(self.init_success);
-        Ok(crate::utils::Closure {
+        Ok(Closure {
             c_closure: self.ptr,
             lt_marker: std::marker::PhantomData,
         })
     }
 }
 
-impl Guarded for crate::utils::Closure<'_> {
+impl Guarded for Closure<'_> {
     type Guard = MaybeUninitClosure;
 }
 
@@ -536,7 +540,7 @@ impl Drop for MaybeUninitClosureValueAndGrad {
     }
 }
 
-impl Guard<crate::transforms::ClosureValueAndGrad> for MaybeUninitClosureValueAndGrad {
+impl Guard<ClosureValueAndGrad> for MaybeUninitClosureValueAndGrad {
     type MutRawPtr = *mut mlxr_sys::mlx_closure_value_and_grad;
 
     fn as_mut_raw_ptr(&mut self) -> Self::MutRawPtr {
@@ -547,15 +551,15 @@ impl Guard<crate::transforms::ClosureValueAndGrad> for MaybeUninitClosureValueAn
         self.init_success = success;
     }
 
-    fn try_into_guarded(self) -> Result<crate::transforms::ClosureValueAndGrad, Exception> {
+    fn try_into_guarded(self) -> Result<ClosureValueAndGrad> {
         debug_assert!(self.init_success);
-        Ok(crate::transforms::ClosureValueAndGrad {
+        Ok(ClosureValueAndGrad {
             c_closure_value_and_grad: self.ptr,
         })
     }
 }
 
-impl Guarded for crate::transforms::ClosureValueAndGrad {
+impl Guarded for ClosureValueAndGrad {
     type Guard = MaybeUninitClosureValueAndGrad;
 }
 
@@ -574,7 +578,7 @@ macro_rules! impl_guarded_for_primitive {
 
             fn set_init_success(&mut self, _: bool) { }
 
-            fn try_into_guarded(self) -> Result<$type, Exception> {
+            fn try_into_guarded(self) -> Result<$type> {
                 Ok(self)
             }
         }
@@ -600,7 +604,7 @@ impl Guard<f16> for float16_t {
 
     fn set_init_success(&mut self, _: bool) {}
 
-    fn try_into_guarded(self) -> Result<f16, Exception> {
+    fn try_into_guarded(self) -> Result<f16> {
         Ok(f16::from_bits(self.0))
     }
 }
@@ -618,7 +622,7 @@ impl Guard<bf16> for bfloat16_t {
 
     fn set_init_success(&mut self, _: bool) {}
 
-    fn try_into_guarded(self) -> Result<bf16, Exception> {
+    fn try_into_guarded(self) -> Result<bf16> {
         Ok(bf16::from_bits(self))
     }
 }
@@ -636,7 +640,7 @@ impl Guard<complex64> for __BindgenComplex<f32> {
 
     fn set_init_success(&mut self, _: bool) {}
 
-    fn try_into_guarded(self) -> Result<complex64, Exception> {
+    fn try_into_guarded(self) -> Result<complex64> {
         Ok(complex64::new(self.re, self.im))
     }
 }

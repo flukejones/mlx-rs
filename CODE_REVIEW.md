@@ -96,6 +96,7 @@ Closed-form value sets should be enums; unknown inputs should fail at the type-s
 - **Flag `O(N²)` allocations or copies inside the decode hot path**, even when the local microbench bypasses them. "Not measured here" ≠ "free". The per-step `processor.decode(&full_id_list)` regression rebuilt the whole decoded string every token — 25× speedup at N=1024 once replaced with a sliding-window decoder. The fix would have been invisible to the bench; every real consumer paid for it.
 - **Check that mlx-c version bumps trigger a `cargo clean` + full bench rerun.** Cross-version comparisons against the cached old artefacts lie.
 - **No `lmstudio-community/*` bench models** (one documented exception: q8 MoE Qwen3.6 35B-A3B). Bench models are `mlx-community/*` or official MLX repos.
+- **Rerun any single-pass regression on a >20B model.** Thermal load on the 35B MoE and 27B q4 cells produces ±5% run-to-run swings on the M4 Max even with the documented 60 s cooldown. A `-3%` first-pass result is not real until a cold rerun reproduces it. Apply the same rule to any commit before claiming a regression — single-run criterion deltas on these cells are noise.
 
 ## Array clones, ownership, and FFI roundtrips
 
@@ -134,15 +135,18 @@ When N is known at compile time, draining FFI vectors or iterators through a `Ve
 
 ## Error handling
 
-- **`anyhow` is bin-only.** Library crates (`mlxr`, `mlxr-lm`, `mlxr-convert`, `mlxr-sys`, `mlxr-macros`, `mlxr-codegen`) define a typed `Error` enum via `thiserror`; binaries (`examples/*/src/bin/*.rs`, `examples/*/src/main.rs`) may use `anyhow::Result` for top-level error glue. Flag a lib crate's `Cargo.toml` that pulls in `anyhow` or any `anyhow::` usage in lib source.
-- **`thiserror` is lib-only.** Bins should not declare their own thiserror enum — they consume the lib's. Inline `format!`-into-`anyhow!` is the bin idiom.
-- **Per-crate `pub(crate) type Result<T>` alias.** Every fallible-fn-heavy lib crate defines `pub(crate) type Result<T> = std::result::Result<T, Error>;` in its `error.rs` (or `lib.rs`). `pub(crate)` deliberately — exposing `Result<T>` as `pub` forces every downstream consumer to disambiguate `mlxr::Result` vs `mlxr_lm::Result` vs `mlxr_convert::Result` at every call site. External callers spell `Result<_, mlxr_lm::Error>` (or use `anyhow`). In-tree references: `mlxr::error::Result`, `mlxr_lm::error::Result`, `mlxr_convert::Result` (all `pub(crate)`).
-- **Flag bare `std::result::Result<T, MyError>` in lib fn signatures.** Inside the crate, write `Result<T>` (the alias). The std-Result spelling is reserved for the alias definition itself and for cases where the error type genuinely differs from the crate default (e.g. an `impl TryFrom<&str> for Foo` whose `Error = UnknownFoo`).
-- **Flag silent `.ok()`** that discards a `Result` from a meaningful operation. Channel sends, I/O writes, weight-loader probes, EOS-id parsing should `log::warn!` on error.
-- **Verify error variants carry context** — `Error::Other(_)` with a bare string loses the call-site detail. Prefer typed variants where the recovery path differs.
+- **`anyhow` is bin-only; `thiserror` is lib-only.** Library crates (`mlxr`, `mlxr-lm`, `mlxr-convert`, `mlxr-sys`, `mlxr-macros`, `mlxr-codegen`) define a typed `Error` enum via `thiserror`. Bins (`examples/*/src/bin/*.rs`, `examples/*/src/main.rs`) consume the lib's `Error` and may use `anyhow::Result` for top-level glue. Flag a lib `Cargo.toml` pulling in `anyhow`, any `anyhow::` in lib source, or a bin declaring its own thiserror enum.
+- **Each lib crate has a `pub(crate) type Result<T>` alias.** Defined in its `error.rs` as `pub(crate) type Result<T> = std::result::Result<T, Error>;`. `pub(crate)` deliberately — a `pub` alias forces consumers to disambiguate `mlxr::Result` vs `mlxr_lm::Result` at every call site. External callers spell `Result<_, mlxr_lm::Error>` or use `anyhow`.
+- **Inside the crate, write `Result<T>` (the alias).** Bare `std::result::Result<T, MyError>` in a lib fn signature is the std-spelling exception, reserved for the alias defn itself and the rare case where the error genuinely differs from the crate default (`impl TryFrom<&str> for Foo` whose `Error = UnknownFoo`).
+- **`mlxr::error::Exception` is constructed only inside `mlxr`.** Downstream crates use their own `Error` variants (`Error::config`, `Error::shape`, `Error::out_of_bounds`, `Error::MissingInput`, `Error::config_missing`). mlxr op failures auto-convert via `From<Exception> for Error` on `?`. Grep `mlxr-lm` for `Exception::custom` / `Exception::from` — zero hits in source.
+- **`Module` and `Quantizable` associated error types are per-impl free.** mlxr-lm impls set `type Error = crate::error::Error;` and `type QuantizationError = crate::error::Error;` — not `Exception`. The mlxr trait only requires `: std::error::Error`. Copying `type Error = Exception` from mlxr's own impls is a leak.
+- **`From<Error> for Exception` is mandatory** in any crate whose helpers return the local `Error` while pre-existing impls remain locked to `type Error = Exception`. Without it, `?` won't lift. Lossy by necessity — non-`Exception` variants collapse to `Exception::custom(self.to_string())`. The reverse (`From<Exception> for Error`) is a trivial `#[from]` arm.
+- **`Compile<F, _, _>` cache types force `Result<_, Exception>`.** The compile trait bakes the inner fn's error type into a generic. Fns wired through `mlxr::transforms::compile::Compile` (mlxr-lm: `activations.rs`, `gated_delta::compute_g`, `gated_delta_block::precise_swiglu`) cannot move off Exception without an mlxr-side trait change. Don't flag them as unconverted.
+- **`Quantizable` derive unifies `QuantizationError` across all `#[quantizable]` fields.** A struct mixing `MaybeQuantized<Linear>` (Exception, mlxr's choice) and `SplitSwitchFfn<_>` (Error, mlxr-lm) won't compile. Resolution: pick `Error` in the mlxr-lm impl, use `.map_err(Into::into)` in the body to absorb Linear's Exception.
+- **Flag silent `.ok()`** that discards a `Result` from a meaningful op. Channel sends, I/O writes, weight-loader probes, EOS-id parsing should `log::warn!` on error.
+- **Verify error variants carry context.** `Error::Other(_)` with a bare string loses the call-site detail; prefer typed variants where the recovery path differs. `Exception::custom(format!(...))` messages surface to the user when a model fails to load.
 - **Flag `?` in `main`** that swallows error context — prefer explicit handling at the top level.
-- **Check for fallible conversions using `From`** instead of `TryFrom`. `Dtype` parsed from a config string must be `TryFrom`; never silent-default on unknown bytes.
-- **Verify `Exception::custom(format!(...))` carries enough context** — the message is what surfaces to the user when a model fails to load.
+- **Fallible conversions use `TryFrom`, not `From`.** A `Dtype` parsed from a config string must be `TryFrom`; never silent-default on unknown bytes.
 
 ## Constants and magic values
 
@@ -176,8 +180,7 @@ When N is known at compile time, draining FFI vectors or iterators through a `Ve
 
 - **Flag inline multi-segment path qualifiers** in fn signatures, type annotations, struct fields, generic args, callsites. `fn foo(b: std::collections::HashMap<K, V>)` should be `use std::collections::HashMap;` at the top + `fn foo(b: HashMap<K, V>)`. Single-segment `crate::Foo` / `super::Foo` is fine. **Enforced by `cargo run -q -p xtask -- check-paths`**; the pre-commit hook (install once via `cargo run -q -p xtask -- install-hooks`) blocks any new violations in the staged file set. Bypass for a single commit with `git commit --no-verify` only after deliberate discussion. The check skips `use` statements, doc/line/block comments, attributes, and vendored `mlx-c/`.
 - **Flag `use` statements inside fn bodies.** Imports belong at the file top. Exceptions: `#[cfg(test)] mod tests { use super::*; … }` and `#[cfg(...)]`-gated fns whose imports are also `#[cfg(...)]`-only.
-- **Check for `use std::fmt::Result`** — shadows the prelude `Result`. Should be `use std::fmt;` then `fmt::Result`.
-- **Verify aliased `Result` keeps `std::result::Result` qualified** — `pub type Result<T> = std::result::Result<T, MyError>;` is correct.
+- **Check for `use std::fmt::Result`** — shadows the prelude `Result`. Should be `use std::fmt;` then `fmt::Result`. The `Result<T>` alias defn at `error.rs` is the one place `std::result::Result` is allowed inline (see Error handling).
 
 ## Concurrency
 

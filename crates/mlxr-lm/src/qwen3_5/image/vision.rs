@@ -16,7 +16,6 @@
 
 use mlxr::{
     builder::Builder,
-    error::Exception,
     fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask},
     layers,
     macros::{ModuleParameters, Quantizable},
@@ -30,11 +29,12 @@ use mlxr::{
     Array, Dtype,
 };
 
+use crate::error::Error;
 use crate::qwen3_5::text::config::VisionConfig;
 
 /// Build the rotary frequency table `[seqlen, dim/2]` shared across the
 /// height and width axes of the vision rotary embedding.
-fn build_rotary_freqs(dim: i32, seqlen: i32, theta: f32) -> Result<Array, Exception> {
+fn build_rotary_freqs(dim: i32, seqlen: i32, theta: f32) -> Result<Array, Error> {
     let half = dim / 2;
     let idx = arange::<_, f32>(0.0, dim as f32, 2.0)?;
     let exp = idx.multiply(Array::from_f32(1.0 / dim as f32))?;
@@ -56,7 +56,7 @@ fn build_rotary_freqs(dim: i32, seqlen: i32, theta: f32) -> Result<Array, Except
 /// `freqs` is already shaped to the full `head_dim` so we just take
 /// `cos = cos(freqs)`, `sin = sin(freqs)`, broadcast across `B`/`H`, and
 /// apply `x * cos + rotate_half(x) * sin`.
-pub fn apply_vision_rope(tensor: &Array, freqs: &Array) -> Result<Array, Exception> {
+pub fn apply_vision_rope(tensor: &Array, freqs: &Array) -> Result<Array, Error> {
     let orig_dtype = tensor.dtype();
     let f32_freqs = freqs.as_dtype(Dtype::Float32)?;
     let cos = cos_op(&f32_freqs)?;
@@ -71,13 +71,13 @@ pub fn apply_vision_rope(tensor: &Array, freqs: &Array) -> Result<Array, Excepti
     let lhs = x.multiply(&cos_b)?;
     let rh = rotate_half(&x)?;
     let rhs = rh.multiply(&sin_b)?;
-    lhs.add(&rhs)?.as_dtype(orig_dtype)
+    Ok(lhs.add(&rhs)?.as_dtype(orig_dtype)?)
 }
 
-fn rotate_half(x: &Array) -> Result<Array, Exception> {
+fn rotate_half(x: &Array) -> Result<Array, Error> {
     let halves = split(x, 2, -1)?;
     let neg_x2 = halves[1].negative()?;
-    concatenate_axis(&[&neg_x2, &halves[0]], -1)
+    Ok(concatenate_axis(&[&neg_x2, &halves[0]], -1)?)
 }
 
 /// Vision patch-embedding Conv3d. Maps `[B*P, C*tps*ps*ps]` flat patches into
@@ -96,7 +96,7 @@ pub struct PatchEmbed {
 
 impl PatchEmbed {
     /// Build a freshly-initialised patch embedding.
-    pub fn new(cfg: &VisionConfig) -> Result<Self, Exception> {
+    pub fn new(cfg: &VisionConfig) -> Result<Self, Error> {
         let proj = layers::Conv3dBuilder::new(
             cfg.in_channels,
             cfg.hidden_size,
@@ -124,7 +124,7 @@ impl PatchEmbed {
     /// Internally reshapes to `[total_patches, C, tps, ps, ps]`, moves the
     /// channel axis last (NHWDC), runs Conv3d, and reshapes back to
     /// `[total_patches, hidden_size]`.
-    pub fn forward(&mut self, x: &Array) -> Result<Array, Exception> {
+    pub fn forward(&mut self, x: &Array) -> Result<Array, Error> {
         let shape = x.shape();
         let total = shape[0];
         let r = reshape(
@@ -141,7 +141,7 @@ impl PatchEmbed {
         let r = transpose_axes(&r, &[0, 2, 3, 4, 1])?;
         let y = self.proj.forward(&r)?;
         // Conv3d on a [1,1,1] grid with stride = kernel collapses TxHxW to 1x1x1.
-        reshape(&y, &[total, self.hidden_size])
+        Ok(reshape(&y, &[total, self.hidden_size])?)
     }
 }
 
@@ -168,7 +168,7 @@ impl PatchMerger {
     /// default for the final merger) the LayerNorm runs at `hidden_size`
     /// width and the merger then reshapes to the `merge²` block; otherwise
     /// the LayerNorm runs after the reshape.
-    pub fn new(cfg: &VisionConfig, use_postshuffle_norm: bool) -> Result<Self, Exception> {
+    pub fn new(cfg: &VisionConfig, use_postshuffle_norm: bool) -> Result<Self, Error> {
         let merge2 = cfg.spatial_merge_size * cfg.spatial_merge_size;
         let hidden_size = cfg.hidden_size * merge2;
         let norm_width = if use_postshuffle_norm {
@@ -194,7 +194,7 @@ impl PatchMerger {
     /// `hidden_size_in == cfg.hidden_size` (pre-shuffle case) — the function
     /// reshapes to `[total_tokens / merge², hidden_size * merge²]` then
     /// applies the LN+MLP.
-    pub fn forward(&mut self, x: &Array) -> Result<Array, Exception> {
+    pub fn forward(&mut self, x: &Array) -> Result<Array, Error> {
         let y = if self.use_postshuffle_norm {
             self.norm.forward(&reshape(x, &[-1, self.hidden_size])?)?
         } else {
@@ -203,7 +203,7 @@ impl PatchMerger {
         };
         let h = self.linear_fc1.forward(&y)?;
         let h = layers::gelu(&h)?;
-        self.linear_fc2.forward(&h)
+        Ok(self.linear_fc2.forward(&h)?)
     }
 }
 
@@ -220,7 +220,7 @@ pub struct VisionMlp {
 }
 
 impl VisionMlp {
-    pub fn new(cfg: &VisionConfig) -> Result<Self, Exception> {
+    pub fn new(cfg: &VisionConfig) -> Result<Self, Error> {
         let linear_fc1 =
             layers::LinearBuilder::new(cfg.hidden_size, cfg.intermediate_size).build()?;
         let linear_fc2 =
@@ -231,10 +231,10 @@ impl VisionMlp {
         })
     }
 
-    pub fn forward(&mut self, x: &Array) -> Result<Array, Exception> {
+    pub fn forward(&mut self, x: &Array) -> Result<Array, Error> {
         let h = self.linear_fc1.forward(x)?;
         let h = layers::gelu_approximate(&h)?;
-        self.linear_fc2.forward(&h)
+        Ok(self.linear_fc2.forward(&h)?)
     }
 }
 
@@ -254,7 +254,7 @@ pub struct VisionAttention {
 }
 
 impl VisionAttention {
-    pub fn new(cfg: &VisionConfig) -> Result<Self, Exception> {
+    pub fn new(cfg: &VisionConfig) -> Result<Self, Error> {
         let dim = cfg.hidden_size;
         let num_heads = cfg.num_heads;
         let head_dim = dim / num_heads;
@@ -277,7 +277,7 @@ impl VisionAttention {
         x: &Array,
         cu_seqlens: &[i32],
         rotary_freqs: &Array,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         let seq_len = x.shape()[0];
         let qkv = self.qkv.forward(x)?;
         let qkv = reshape(&qkv, &[seq_len, 3, self.num_heads, self.head_dim])?;
@@ -342,7 +342,7 @@ impl VisionAttention {
         // [1, H, S, D] -> [S, H*D]
         let cat = transpose_axes(&cat, &[0, 2, 1, 3])?;
         let out = reshape(&cat, &[seq_len, -1])?;
-        self.proj.forward(&out)
+        Ok(self.proj.forward(&out)?)
     }
 }
 
@@ -362,7 +362,7 @@ pub struct VisionBlock {
 }
 
 impl VisionBlock {
-    pub fn new(cfg: &VisionConfig) -> Result<Self, Exception> {
+    pub fn new(cfg: &VisionConfig) -> Result<Self, Error> {
         let norm1 = layers::LayerNormBuilder::new(cfg.hidden_size)
             .eps(1e-6)
             .build()?;
@@ -384,13 +384,13 @@ impl VisionBlock {
         x: &Array,
         cu_seqlens: &[i32],
         rotary_freqs: &Array,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         let r = self
             .attn
             .forward(&self.norm1.forward(x)?, cu_seqlens, rotary_freqs)?;
         let h = x.add(&r)?;
         let r = self.mlp.forward(&self.norm2.forward(&h)?)?;
-        h.add(&r)
+        Ok(h.add(&r)?)
     }
 }
 
@@ -415,11 +415,7 @@ pub fn build_cu_seqlens(grid_thw: &[[i32; 3]]) -> Vec<i32> {
 /// Build the per-token `(row_idx, col_idx)` matrix and feed it through the
 /// shared frequency table to materialise the rotary `[seq_len, head_dim]`
 /// tensor. Matches `VisionModel.rot_pos_emb`.
-fn rot_pos_emb(
-    cfg: &VisionConfig,
-    grid_thw: &[[i32; 3]],
-    head_dim: i32,
-) -> Result<Array, Exception> {
+fn rot_pos_emb(cfg: &VisionConfig, grid_thw: &[[i32; 3]], head_dim: i32) -> Result<Array, Error> {
     let merge_size = cfg.spatial_merge_size;
     let max_hw = grid_thw.iter().map(|g| g[1].max(g[2])).max().unwrap_or(1);
     let freq_table = build_rotary_freqs(head_dim / 2, max_hw, 10_000.0)?;
@@ -465,7 +461,7 @@ fn rot_pos_emb(
     // directly, so the returned tensor's head_dim already matches the
     // tensor we're applying it to.
     let halves = concatenate_axis(&[h_emb, w_emb], -1)?;
-    concatenate_axis(&[&halves, &halves], -1)
+    Ok(concatenate_axis(&[&halves, &halves], -1)?)
 }
 
 /// Linear interpolation of the learned positional embedding table across an
@@ -475,7 +471,7 @@ fn fast_pos_embed_interpolate(
     pos_embed: &mut MaybeQuantized<layers::Embedding>,
     num_grid_per_side: i32,
     grid_thw: &[[i32; 3]],
-) -> Result<Array, Exception> {
+) -> Result<Array, Error> {
     let mut outs: Vec<Array> = Vec::new();
     let merge = cfg.spatial_merge_size;
     for &[t, h, w] in grid_thw {
@@ -549,7 +545,7 @@ fn fast_pos_embed_interpolate(
     if outs.len() == 1 {
         Ok(outs.into_iter().next().expect("len == 1 guard above"))
     } else {
-        concatenate_axis(&outs, 0)
+        Ok(concatenate_axis(&outs, 0)?)
     }
 }
 
@@ -587,12 +583,12 @@ pub struct VisionModel {
 
 impl VisionModel {
     /// Build a freshly-initialised vision tower.
-    pub fn new(cfg: &VisionConfig) -> Result<Self, Exception> {
+    pub fn new(cfg: &VisionConfig) -> Result<Self, Error> {
         if !matches!(
             cfg.model_type.as_str(),
             "qwen3_vl" | "qwen3_5" | "qwen3_5_moe"
         ) {
-            return Err(Exception::custom(format!(
+            return Err(Error::config(format!(
                 "VisionModel: unsupported model_type {}",
                 cfg.model_type
             )));
@@ -633,11 +629,7 @@ impl VisionModel {
     ///
     /// Returns the projected hidden states shaped `[total_merged_tokens,
     /// out_hidden_size]`.
-    pub fn forward(
-        &mut self,
-        pixel_values: &Array,
-        grid_thw: &[[i32; 3]],
-    ) -> Result<Array, Exception> {
+    pub fn forward(&mut self, pixel_values: &Array, grid_thw: &[[i32; 3]]) -> Result<Array, Error> {
         let mut h = self.patch_embed.forward(pixel_values)?;
         let pos = fast_pos_embed_interpolate(
             &self.config,

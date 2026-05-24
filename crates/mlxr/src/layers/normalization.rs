@@ -2,15 +2,19 @@ use std::borrow::Cow;
 
 use crate::{
     array,
-    error::Exception,
+    error::{Exception, Result},
+    fast,
     module::{Module, Param},
     ops::{ones, rsqrt, zeros},
     Array,
 };
+
+#[cfg(test)]
+use crate::random;
 use mlxr_codegen::{Buildable, Builder};
 use mlxr_macros::ModuleParameters;
 
-fn instance_norm(x: &Array, axes: &[i32], eps: &Array) -> Result<Array, Exception> {
+fn instance_norm(x: &Array, axes: &[i32], eps: &Array) -> Result<Array> {
     // Compute stats
     let mean = x.mean_axes(axes, true)?;
     let variance = x.var_axes(axes, true, None)?;
@@ -43,7 +47,7 @@ pub struct InstanceNormBuilder {
     pub affine: bool,
 }
 
-fn build_instance_norm(builder: InstanceNormBuilder) -> Result<InstanceNorm, Exception> {
+fn build_instance_norm(builder: InstanceNormBuilder) -> Result<InstanceNorm> {
     let eps = builder.eps;
     let affine = builder.affine;
 
@@ -100,7 +104,7 @@ impl Module<&Array> for InstanceNorm {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let reduction_axes = (1..x.ndim() as i32 - 1).collect::<Vec<_>>();
 
         let x = instance_norm(x, &reduction_axes, &self.eps)?;
@@ -137,7 +141,7 @@ pub struct LayerNormBuilder {
     pub affine: bool,
 }
 
-fn build_layer_norm(builder: LayerNormBuilder) -> Result<LayerNorm, Exception> {
+fn build_layer_norm(builder: LayerNormBuilder) -> Result<LayerNorm> {
     let eps = builder.eps;
     let affine = builder.affine;
 
@@ -194,11 +198,11 @@ impl Module<&Array> for LayerNorm {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let weight = self.weight.as_ref();
         let bias = self.bias.as_ref();
         let eps = self.eps;
-        crate::fast::layer_norm(x, weight, bias, eps)
+        fast::layer_norm(x, weight, bias, eps)
     }
 
     fn training_mode(&mut self, _mode: bool) {}
@@ -221,7 +225,7 @@ pub struct RmsNormBuilder {
     pub eps: f32,
 }
 
-fn build_rms_norm(builder: RmsNormBuilder) -> Result<RmsNorm, Exception> {
+fn build_rms_norm(builder: RmsNormBuilder) -> Result<RmsNorm> {
     let weight = ones::<f32>(&[builder.dimensions])?;
     let eps = builder.eps;
     Ok(RmsNorm {
@@ -265,10 +269,10 @@ impl Module<&Array> for RmsNorm {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let weight = self.weight.as_ref();
         let eps = self.eps;
-        crate::fast::rms_norm(x, Some(weight), eps)
+        fast::rms_norm(x, Some(weight), eps)
     }
 
     fn training_mode(&mut self, _mode: bool) {}
@@ -304,7 +308,7 @@ pub struct GroupNormBuilder {
     pub pytorch_compatible: bool,
 }
 
-fn build_group_norm(builder: GroupNormBuilder) -> Result<GroupNorm, Exception> {
+fn build_group_norm(builder: GroupNormBuilder) -> Result<GroupNorm> {
     let eps = builder.eps;
     let affine = builder.affine;
     let pytorch_compatible = builder.pytorch_compatible;
@@ -368,7 +372,7 @@ impl GroupNorm {
     /// Default value for `pytorch_compatible`.
     pub const DEFAULT_PYTORCH_COMPATIBLE: bool = false;
 
-    fn pytorch_group_norm(&self, x: &Array) -> Result<Array, Exception> {
+    fn pytorch_group_norm(&self, x: &Array) -> Result<Array> {
         let batch = x.dim(0);
         let dims = x.dim(-1);
         let rest = &x.shape()[1..x.ndim() - 1];
@@ -381,7 +385,7 @@ impl GroupNorm {
             .reshape(&[batch, self.group_count, -1])?;
 
         // Normalize
-        let x = crate::fast::layer_norm(x, None, None, self.eps.item::<f32>())?;
+        let x = fast::layer_norm(x, None, None, self.eps.item::<f32>())?;
 
         let x = x.reshape(&[batch, self.group_count, -1, group_size])?;
 
@@ -392,7 +396,7 @@ impl GroupNorm {
         x.transpose_axes(&[0, 2, 1, 3])?.reshape(&new_shape[..])
     }
 
-    fn group_norm(&self, x: &Array) -> Result<Array, Exception> {
+    fn group_norm(&self, x: &Array) -> Result<Array> {
         let batch = x.dim(0);
         let dims = x.dim(-1);
         let rest = &x.shape()[1..x.ndim() - 1];
@@ -415,7 +419,7 @@ impl Module<&Array> for GroupNorm {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let x = if self.pytorch_compatible {
             self.pytorch_group_norm(x)?
         } else {
@@ -464,7 +468,7 @@ pub struct BatchNormBuilder {
     pub track_running_stats: bool,
 }
 
-fn build_batch_norm(builder: BatchNormBuilder) -> Result<BatchNorm, Exception> {
+fn build_batch_norm(builder: BatchNormBuilder) -> Result<BatchNorm> {
     let eps = builder.eps;
     let momentum = builder.momentum;
     let affine = builder.affine;
@@ -554,7 +558,7 @@ impl BatchNorm {
     /// Enable training mode by default.
     pub const DEFAULT_TRAINING: bool = true;
 
-    fn stats(x: &Array) -> Result<(Array, Array), Exception> {
+    fn stats(x: &Array) -> Result<(Array, Array)> {
         let reduction_axes = (0..x.ndim() as i32 - 1).collect::<Vec<_>>();
 
         let mean = x.mean_axes(&reduction_axes, None)?;
@@ -568,7 +572,7 @@ impl Module<&Array> for BatchNorm {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let ndim = x.ndim();
         if !(2..=4).contains(&ndim) {
             return Err(Exception::custom(
@@ -632,8 +636,8 @@ mod tests {
 
     #[test]
     fn test_instance_norm() {
-        crate::random::seed(435).unwrap();
-        let a = crate::random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
+        random::seed(435).unwrap();
+        let a = random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
         assert_eq!(a.shape(), &[2, 8, 16]);
         assert_eq!(a.dtype(), Dtype::Float32);
         assert_float_eq!(
@@ -668,8 +672,8 @@ mod tests {
 
     #[test]
     fn test_layer_norm() {
-        crate::random::seed(635).unwrap();
-        let a = crate::random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
+        random::seed(635).unwrap();
+        let a = random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
         assert_eq!(a.shape(), &[2, 8, 16]);
         assert_eq!(a.dtype(), Dtype::Float32);
         assert_float_eq!(
@@ -704,8 +708,8 @@ mod tests {
 
     #[test]
     fn test_rms_norm() {
-        crate::random::seed(103).unwrap();
-        let a = crate::random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
+        random::seed(103).unwrap();
+        let a = random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
         assert_eq!(a.shape(), &[2, 8, 16]);
         assert_eq!(a.dtype(), Dtype::Float32);
         assert_float_eq!(
@@ -736,8 +740,8 @@ mod tests {
 
     #[test]
     fn test_group_norm() {
-        crate::random::seed(855).unwrap();
-        let a = crate::random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
+        random::seed(855).unwrap();
+        let a = random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
         assert_eq!(a.shape(), &[2, 8, 16]);
         assert_eq!(a.dtype(), Dtype::Float32);
         assert_float_eq!(
@@ -772,8 +776,8 @@ mod tests {
 
     #[test]
     fn test_batch_norm() {
-        crate::random::seed(266).unwrap();
-        let a = crate::random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
+        random::seed(266).unwrap();
+        let a = random::uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
         assert_eq!(a.shape(), &[2, 8, 16]);
         assert_eq!(a.dtype(), Dtype::Float32);
         assert_float_eq!(

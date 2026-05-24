@@ -1,6 +1,9 @@
 use crate::module::{update_parameters, ModuleParameters};
 use crate::transforms::keyed_value_and_grad;
-use crate::{error::Exception, Array};
+use crate::{
+    error::{Exception, Result},
+    Array,
+};
 
 use crate::module::FlattenedModuleParam;
 
@@ -23,7 +26,7 @@ where
     /// model's trainable parameters.
     fn into_module_value_and_grad(
         self,
-    ) -> impl FnMut(&mut M, Args) -> Result<(Val, FlattenedModuleParam), Exception> + 'a;
+    ) -> impl FnMut(&mut M, Args) -> Result<(Val, FlattenedModuleParam)> + 'a;
 }
 
 impl<'a, F, M, Args> IntoModuleValueAndGrad<'a, M, Args, Vec<Array>, ()> for F
@@ -34,8 +37,7 @@ where
 {
     fn into_module_value_and_grad(
         mut self,
-    ) -> impl FnMut(&mut M, Args) -> Result<(Vec<Array>, FlattenedModuleParam), Exception> + 'a
-    {
+    ) -> impl FnMut(&mut M, Args) -> Result<(Vec<Array>, FlattenedModuleParam)> + 'a {
         move |model, arrays| {
             let trainable_parameters = trainable_params(model);
             let inner = |parameters: FlattenedModuleParam, arrays: Args| -> Vec<Array> {
@@ -55,22 +57,20 @@ where
 impl<'a, F, M, Args> IntoModuleValueAndGrad<'a, M, Args, Vec<Array>, Exception> for F
 where
     M: ModuleParameters + 'a,
-    F: FnMut(&mut M, Args) -> Result<Vec<Array>, Exception> + 'a,
+    F: FnMut(&mut M, Args) -> Result<Vec<Array>> + 'a,
     Args: Clone,
 {
     fn into_module_value_and_grad(
         mut self,
-    ) -> impl FnMut(&mut M, Args) -> Result<(Vec<Array>, FlattenedModuleParam), Exception> + 'a
-    {
+    ) -> impl FnMut(&mut M, Args) -> Result<(Vec<Array>, FlattenedModuleParam)> + 'a {
         move |model, arrays| {
             let trainable_parameters = trainable_params(model);
-            let inner =
-                |parameters: FlattenedModuleParam, arrays: Args| -> Result<Vec<Array>, Exception> {
-                    let flattened_parameters = parameters.into_iter().map(|(k, v)| (k, v.clone()));
-                    update_parameters(model, flattened_parameters);
+            let inner = |parameters: FlattenedModuleParam, arrays: Args| -> Result<Vec<Array>> {
+                let flattened_parameters = parameters.into_iter().map(|(k, v)| (k, v.clone()));
+                update_parameters(model, flattened_parameters);
 
-                    self(model, arrays)
-                };
+                self(model, arrays)
+            };
             let mut vg = keyed_value_and_grad(inner);
 
             let (v, g) = vg(trainable_parameters, arrays)?;
@@ -87,7 +87,7 @@ where
 {
     fn into_module_value_and_grad(
         mut self,
-    ) -> impl FnMut(&mut M, Args) -> Result<(Array, FlattenedModuleParam), Exception> + 'a {
+    ) -> impl FnMut(&mut M, Args) -> Result<(Array, FlattenedModuleParam)> + 'a {
         move |model, arrays| {
             let trainable_parameters = trainable_params(model);
             let inner = |parameters: FlattenedModuleParam, arrays: Args| -> Vec<Array> {
@@ -108,21 +108,20 @@ where
 impl<'a, F, M, Args> IntoModuleValueAndGrad<'a, M, Args, Array, Exception> for F
 where
     M: ModuleParameters + 'a,
-    F: FnMut(&mut M, Args) -> Result<Array, Exception> + 'a,
+    F: FnMut(&mut M, Args) -> Result<Array> + 'a,
     Args: Clone,
 {
     fn into_module_value_and_grad(
         mut self,
-    ) -> impl FnMut(&mut M, Args) -> Result<(Array, FlattenedModuleParam), Exception> + 'a {
+    ) -> impl FnMut(&mut M, Args) -> Result<(Array, FlattenedModuleParam)> + 'a {
         move |model, arrays| {
             let trainable_parameters = trainable_params(model);
-            let inner =
-                |parameters: FlattenedModuleParam, arrays: Args| -> Result<Vec<Array>, Exception> {
-                    let flattened_parameters = parameters.into_iter().map(|(k, v)| (k, v.clone()));
-                    update_parameters(model, flattened_parameters);
+            let inner = |parameters: FlattenedModuleParam, arrays: Args| -> Result<Vec<Array>> {
+                let flattened_parameters = parameters.into_iter().map(|(k, v)| (k, v.clone()));
+                update_parameters(model, flattened_parameters);
 
-                    self(model, arrays).map(|v| vec![v])
-                };
+                self(model, arrays).map(|v| vec![v])
+            };
             let mut vg = keyed_value_and_grad(inner);
 
             let (v, g) = vg(trainable_parameters, arrays)?;
@@ -136,7 +135,7 @@ where
 /// with regard to the model's trainable parameters and also its value.
 pub fn value_and_grad<'a, F, M, Args, Val, Err>(
     f: F,
-) -> impl FnMut(&mut M, Args) -> Result<(Val, FlattenedModuleParam), Exception> + 'a
+) -> impl FnMut(&mut M, Args) -> Result<(Val, FlattenedModuleParam)> + 'a
 where
     M: ModuleParameters + 'a,
     F: IntoModuleValueAndGrad<'a, M, Args, Val, Err>,
@@ -152,7 +151,7 @@ mod tests {
     #![allow(clippy::print_stdout, reason = "test code")]
     #![allow(clippy::print_stderr, reason = "test code")]
     use crate::module::Module;
-    use crate::{array, error::Exception, Array};
+    use crate::{array, error::Result, Array};
 
     use crate::layers::{self, Linear};
 
@@ -196,7 +195,7 @@ mod tests {
         let mut model = Linear::new(2, 2).unwrap();
         let x = crate::random::uniform::<_, f32>(1.0, 2.0, &[2, 2], None).unwrap();
 
-        let loss = |model: &mut Linear, x: &Array| -> Result<Vec<Array>, Exception> {
+        let loss = |model: &mut Linear, x: &Array| -> Result<Vec<Array>> {
             Ok(vec![model.forward(x)?.sum(None)?])
         };
 
@@ -214,15 +213,14 @@ mod tests {
         let x = crate::random::uniform::<_, f32>(1.0, 2.0, &[2, 2], None).unwrap();
         let y = crate::ops::ones::<f32>(x.shape()).unwrap();
 
-        let loss =
-            |model: &mut Linear, (x, y): (&Array, &Array)| -> Result<Vec<Array>, Exception> {
-                model
-                    .forward(x)?
-                    .subtract(y)?
-                    .square()?
-                    .sum(None)
-                    .map(|v| vec![v])
-            };
+        let loss = |model: &mut Linear, (x, y): (&Array, &Array)| -> Result<Vec<Array>> {
+            model
+                .forward(x)?
+                .subtract(y)?
+                .square()?
+                .sum(None)
+                .map(|v| vec![v])
+        };
 
         let mut vg = layers::value_and_grad(loss);
         let (v, g) = vg(&mut model, (&x, &y)).unwrap();
@@ -238,7 +236,7 @@ mod tests {
         // Use a shape that is not compatible with the model
         let x = crate::random::uniform::<_, f32>(1.0, 2.0, &[3, 3], None).unwrap();
 
-        let loss = |model: &mut Linear, x: &Array| -> Result<Vec<Array>, Exception> {
+        let loss = |model: &mut Linear, x: &Array| -> Result<Vec<Array>> {
             Ok(vec![model.forward(x)?.sum(None)?])
         };
 

@@ -12,6 +12,7 @@
 
 use std::sync::OnceLock;
 
+use crate::error::Error;
 use mlxr::{
     builder::Builder,
     error::Exception,
@@ -37,7 +38,7 @@ use super::gated_delta::{
 
 /// Process-wide compiled instance of the GDN scan kernel — built once
 /// so all 24 `GatedDeltaNet` blocks share one handle.
-fn gdn_kernel() -> Result<&'static MetalKernel, Exception> {
+fn gdn_kernel() -> Result<&'static MetalKernel, Error> {
     static KERNEL: OnceLock<MetalKernel> = OnceLock::new();
     if let Some(k) = KERNEL.get() {
         return Ok(k);
@@ -169,12 +170,12 @@ pub struct GatedDeltaNet {
 
 impl GatedDeltaNet {
     /// Build a freshly-initialised block from a [`TextConfig`].
-    pub fn new(cfg: &TextConfig) -> Result<Self, Exception> {
+    pub fn new(cfg: &TextConfig) -> Result<Self, Error> {
         let hidden = cfg.hidden_size;
         let num_v_heads = cfg.linear_num_value_heads;
         let num_k_heads = cfg.linear_num_key_heads;
         if num_v_heads % num_k_heads != 0 {
-            return Err(Exception::custom(format!(
+            return Err(Error::config(format!(
                 "GatedDeltaNet: linear_num_value_heads ({num_v_heads}) must be divisible by linear_num_key_heads ({num_k_heads})"
             )));
         }
@@ -251,7 +252,7 @@ impl GatedDeltaNet {
         inputs: &Array,
         mask: Option<&Array>,
         mut cache: Option<&mut LinearAttnCache>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         let shape = inputs.shape();
         let b = shape[0];
         let s = shape[1];
@@ -374,7 +375,7 @@ impl GatedDeltaNet {
             self.eps,
         )?;
         let flat = reshape(&gated, &[b, s, self.num_v_heads * self.head_v_dim])?;
-        self.out_proj.forward(&flat)
+        Ok(self.out_proj.forward(&flat)?)
     }
 
     /// Toggle training mode on every quantisable parameter.

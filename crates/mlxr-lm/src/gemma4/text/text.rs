@@ -9,8 +9,8 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use crate::error::Error;
 use mlxr::builder::Builder;
-use mlxr::error::Exception;
 use mlxr::fast;
 use mlxr::layers::{self, gelu_approximate, RopeInput};
 use mlxr::macros::{ModuleParameters, Quantizable};
@@ -54,10 +54,10 @@ impl RmsNormNoScale {
 
 impl Module<&Array> for RmsNormNoScale {
     type Output = Array;
-    type Error = Exception;
+    type Error = Error;
 
     fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
-        fast::rms_norm(x, None, self.eps)
+        Ok(fast::rms_norm(x, None, self.eps)?)
     }
 
     fn training_mode(&mut self, _mode: bool) {}
@@ -122,9 +122,9 @@ impl ModuleParameters for LayerRope {
 }
 
 impl LayerRope {
-    pub fn forward(&mut self, input: RopeInput<'_>) -> Result<Array, Exception> {
+    pub fn forward(&mut self, input: RopeInput<'_>) -> Result<Array, Error> {
         match self {
-            Self::Plain(r) => r.forward(input),
+            Self::Plain(r) => Ok(r.forward(input)?),
             Self::Proportional(r) => r.forward(input),
         }
     }
@@ -133,9 +133,9 @@ impl LayerRope {
     /// through `mlx::fast::rope_dynamic` instead of `rope`. Lets the
     /// per-step decode offset stay on-device so MLX's compile cache
     /// reuses the same kernel across decode steps.
-    pub fn forward_dynamic(&self, x: &Array, offset: &Array) -> Result<Array, Exception> {
+    pub fn forward_dynamic(&self, x: &Array, offset: &Array) -> Result<Array, Error> {
         match self {
-            Self::Plain(r) => fast::rope_dynamic(
+            Self::Plain(r) => Ok(fast::rope_dynamic(
                 x,
                 r.dimensions,
                 r.traditional,
@@ -143,8 +143,8 @@ impl LayerRope {
                 r.scale,
                 offset,
                 None,
-            ),
-            Self::Proportional(p) => fast::rope_dynamic(
+            )?),
+            Self::Proportional(p) => Ok(fast::rope_dynamic(
                 x,
                 p.dims,
                 p.traditional,
@@ -152,7 +152,7 @@ impl LayerRope {
                 1.0_f32,
                 offset,
                 Some(&p.freqs),
-            ),
+            )?),
         }
     }
 }
@@ -162,7 +162,7 @@ fn build_layer_rope(
     kind: LayerKind,
     rope_traditional: bool,
     rope_parameters: Option<&HashMap<String, HashMap<String, FloatOrString>>>,
-) -> Result<LayerRope, Exception> {
+) -> Result<LayerRope, Error> {
     let layer_key = match kind {
         LayerKind::FullAttention => "full_attention",
         LayerKind::SlidingAttention => "sliding_attention",
@@ -260,7 +260,7 @@ pub struct Attention {
 }
 
 impl Attention {
-    pub fn new(args: &TextConfig, layer_idx: i32) -> Result<Self, Exception> {
+    pub fn new(args: &TextConfig, layer_idx: i32) -> Result<Self, Error> {
         let layer_types = args.layer_types_resolved();
         let layer_kind = layer_types[layer_idx as usize];
         let is_sliding = matches!(layer_kind, LayerKind::SlidingAttention);
@@ -367,7 +367,7 @@ impl Attention {
     pub fn attend<C: KeyValueCache + Default>(
         &mut self,
         input: AttentionInput<'_, C>,
-    ) -> Result<AttentionOut, Exception> {
+    ) -> Result<AttentionOut, Error> {
         let AttentionInput {
             x,
             mask,
@@ -401,7 +401,7 @@ impl Attention {
             kv
         } else {
             if !self.has_kv {
-                return Err(Exception::custom(format!(
+                return Err(Error::config(format!(
                     "gemma4: layer {} is KV-shared but no shared_kv supplied",
                     self.layer_idx
                 )));
@@ -504,7 +504,7 @@ pub struct Mlp {
 }
 
 impl Mlp {
-    pub fn new(args: &TextConfig, layer_idx: i32) -> Result<Self, Exception> {
+    pub fn new(args: &TextConfig, layer_idx: i32) -> Result<Self, Error> {
         let first_kv_shared = args.num_hidden_layers - args.num_kv_shared_layers;
         let is_kv_shared_layer = args.num_kv_shared_layers > 0 && layer_idx >= first_kv_shared;
         let use_double_wide = args.use_double_wide_mlp && is_kv_shared_layer;
@@ -537,13 +537,13 @@ impl Mlp {
 
 impl Module<&Array> for Mlp {
     type Output = Array;
-    type Error = Exception;
+    type Error = Error;
 
     fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
         let gate = self.gate_proj.forward(x)?;
         let up = self.up_proj.forward(x)?;
         let activated = geglu(&mut self.geglu_cache, &gate, &up)?;
-        self.down_proj.forward(&activated)
+        Ok(self.down_proj.forward(&activated)?)
     }
 
     fn training_mode(&mut self, mode: bool) {
@@ -555,14 +555,14 @@ impl Module<&Array> for Mlp {
 
 /// fp16-safe additive residual: promotes to f32, clips to fp16 range,
 /// casts back. No-op for non-fp16 inputs.
-fn clip_residual(x: &Array, y: &Array) -> Result<Array, Exception> {
+fn clip_residual(x: &Array, y: &Array) -> Result<Array, Error> {
     if x.dtype() != Dtype::Float16 {
-        return x.add(y);
+        return Ok(x.add(y)?);
     }
     let xf = x.as_dtype(Dtype::Float32)?;
     let yf = y.as_dtype(Dtype::Float32)?;
     let sum = xf.add(&yf)?;
-    clip(&sum, (-FP16_MAX, FP16_MAX))?.as_dtype(Dtype::Float16)
+    Ok(clip(&sum, (-FP16_MAX, FP16_MAX))?.as_dtype(Dtype::Float16)?)
 }
 
 /// Top-k expert router (26B-A4B). RMS-norms the hidden, projects to
@@ -599,12 +599,7 @@ pub(crate) struct Router {
 }
 
 impl Router {
-    pub fn new(
-        hidden_size: i32,
-        num_experts: i32,
-        top_k: i32,
-        eps: f32,
-    ) -> Result<Self, Exception> {
+    pub fn new(hidden_size: i32, num_experts: i32, top_k: i32, eps: f32) -> Result<Self, Error> {
         Ok(Self {
             eps,
             top_k,
@@ -623,7 +618,7 @@ impl Router {
     }
 
     /// `x` shape `[B, L, D]` → `(top_k_indices [B, L, K], top_k_weights [B, L, K])`.
-    pub fn forward(&mut self, x: &Array) -> Result<(Array, Array), Exception> {
+    pub fn forward(&mut self, x: &Array) -> Result<(Array, Array), Error> {
         // Lazily pre-multiply `scale * root_size` once per layer instead
         // of every forward — the weights are loaded once and never change.
         // Stage the f32 scalar into scale's dtype so the multiply keeps
@@ -679,11 +674,7 @@ pub(crate) struct Experts {
 }
 
 impl Experts {
-    pub fn new(
-        hidden_size: i32,
-        moe_intermediate: i32,
-        num_experts: i32,
-    ) -> Result<Self, Exception> {
+    pub fn new(hidden_size: i32, moe_intermediate: i32, num_experts: i32) -> Result<Self, Error> {
         Ok(Self {
             switch_glu: GemmaSwitchGlu::new(hidden_size, moe_intermediate, num_experts, false)?,
         })
@@ -694,7 +685,7 @@ impl Experts {
         x: &Array,
         top_k_indices: &Array,
         top_k_weights: &Array,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         // Try the fused down+combine path first (quantised + no-sort
         // only). Falls back internally to the legacy 2-launch path
         // for sort/dense.
@@ -705,7 +696,7 @@ impl Experts {
 
 impl mlxr::quantization::Quantizable for Experts {
     type Quantized = Self;
-    type QuantizationError = Exception;
+    type QuantizationError = Error;
 
     fn try_into_quantized(
         self,
@@ -777,20 +768,20 @@ pub struct DecoderLayer {
 }
 
 impl DecoderLayer {
-    pub fn new(args: &TextConfig, layer_idx: i32) -> Result<Self, Exception> {
+    pub fn new(args: &TextConfig, layer_idx: i32) -> Result<Self, Error> {
         let layer_kind = args.layer_types_resolved()[layer_idx as usize];
         let enable_moe = args.enable_moe_block;
 
         let (router, experts, post1, pre2, post2) = if enable_moe {
-            let num_experts = args.num_experts.ok_or_else(|| {
-                Exception::custom("gemma4: enable_moe_block=true requires num_experts")
-            })?;
-            let top_k = args.top_k_experts.ok_or_else(|| {
-                Exception::custom("gemma4: enable_moe_block=true requires top_k_experts")
-            })?;
-            let moe_int = args.moe_intermediate_size.ok_or_else(|| {
-                Exception::custom("gemma4: enable_moe_block=true requires moe_intermediate_size")
-            })?;
+            let num_experts = args
+                .num_experts
+                .ok_or_else(|| Error::config_missing("num_experts"))?;
+            let top_k = args
+                .top_k_experts
+                .ok_or_else(|| Error::config_missing("top_k_experts"))?;
+            let moe_int = args
+                .moe_intermediate_size
+                .ok_or_else(|| Error::config_missing("moe_intermediate_size"))?;
             (
                 Some(Router::new(
                     args.hidden_size,
@@ -881,7 +872,7 @@ impl DecoderLayer {
         shared_kv: Option<(Array, Array)>,
         offset: Option<i32>,
         per_layer_input: Option<&Array>,
-    ) -> Result<AttentionOut, Exception> {
+    ) -> Result<AttentionOut, Error> {
         let h_pre = self.input_layernorm.forward(x)?;
         let AttentionOut {
             h,
@@ -1033,7 +1024,7 @@ pub struct Gemma4TextModel {
 }
 
 impl Gemma4TextModel {
-    pub fn new(args: &TextConfig) -> Result<Self, Exception> {
+    pub fn new(args: &TextConfig) -> Result<Self, Error> {
         assert!(args.vocab_size > 0);
         let embed_tokens = layers::Embedding::new(args.vocab_size, args.hidden_size)?;
         let layers = (0..args.num_hidden_layers)
@@ -1121,7 +1112,7 @@ where
     C: KeyValueCache + Default,
 {
     type Output = Array;
-    type Error = Exception;
+    type Error = Error;
 
     fn forward(&mut self, input: ModelInput<'_, C>) -> Result<Self::Output, Self::Error> {
         let ModelInput { inputs, cache, .. } = input;
@@ -1203,9 +1194,9 @@ where
         // Expand 2D `[T, kT]` masks to 4D `[1, 1, T, kT]` so they broadcast
         // against `[B, H, T, D]` activations in the non-fused SDPA path
         // (head_dim ∉ {64, 80, 128} for Gemma 4 falls back to this path).
-        let expand_mask = |a: Array| -> Result<Array, Exception> {
+        let expand_mask = |a: Array| -> Result<Array, Error> {
             if a.shape().len() == 2 {
-                expand_dims_axes(&a, &[0, 1])
+                Ok(expand_dims_axes(&a, &[0, 1])?)
             } else {
                 Ok(a)
             }
@@ -1246,7 +1237,7 @@ where
             intermediates[i] = Some((out.shared_kv.0, out.shared_kv.1, out.offset));
         }
 
-        self.norm.forward(&h)
+        Ok(self.norm.forward(&h)?)
     }
 
     fn training_mode(&mut self, mode: bool) {
@@ -1285,7 +1276,7 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn new(args: TextConfig) -> Result<Self, Exception> {
+    pub fn new(args: TextConfig) -> Result<Self, Error> {
         let final_logit_softcapping = if args.final_logit_softcapping > 0.0 {
             Some(args.final_logit_softcapping)
         } else {
@@ -1325,7 +1316,7 @@ where
     C: KeyValueCache + Default,
 {
     type Output = Array;
-    type Error = Exception;
+    type Error = Error;
 
     fn forward(&mut self, input: ModelInput<'_, C>) -> Result<Self::Output, Self::Error> {
         let out = self.model.forward(input)?;

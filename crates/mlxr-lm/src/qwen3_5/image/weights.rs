@@ -10,6 +10,7 @@ use mlxr::{module::ModuleParameters, transforms::eval_params};
 
 use crate::config::ModelConfig as Config;
 use crate::error::Error;
+use crate::loader::apply_post_load_memory_policy;
 use crate::qwen3_5::image::vision::VisionModel;
 use crate::qwen3_5::text::weights::{
     bucket_key, load_sanitized_weights, quantize_language_model, Bucketed, ModelConfig, Qwen35Model,
@@ -23,14 +24,14 @@ pub(crate) fn load_full_model(
     env: &ModelConfig,
     model_dir: &Path,
 ) -> Result<(Qwen35Model, VisionModel, Vec<String>), Error> {
-    let mut lm = Qwen35Model::new_dense(env.text_config.clone()).map_err(Error::Exception)?;
+    let mut lm = Qwen35Model::new_dense(env.text_config.clone())?;
     if let Some(q) = cfg.quantization() {
         quantize_language_model(&mut lm, q)?;
     }
     let vision_cfg = env.vision_config.as_ref().ok_or_else(|| {
         Error::Other("qwen3_5 load_full_model: config has no vision_config".into())
     })?;
-    let mut vision = VisionModel::new(vision_cfg).map_err(Error::Exception)?;
+    let mut vision = VisionModel::new(vision_cfg)?;
     let weights = load_sanitized_weights(model_dir)?;
 
     let mut leftover = Vec::new();
@@ -60,7 +61,7 @@ pub(crate) fn load_full_model(
 
     eval_params(lm.parameters()).map_err(Error::Exception)?;
     eval_params(vision.parameters()).map_err(Error::Exception)?;
-    crate::loader::apply_post_load_memory_policy();
+    apply_post_load_memory_policy();
     leftover.sort();
     Ok((lm, vision, leftover))
 }

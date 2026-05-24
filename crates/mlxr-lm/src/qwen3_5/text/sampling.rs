@@ -7,10 +7,11 @@
 //! family's sampling surface inside one feature gate.
 
 use mlxr::{
-    error::Exception,
     ops::{argsort_axis, cumsum, indexing::take_along_axis, softmax_axis},
     Array,
 };
+
+use crate::error::Error;
 
 /// Build a vocab-positional keep mask (`[1, vocab]` bool) for top-p
 /// at threshold `p` over the given logits. Slot `i` is `true` iff
@@ -20,7 +21,7 @@ use mlxr::{
 /// than by sort position. Used by the MTP rejection-sampling path
 /// to apply a shared keep mask to both the draft and verify
 /// distributions before computing the accept ratio.
-pub(crate) fn top_p_keep_mask(logits: &Array, p: f32) -> Result<Array, Exception> {
+pub(crate) fn top_p_keep_mask(logits: &Array, p: f32) -> Result<Array, Error> {
     let probs = softmax_axis(logits, -1, true)?;
     let neg = probs.negative()?;
     let order = argsort_axis(&neg, -1)?;
@@ -33,7 +34,7 @@ pub(crate) fn top_p_keep_mask(logits: &Array, p: f32) -> Result<Array, Exception
     // that pulls the keep flag for each vocab id back into vocab
     // order.
     let inverse = argsort_axis(&order, -1)?;
-    take_along_axis(&keep_sorted, &inverse, -1)
+    Ok(take_along_axis(&keep_sorted, &inverse, -1)?)
 }
 
 #[cfg(test)]

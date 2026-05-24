@@ -8,7 +8,6 @@
 
 use mlxr::{
     builder::Builder,
-    error::Exception,
     layers::{Linear, LinearBuilder},
     macros::{ModuleParameters, Quantizable},
     module::Module,
@@ -17,6 +16,7 @@ use mlxr::{
 };
 
 use crate::activations::{swiglu, SwigluCache};
+use crate::error::Error;
 
 /// Three-projection SwiGLU MLP. Bias on the projections is configurable
 /// (`true` for llama, `false` for qwen3).
@@ -42,7 +42,7 @@ pub struct SwigluMlp {
 impl SwigluMlp {
     /// Build a new MLP. `bias=true` matches llama's `mlp_bias` config;
     /// `bias=false` matches qwen3's hardcoded behaviour.
-    pub fn new(dim: i32, hidden_dim: i32, bias: bool) -> Result<Self, Exception> {
+    pub fn new(dim: i32, hidden_dim: i32, bias: bool) -> Result<Self, Error> {
         let gate_proj = LinearBuilder::new(dim, hidden_dim).bias(bias).build()?;
         let down_proj = LinearBuilder::new(hidden_dim, dim).bias(bias).build()?;
         let up_proj = LinearBuilder::new(dim, hidden_dim).bias(bias).build()?;
@@ -58,13 +58,13 @@ impl SwigluMlp {
 
 impl Module<&Array> for SwigluMlp {
     type Output = Array;
-    type Error = Exception;
+    type Error = Error;
 
     fn forward(&mut self, input: &Array) -> Result<Self::Output, Self::Error> {
         let gate = self.gate_proj.forward(input)?;
         let up = self.up_proj.forward(input)?;
         let activated = swiglu(&mut self.swiglu_cache, &gate, &up)?;
-        self.down_proj.forward(&activated)
+        Ok(self.down_proj.forward(&activated)?)
     }
 
     fn training_mode(&mut self, mode: bool) {

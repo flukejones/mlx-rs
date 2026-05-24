@@ -30,6 +30,8 @@ use mlxr::{
     Array, Dtype, Stream,
 };
 
+use crate::error::Error;
+
 /// Apple-Silicon SIMD lane width (`simd_sum` quad-pair). The GDN kernel
 /// reduces across the key dimension via `simd_sum`, so `Dk` must be a
 /// multiple of this constant for the kernel path to be usable.
@@ -101,7 +103,7 @@ pub(crate) fn step_ops(
     beta_t: &Array,
     state: &Array,
     mask_t: Option<&Array>,
-) -> Result<(Array, Array), Exception> {
+) -> Result<(Array, Array), Error> {
     let old_state = state.clone();
 
     let decay = match g_t.ndim() {
@@ -114,11 +116,7 @@ pub(crate) fn step_ops(
             // [B, Hv, Dk] -> [B, Hv, 1, Dk]
             expand_dims(g_t, 2)?
         }
-        n => {
-            return Err(Exception::custom(format!(
-                "step_ops: unsupported g ndim {n}"
-            )))
-        }
+        n => return Err(Error::shape(format!("step_ops: unsupported g ndim {n}"))),
     };
     let state = state.multiply(&decay)?;
     // k[..., None, :] -> [B, Hv, 1, Dk]
@@ -174,11 +172,11 @@ pub(crate) fn gated_delta_update_ops(
     dt_bias: &Array,
     state: Option<&Array>,
     mask: Option<&Array>,
-) -> Result<(Array, Array), Exception> {
+) -> Result<(Array, Array), Error> {
     let q_shape = q.shape();
     let v_shape = v.shape();
     if q_shape.len() != 4 || v_shape.len() != 4 {
-        return Err(Exception::custom(
+        return Err(Error::shape(
             "gated_delta_update_ops: q/v must be 4-D [B, T, H, D]",
         ));
     }
@@ -201,7 +199,7 @@ pub(crate) fn gated_delta_update_ops(
     };
 
     if hv % hk != 0 {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "gated_delta_update_ops: Hv ({hv}) must be divisible by Hk ({hk})"
         )));
     }
@@ -239,8 +237,8 @@ pub(crate) fn gated_delta_update_ops(
 /// The caller is expected to cache the returned handle for the lifetime of
 /// the block — see [`gated_delta_update_metal`] for why per-call recreation
 /// breaks chained launches.
-pub(crate) fn make_gated_delta_kernel() -> Result<MetalKernel, Exception> {
-    metal_kernel(
+pub(crate) fn make_gated_delta_kernel() -> Result<MetalKernel, Error> {
+    Ok(metal_kernel(
         "qwen3_5_gated_delta_step",
         &["q", "k", "v", "g", "beta", "state_in", "T"],
         &["y", "state_out"],
@@ -248,7 +246,7 @@ pub(crate) fn make_gated_delta_kernel() -> Result<MetalKernel, Exception> {
         "",
         true,
         false,
-    )
+    )?)
 }
 
 /// Metal-kernel fast path for the gated-delta T-step scan, plumbed
@@ -268,13 +266,11 @@ pub(crate) fn gated_delta_update_metal(
     a_log: &Array,
     dt_bias: &Array,
     state: Option<&Array>,
-) -> Result<(Array, Array), Exception> {
+) -> Result<(Array, Array), Error> {
     let q_shape = q.shape();
     let v_shape = v.shape();
     if q_shape.len() != 4 || v_shape.len() != 4 {
-        return Err(Exception::custom(
-            "gated_delta_update_metal: q/v must be 4-D",
-        ));
+        return Err(Error::shape("gated_delta_update_metal: q/v must be 4-D"));
     }
     let batch = q_shape[0];
     let time = q_shape[1];
@@ -284,7 +280,7 @@ pub(crate) fn gated_delta_update_metal(
     let dv = v_shape[3];
 
     if dk % SIMD_WIDTH != 0 {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "gated_delta_update_metal: Dk={dk} must be a multiple of {SIMD_WIDTH}"
         )));
     }
@@ -389,7 +385,7 @@ const GATED_DELTA_STEP_SOURCE: &str = r#"
 "#;
 
 /// Index the time axis at `t` and squeeze it out. `x[:, t]` in numpy / mlx.
-fn slice_t(x: &Array, t: i32) -> Result<Array, Exception> {
+fn slice_t(x: &Array, t: i32) -> Result<Array, Error> {
     // Use a length-1 index so take_axis preserves the axis at size 1, then
     // squeeze that axis away. A 0-D scalar index would drop the axis directly
     // in some builds but not others, so the explicit shape keeps behaviour
@@ -398,7 +394,7 @@ fn slice_t(x: &Array, t: i32) -> Result<Array, Exception> {
     let y = take_axis(x, &idx, 1)?;
     let shape = y.shape();
     if shape[1] != 1 {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "slice_t: expected axis 1 to be size 1 after take_axis, got shape {shape:?}"
         )));
     }
@@ -407,7 +403,7 @@ fn slice_t(x: &Array, t: i32) -> Result<Array, Exception> {
         .enumerate()
         .filter_map(|(i, s)| if i == 1 { None } else { Some(*s) })
         .collect();
-    reshape(&y, &new_shape)
+    Ok(reshape(&y, &new_shape)?)
 }
 
 #[cfg(test)]

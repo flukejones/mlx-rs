@@ -10,14 +10,14 @@ pub mod params;
 #[cfg(test)]
 mod tests;
 
-use mlxr::error::Exception;
 use mlxr::fast::{metal_kernel, MetalKernel, MetalKernelConfig};
 use mlxr::{Array, Dtype, Stream};
 
-type Result<T> = std::result::Result<T, Exception>;
-
 use crate::attention::kernel_source::{KERNEL_HEADER, KERNEL_SOURCE, KERNEL_SOURCE_QUANT};
 use crate::attention::params::FlatAttnParams;
+use crate::error::Error;
+
+type Result<T> = std::result::Result<T, Error>;
 
 const KERNEL_NAME: &str = "steel_attention_v0";
 
@@ -86,7 +86,7 @@ const OUTPUT_NAMES: &[&str] = &["o"];
 /// Compile the steel attention kernel. Cache the handle in the calling
 /// module — `MetalKernel::Drop` releases the underlying pipeline.
 pub fn make_attention_kernel() -> Result<MetalKernel> {
-    metal_kernel(
+    Ok(metal_kernel(
         KERNEL_NAME,
         INPUT_NAMES,
         OUTPUT_NAMES,
@@ -94,7 +94,7 @@ pub fn make_attention_kernel() -> Result<MetalKernel> {
         KERNEL_HEADER,
         true,
         false,
-    )
+    )?)
 }
 
 /// Inputs to [`attention_dispatch`].
@@ -129,14 +129,14 @@ pub struct AttentionInputs<'a> {
 pub fn attention_dispatch(kernel: &MetalKernel, inputs: AttentionInputs<'_>) -> Result<Array> {
     let q_shape = inputs.q.shape();
     if q_shape.len() != 4 {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "steel_attention: q must be 4-D [B,H_q,qL,D], got {q_shape:?}"
         )));
     }
     let k_shape = inputs.k.shape();
     let v_shape = inputs.v.shape();
     if k_shape.len() != 4 || v_shape.len() != 4 {
-        return Err(Exception::custom("steel_attention: k/v must be 4-D"));
+        return Err(Error::shape("steel_attention: k/v must be 4-D"));
     }
 
     let b = q_shape[0];
@@ -147,53 +147,53 @@ pub fn attention_dispatch(kernel: &MetalKernel, inputs: AttentionInputs<'_>) -> 
     let k_len = k_shape[2];
 
     if h_q != inputs.h_q || h_kv != inputs.h_kv {
-        return Err(Exception::custom("steel_attention: head count mismatch"));
+        return Err(Error::shape("steel_attention: head count mismatch"));
     }
     if inputs.h_q % inputs.h_kv != 0 {
-        return Err(Exception::custom("steel_attention: H_q % H_kv != 0"));
+        return Err(Error::shape("steel_attention: H_q % H_kv != 0"));
     }
     if d != inputs.head_dim {
-        return Err(Exception::custom("steel_attention: head_dim mismatch"));
+        return Err(Error::shape("steel_attention: head_dim mismatch"));
     }
     if k_shape[3] != d || v_shape[3] != d {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "steel_attention: K head_dim {} / V head_dim {} != Q head_dim {d}",
             k_shape[3], v_shape[3]
         )));
     }
     if k_shape[2] != k_len || v_shape[2] != k_len {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "steel_attention: K seq {} / V seq {} mismatch",
             k_shape[2], v_shape[2]
         )));
     }
     if k_shape[0] != b || v_shape[0] != b {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "steel_attention: K batch {} / V batch {} != Q batch {b}",
             k_shape[0], v_shape[0]
         )));
     }
     let shape = shape_for_d(d).ok_or_else(|| {
-        Exception::custom(format!(
+        Error::shape(format!(
             "steel_attention: supported head_dim ∈ {{128, 256, 512}}, got {d}"
         ))
     })?;
     if inputs.mask.is_some() {
-        return Err(Exception::custom(
+        return Err(Error::shape(
             "steel_attention: explicit masks unsupported (use causal=true)",
         ));
     }
     // D=512 with fp32 exceeds the 32 KB TG-mem budget (Q_smem alone
     // would be 16*520*4 = 33 KB). Reject early.
     if d == 512 && inputs.q.dtype() == Dtype::Float32 {
-        return Err(Exception::custom(
+        return Err(Error::shape(
             "steel_attention: D=512 requires fp16 or bf16 (fp32 TG-mem exceeds 32 KB)",
         ));
     }
 
     let out_dtype = inputs.q.dtype();
     if !matches!(out_dtype, Dtype::Float16 | Dtype::Bfloat16 | Dtype::Float32) {
-        return Err(Exception::custom("steel_attention: unsupported dtype"));
+        return Err(Error::shape("steel_attention: unsupported dtype"));
     }
 
     let flat = FlatAttnParams::from_shapes(
@@ -261,7 +261,7 @@ pub fn attention_dispatch(kernel: &MetalKernel, inputs: AttentionInputs<'_>) -> 
     )?;
     outs.into_iter()
         .next()
-        .ok_or_else(|| Exception::custom("steel_attention: no outputs"))
+        .ok_or_else(|| Error::shape("steel_attention: no outputs"))
 }
 
 // ===================== Quantised K/V variant =========================
@@ -302,7 +302,7 @@ const INPUT_NAMES_QUANT: &[&str] = &[
 /// Compile the quantised steel attention kernel. Different mlx-side
 /// kernel name from the dense variant so both can be cached in parallel.
 pub fn make_quant_attention_kernel() -> Result<MetalKernel> {
-    metal_kernel(
+    Ok(metal_kernel(
         KERNEL_NAME_QUANT,
         INPUT_NAMES_QUANT,
         OUTPUT_NAMES,
@@ -310,7 +310,7 @@ pub fn make_quant_attention_kernel() -> Result<MetalKernel> {
         KERNEL_HEADER,
         true,
         false,
-    )
+    )?)
 }
 
 /// Inputs to [`quant_attention_dispatch`]. K/V are packed-
@@ -356,14 +356,14 @@ pub fn quant_attention_dispatch(
 ) -> Result<Array> {
     let q_shape = inputs.q.shape();
     if q_shape.len() != 4 {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "steel_quant_attention: q must be 4-D [B,H_q,qL,D], got {q_shape:?}"
         )));
     }
     let k_wq_shape = inputs.k_wq.shape();
     let v_wq_shape = inputs.v_wq.shape();
     if k_wq_shape.len() != 4 || v_wq_shape.len() != 4 {
-        return Err(Exception::custom(
+        return Err(Error::shape(
             "steel_quant_attention: k_wq / v_wq must be 4-D",
         ));
     }
@@ -376,30 +376,28 @@ pub fn quant_attention_dispatch(
     let k_len = k_wq_shape[2];
 
     if h_q != inputs.h_q || h_kv != inputs.h_kv {
-        return Err(Exception::custom("steel_quant_attention: head mismatch"));
+        return Err(Error::shape("steel_quant_attention: head mismatch"));
     }
     if inputs.h_q % inputs.h_kv != 0 {
-        return Err(Exception::custom("steel_quant_attention: H_q % H_kv != 0"));
+        return Err(Error::shape("steel_quant_attention: H_q % H_kv != 0"));
     }
     if d != inputs.head_dim {
-        return Err(Exception::custom(
-            "steel_quant_attention: head_dim mismatch",
-        ));
+        return Err(Error::shape("steel_quant_attention: head_dim mismatch"));
     }
     if !matches!(inputs.bits, 4 | 8) {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "steel_quant_attention: bits must be 4 or 8, got {}",
             inputs.bits
         )));
     }
     if d % inputs.group_size != 0 {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "steel_quant_attention: head_dim {d} not divisible by group_size {}",
             inputs.group_size
         )));
     }
     if inputs.mask.is_some() {
-        return Err(Exception::custom(
+        return Err(Error::shape(
             "steel_quant_attention: explicit masks unsupported",
         ));
     }
@@ -408,7 +406,7 @@ pub fn quant_attention_dispatch(
     let expected_wq_d = d / pack_factor;
     let expected_meta_d = d / inputs.group_size;
     if k_wq_shape[3] != expected_wq_d || v_wq_shape[3] != expected_wq_d {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "steel_quant_attention: K_wq[3]={} V_wq[3]={} != D/pack_factor={expected_wq_d}",
             k_wq_shape[3], v_wq_shape[3]
         )));
@@ -418,7 +416,7 @@ pub fn quant_attention_dispatch(
     if k_s_shape != [b, h_kv, k_len, expected_meta_d]
         || v_s_shape != [b, h_kv, k_len, expected_meta_d]
     {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "steel_quant_attention: scales shape mismatch (expected [{b},{h_kv},{k_len},{expected_meta_d}])"
         )));
     }
@@ -429,7 +427,7 @@ pub fn quant_attention_dispatch(
         || inputs.v_scales.dtype() != q_dtype
         || inputs.v_biases.dtype() != q_dtype
     {
-        return Err(Exception::custom(format!(
+        return Err(Error::shape(format!(
             "steel_quant_attention: scales/biases dtype must match q dtype ({q_dtype:?}); \
              got k_scales={:?}, k_biases={:?}, v_scales={:?}, v_biases={:?}",
             inputs.k_scales.dtype(),
@@ -440,19 +438,17 @@ pub fn quant_attention_dispatch(
     }
 
     let shape = shape_for_d(d).ok_or_else(|| {
-        Exception::custom(format!(
+        Error::shape(format!(
             "steel_quant_attention: supported head_dim ∈ {{128, 256, 512}}, got {d}"
         ))
     })?;
 
     let out_dtype = inputs.q.dtype();
     if !matches!(out_dtype, Dtype::Float16 | Dtype::Bfloat16 | Dtype::Float32) {
-        return Err(Exception::custom(
-            "steel_quant_attention: unsupported q dtype",
-        ));
+        return Err(Error::shape("steel_quant_attention: unsupported q dtype"));
     }
     if d == 512 && out_dtype == Dtype::Float32 {
-        return Err(Exception::custom(
+        return Err(Error::shape(
             "steel_quant_attention: D=512 requires fp16 or bf16 (fp32 TG-mem exceeds 32 KB)",
         ));
     }
@@ -523,5 +519,5 @@ pub fn quant_attention_dispatch(
     )?;
     outs.into_iter()
         .next()
-        .ok_or_else(|| Exception::custom("steel_quant_attention: no outputs"))
+        .ok_or_else(|| Error::shape("steel_quant_attention: no outputs"))
 }

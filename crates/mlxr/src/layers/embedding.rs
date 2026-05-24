@@ -1,12 +1,14 @@
 //! Embedding layer.
 
-use crate::error::Exception;
-use crate::module::Module;
-use crate::module::Param;
+use crate::error::{Exception, Result};
+use crate::module::{Module, Param};
+use crate::ops;
 use crate::ops::indexing::IndexOp;
 use crate::quantization::Quantizable;
 use crate::Array;
 use mlxr_macros::ModuleParameters;
+
+use crate::random;
 
 use super::QuantizedEmbedding;
 
@@ -28,10 +30,10 @@ impl Embedding {
     ///
     /// - `embedding_count`: How many possible discrete tokens can we embed.  Usually called the vocabulary size.
     /// - `dimensions`: The dimensionality of the embeddings.
-    pub fn new(embedding_count: i32, dimensions: i32) -> Result<Self, Exception> {
+    pub fn new(embedding_count: i32, dimensions: i32) -> Result<Self> {
         let scale = f32::sqrt(1.0 / (dimensions as f32));
         let weight =
-            crate::random::normal::<f32>(&[embedding_count, dimensions], None, None, None)? * scale;
+            random::normal::<f32>(&[embedding_count, dimensions], None, None, None)? * scale;
 
         Ok(Self {
             weight: Param::new(weight),
@@ -42,8 +44,8 @@ impl Embedding {
     ///
     /// Use this for example when input embedding and output projection
     /// weights are tied.
-    pub fn as_linear(&self, x: &Array) -> Result<Array, Exception> {
-        crate::ops::matmul(x, self.weight.value.t())
+    pub fn as_linear(&self, x: &Array) -> Result<Array> {
+        ops::matmul(x, self.weight.value.t())
     }
 }
 
@@ -56,7 +58,7 @@ impl Quantizable for Embedding {
         self,
         group_size: i32,
         bits: i32,
-    ) -> Result<Self::Quantized, Self::QuantizationError> {
+    ) -> Result<Self::Quantized> {
         QuantizedEmbedding::try_from_embedding(self, group_size, bits)
     }
 }
@@ -65,7 +67,7 @@ impl Module<&Array> for Embedding {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         Ok(self.weight.index(x))
     }
 
@@ -84,8 +86,8 @@ mod tests {
 
     #[test]
     fn test_embedding() {
-        crate::random::seed(557).unwrap();
-        let a = crate::random::randint::<_, i32>(0, 10, &[2, 8, 8, 4], None).unwrap();
+        random::seed(557).unwrap();
+        let a = random::randint::<_, i32>(0, 10, &[2, 8, 8, 4], None).unwrap();
         assert_eq!(a.shape(), &[2, 8, 8, 4]);
         assert_eq!(a.dtype(), crate::Dtype::Int32);
         float_eq!(

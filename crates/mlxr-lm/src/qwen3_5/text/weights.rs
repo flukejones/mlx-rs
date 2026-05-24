@@ -29,6 +29,7 @@ pub use super::config::ModelConfig;
 pub use super::layer::Qwen35Model;
 use crate::config::ModelConfig as Config;
 use crate::error::Error;
+use crate::loader::apply_post_load_memory_policy;
 use crate::quantization::QuantizationConfig;
 
 const NORM_SUFFIXES: &[&str] = &[
@@ -264,7 +265,7 @@ pub(crate) fn load_language_model(
     env: &ModelConfig,
     model_dir: &Path,
 ) -> Result<(Qwen35Model, Vec<String>), Error> {
-    let mut model = Qwen35Model::new_dense(env.text_config.clone()).map_err(Error::Exception)?;
+    let mut model = Qwen35Model::new_dense(env.text_config.clone())?;
     if let Some(q) = cfg.quantization() {
         quantize_language_model(&mut model, q)?;
     }
@@ -289,7 +290,7 @@ pub(crate) fn load_language_model(
     }
 
     eval_params(model.parameters()).map_err(Error::Exception)?;
-    crate::loader::apply_post_load_memory_policy();
+    apply_post_load_memory_policy();
     leftover.sort();
     Ok((model, leftover))
 }
@@ -298,10 +299,7 @@ pub(crate) fn quantize_language_model(
     model: &mut Qwen35Model,
     q: &QuantizationConfig,
 ) -> Result<(), Error> {
-    let original = std::mem::replace(
-        model,
-        Qwen35Model::new_dense(model.cfg.clone()).map_err(Error::Exception)?,
-    );
+    let original = std::mem::replace(model, Qwen35Model::new_dense(model.cfg.clone())?);
     let quantized = original
         .try_into_quantized(q.group_size, q.bits)
         .map_err(Error::Exception)?;
@@ -316,6 +314,7 @@ mod tests {
     #![allow(clippy::print_stdout, reason = "test code")]
     #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
+    use crate::quantization::QuantMode;
 
     #[test]
     fn sanitize_key_rewrites_language_model_prefix() {
@@ -396,7 +395,7 @@ mod tests {
         let q = QuantizationConfig {
             group_size: 64,
             bits: 8,
-            mode: crate::quantization::QuantMode::Affine,
+            mode: QuantMode::Affine,
             overrides: HashMap::new(),
         };
         quantize_language_model(&mut model, &q).unwrap();

@@ -1,12 +1,16 @@
 use std::iter::once;
 
-use crate::{error::Exception, quantization::Quantizable, Array};
-use mlxr_codegen::{Buildable, Builder};
-
 use crate::{
+    error::{Exception, Result},
     macros::ModuleParameters,
     module::{Module, Param},
+    ops,
+    quantization::Quantizable,
+    Array,
 };
+use mlxr_codegen::{Buildable, Builder};
+
+use crate::random;
 
 use super::QuantizedLinear;
 
@@ -30,16 +34,16 @@ pub struct LinearBuilder {
 }
 
 /// Builds a new [`Linear`] layer.
-fn build_linear(builder: LinearBuilder) -> Result<Linear, Exception> {
+fn build_linear(builder: LinearBuilder) -> Result<Linear> {
     let input_dims = builder.input_dims;
     let output_dims = builder.output_dims;
     let with_bias = builder.bias;
 
     let scale = f32::sqrt(1.0 / (input_dims as f32));
-    let weight = crate::random::uniform::<_, f32>(-scale, scale, &[output_dims, input_dims], None)?;
+    let weight = random::uniform::<_, f32>(-scale, scale, &[output_dims, input_dims], None)?;
 
     let bias = if with_bias {
-        Some(crate::random::uniform::<_, f32>(
+        Some(random::uniform::<_, f32>(
             -scale,
             scale,
             &[output_dims],
@@ -84,10 +88,10 @@ impl Module<&Array> for Linear {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         match &self.bias.value {
-            Some(bias) => crate::ops::addmm(bias, x, self.weight.value.t(), None, None),
-            None => crate::ops::matmul(x, self.weight.value.t()),
+            Some(bias) => ops::addmm(bias, x, self.weight.value.t(), None, None),
+            None => ops::matmul(x, self.weight.value.t()),
         }
     }
 
@@ -102,7 +106,7 @@ impl Quantizable for Linear {
         self,
         group_size: i32,
         bits: i32,
-    ) -> Result<Self::Quantized, Self::QuantizationError> {
+    ) -> Result<Self::Quantized> {
         QuantizedLinear::try_from_linear(self, group_size, bits)
     }
 }
@@ -129,14 +133,14 @@ pub struct BilinearBuilder {
     pub bias: bool,
 }
 
-fn build_bilinear(builder: BilinearBuilder) -> Result<Bilinear, Exception> {
+fn build_bilinear(builder: BilinearBuilder) -> Result<Bilinear> {
     let input_dims_1 = builder.input_dims_1;
     let input_dims_2 = builder.input_dims_2;
     let output_dims = builder.output_dims;
     let with_bias = builder.bias;
 
     let scale = f32::sqrt(1.0 / (input_dims_1 as f32));
-    let weights = crate::random::uniform::<_, f32>(
+    let weights = random::uniform::<_, f32>(
         -scale,
         scale,
         &[output_dims, input_dims_2, input_dims_1],
@@ -144,7 +148,7 @@ fn build_bilinear(builder: BilinearBuilder) -> Result<Bilinear, Exception> {
     )?;
 
     let bias = if with_bias {
-        Some(crate::random::uniform::<_, f32>(
+        Some(random::uniform::<_, f32>(
             -scale,
             scale,
             &[output_dims],
@@ -183,7 +187,7 @@ impl Module<&Array> for Bilinear {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let shape = self.weights.shape();
         let (out, in2, in1) = (shape[0], shape[1], shape[2]);
         let x_shape = &x.shape()[..x.shape().len() - 1];
@@ -192,9 +196,9 @@ impl Module<&Array> for Bilinear {
 
         // perform the bilinear transform
         let w = self.weights.reshape(&[out * in2, in1])?;
-        let mut y = crate::ops::matmul(&x1, w.t())?;
+        let mut y = ops::matmul(&x1, w.t())?;
         y = y.reshape(&[-1, out, in2])?.swap_axes(-2, -1)?;
-        y = crate::ops::matmul(&x2, &y)?;
+        y = ops::matmul(&x2, &y)?;
         y = y.squeeze_axes(&[1])?;
 
         // reset the shape
@@ -202,7 +206,7 @@ impl Module<&Array> for Bilinear {
         y = y.reshape(&new_shape)?;
 
         if let Some(bias) = &self.bias.value {
-            y = crate::ops::add(&y, bias)?;
+            y = ops::add(&y, bias)?;
         }
 
         Ok(y)
@@ -226,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_linear() {
-        crate::random::seed(744).unwrap();
+        random::seed(744).unwrap();
         let a = uniform::<_, f32>(0.0, 1.0, &[2, 8, 16], None).unwrap();
         assert_eq!(a.shape(), &[2, 8, 16]);
         assert_eq!(a.dtype(), Dtype::Float32);

@@ -1,4 +1,6 @@
-use crate::error::{Exception, IoError};
+use crate::error::{
+    get_and_clear_last_mlx_error, setup_mlx_error_handler, IoError, Result, INIT_ERR_HANDLER,
+};
 use crate::utils::SUCCESS;
 use crate::{Array, Stream};
 use std::collections::HashMap;
@@ -23,7 +25,10 @@ impl Drop for SafeTensors {
 }
 
 impl SafeTensors {
-    pub(crate) fn load_device(path: &Path, stream: impl AsRef<Stream>) -> Result<Self, IoError> {
+    pub(crate) fn load_device(
+        path: &Path,
+        stream: impl AsRef<Stream>,
+    ) -> std::result::Result<Self, IoError> {
         if !path.is_file() {
             return Err(IoError::NotFile);
         }
@@ -51,9 +56,8 @@ impl SafeTensors {
         .map_err(Into::into)
     }
 
-    pub(crate) fn data(&self) -> Result<HashMap<String, Array>, Exception> {
-        crate::error::INIT_ERR_HANDLER
-            .with(|init| init.call_once(crate::error::setup_mlx_error_handler));
+    pub(crate) fn data(&self) -> Result<HashMap<String, Array>> {
+        INIT_ERR_HANDLER.with(|init| init.call_once(setup_mlx_error_handler));
         let mut map = HashMap::new();
         unsafe {
             let iterator = mlxr_sys::mlx_map_string_to_array_iterator_new(self.c_data);
@@ -75,7 +79,7 @@ impl SafeTensors {
                     }
                     1 => {
                         mlxr_sys::mlx_array_free(value);
-                        return Err(crate::error::get_and_clear_last_mlx_error()
+                        return Err(get_and_clear_last_mlx_error()
                             .expect("A non-success status was returned, but no error was set.")
                             .into());
                     }
@@ -93,9 +97,8 @@ impl SafeTensors {
         Ok(map)
     }
 
-    pub(crate) fn metadata(&self) -> Result<HashMap<String, String>, Exception> {
-        crate::error::INIT_ERR_HANDLER
-            .with(|init| init.call_once(crate::error::setup_mlx_error_handler));
+    pub(crate) fn metadata(&self) -> Result<HashMap<String, String>> {
+        INIT_ERR_HANDLER.with(|init| init.call_once(setup_mlx_error_handler));
 
         let mut map = HashMap::new();
         unsafe {
@@ -115,7 +118,7 @@ impl SafeTensors {
                         map.insert(key, value);
                     }
                     1 => {
-                        return Err(crate::error::get_and_clear_last_mlx_error()
+                        return Err(get_and_clear_last_mlx_error()
                             .expect("A non-success status was returned, but no error was set.")
                             .into());
                     }

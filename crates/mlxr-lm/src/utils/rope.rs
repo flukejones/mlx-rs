@@ -2,12 +2,13 @@ use std::collections::HashMap;
 
 use mlxr::{
     builder::Builder,
-    error::Exception,
     layers,
     module::Module,
     ops::{arange, which},
     Array,
 };
+
+use crate::error::Error;
 use mlxr_macros::ModuleParameters;
 use serde::Deserialize;
 
@@ -42,17 +43,16 @@ impl FloatOrString {
 fn get_numeric_from_config(
     config: &HashMap<String, FloatOrString>,
     key: &str,
-) -> Result<f32, Exception> {
+) -> Result<f32, Error> {
     match config
         .get(key)
         .map(FloatOrString::borrowed)
-        .ok_or_else(|| {
-            Exception::custom(format!(r#"key "{key}" is not found in scaling config"#))
-        })? {
+        .ok_or_else(|| Error::config_missing(key))?
+    {
         FloatOrStr::Float(f) => Ok(f),
         FloatOrStr::Str(s) => s
             .parse::<f32>()
-            .map_err(|_| Exception::custom(format!(r#"key "{key}" is not a valid number"#))),
+            .map_err(|_| Error::config(format!(r#"key "{key}" is not a valid number"#))),
     }
 }
 
@@ -79,7 +79,7 @@ impl Llama3Rope {
         factor: f32,
         low_freq_factor: f32,
         high_freq_factor: f32,
-    ) -> Result<Self, Exception> {
+    ) -> Result<Self, Error> {
         let half_dims = dims / 2;
 
         // freqs = base^(2i/dims) for i in 0..half_dims
@@ -137,14 +137,14 @@ impl<'a, Input> Module<Input> for Llama3Rope
 where
     Input: Into<layers::RopeInput<'a>>,
 {
-    type Error = Exception;
+    type Error = Error;
     type Output = Array;
 
     fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
         let layers::RopeInput { x, offset } = input.into();
         // Pass 4-D `[B, N, T, D]` directly; old reshape zeroed all but
         // head-0 on decode (T=1).
-        mlxr::fast::rope(
+        Ok(mlxr::fast::rope(
             x,
             self.dimensions,
             self.traditional,
@@ -152,7 +152,7 @@ where
             self.scale,
             offset,
             &self.freqs,
-        )
+        )?)
     }
 
     fn training_mode(&mut self, _mode: bool) {}
@@ -229,12 +229,12 @@ impl<'a, Input> Module<Input> for RopeVariant
 where
     Input: Into<layers::RopeInput<'a>>,
 {
-    type Error = Exception;
+    type Error = Error;
     type Output = Array;
 
     fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
         match self {
-            Self::Default(rope) => rope.forward(input),
+            Self::Default(rope) => Ok(rope.forward(input)?),
             Self::Llama3(rope) => rope.forward(input),
         }
     }
@@ -257,7 +257,7 @@ pub fn initialize_rope(
     traditional: bool,
     scaling_config: &Option<HashMap<String, FloatOrString>>,
     _max_position_embeddings: i32,
-) -> Result<RopeVariant, Exception> {
+) -> Result<RopeVariant, Error> {
     let rope_type = scaling_config
         .as_ref()
         .and_then(|config| {
@@ -290,7 +290,7 @@ pub fn initialize_rope(
     } else if rope_type == FloatOrStr::Str("llama3") {
         let config = scaling_config
             .as_ref()
-            .ok_or_else(|| Exception::custom("scaling_config is required for llama3 RoPE"))?;
+            .ok_or_else(|| Error::config("scaling_config is required for llama3 RoPE"))?;
 
         let factor = get_numeric_from_config(config, "factor")?;
         let low_freq_factor = get_numeric_from_config(config, "low_freq_factor")?;
@@ -309,16 +309,14 @@ pub fn initialize_rope(
         )?;
         return Ok(RopeVariant::Llama3(rope));
     } else if rope_type == FloatOrStr::Str("yarn") {
-        return Err(Exception::custom(
-            "RoPE type \"yarn\" is not yet implemented",
-        ));
+        return Err(Error::config("RoPE type \"yarn\" is not yet implemented"));
     } else if rope_type == FloatOrStr::Str("longrope") {
-        return Err(Exception::custom(
+        return Err(Error::config(
             "RoPE type \"longrope\" is not yet implemented",
         ));
     }
 
-    Err(Exception::custom(format!(
+    Err(Error::config(format!(
         "Unsupported RoPE type {rope_type:?}"
     )))
 }

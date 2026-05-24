@@ -31,6 +31,7 @@ use crate::qwen3_5::image::vision::VisionModel;
 use crate::qwen3_5::image::weights::load_full_model;
 use crate::qwen3_5::text::adapter_dense::Qwen35DenseAdapter;
 use crate::qwen3_5::text::config::ModelConfig;
+use crate::qwen3_5::text::{leftover_keys_error, load_common};
 use crate::user_input::{Image, Prompt, UserInput};
 
 const IMAGE_PAD_STR: &str = "<|image_pad|>";
@@ -97,9 +98,7 @@ impl LanguageModel for Qwen35VlmAdapter {
         let merge = cfg
             .vision_config
             .as_ref()
-            .ok_or_else(|| {
-                mlxr::error::Exception::custom("vlm prepare_inputs: config has no vision_config")
-            })?
+            .ok_or_else(|| Error::config("vlm prepare_inputs: config has no vision_config"))?
             .spatial_merge_size;
         let (t_pos, h_pos, w_pos, rope_delta) = get_rope_index_single_batch(
             &host_ids,
@@ -405,10 +404,10 @@ pub(crate) fn load_context_vlm(
     env: &ModelConfig,
     dir: &Path,
 ) -> Result<LoadedContext, Error> {
-    let (tokenizer, chat_template, eos_ids) = crate::qwen3_5::text::load_common(env, dir)?;
+    let (tokenizer, chat_template, eos_ids) = load_common(env, dir)?;
     let (model, vision, leftover) = load_full_model(cfg, env, dir)?;
     if !leftover.is_empty() {
-        return Err(crate::qwen3_5::text::leftover_keys_error("vlm", &leftover));
+        return Err(leftover_keys_error("vlm", &leftover));
     }
     let image_processor = Qwen35ImageProcessor::from_dir(dir)?;
     let dense = Qwen35DenseAdapter::new(model, env.clone());

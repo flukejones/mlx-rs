@@ -3,10 +3,11 @@
 use std::collections::HashMap;
 
 use mlxr::{
-    error::Exception,
     fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask},
     Array,
 };
+
+use crate::error::Error;
 
 /// Ceiling-divide `s` up to the next multiple of `step`.
 ///
@@ -62,8 +63,7 @@ pub trait KeyValueCache {
 
     fn max_size(&self) -> Option<i32>;
 
-    fn update_and_fetch(&mut self, keys: Array, values: Array)
-        -> Result<(Array, Array), Exception>;
+    fn update_and_fetch(&mut self, keys: Array, values: Array) -> Result<(Array, Array), Error>;
 
     /// Returns `true` if this cache supports [`trim`](Self::trim) with a
     /// non-zero argument. Default implementations return `false`; pre-
@@ -107,17 +107,17 @@ pub trait KeyValueCache {
         values: Array,
         scale: f32,
         mask: Option<&Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         let (k_full, v_full) = self.update_and_fetch(keys, values)?;
         assert_mask_matches_keys(mask, &k_full);
-        scaled_dot_product_attention(
+        Ok(scaled_dot_product_attention(
             queries,
             k_full,
             v_full,
             scale,
             mask.map(ScaledDotProductAttentionMask::Array),
             None,
-        )
+        )?)
     }
 }
 
@@ -145,11 +145,7 @@ where
         T::max_size(self)
     }
 
-    fn update_and_fetch(
-        &mut self,
-        keys: Array,
-        values: Array,
-    ) -> Result<(Array, Array), Exception> {
+    fn update_and_fetch(&mut self, keys: Array, values: Array) -> Result<(Array, Array), Error> {
         T::update_and_fetch(self, keys, values)
     }
 
@@ -180,7 +176,7 @@ where
         values: Array,
         scale: f32,
         mask: Option<&Array>,
-    ) -> Result<Array, Exception> {
+    ) -> Result<Array, Error> {
         T::attention(self, queries, keys, values, scale, mask)
     }
 }

@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use crate::{
     array,
-    error::Exception,
+    error::{Exception, Result},
+    fast,
     module::{Module, Param},
     ops::{
         arange, concatenate_axis, exp,
@@ -117,11 +118,11 @@ where
 
     type Output = Array;
 
-    fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
+    fn forward(&mut self, input: Input) -> Result<Array> {
         let RopeInput { x, offset } = input.into();
         // Pass 4-D `[B, N, T, D]` directly; old reshape to 3-D zeroed
         // all but head-0 on decode (T=1).
-        let x = crate::fast::rope(
+        let x = fast::rope(
             x.clone(),
             self.dimensions,
             self.traditional,
@@ -200,7 +201,7 @@ pub struct SinusoidalPositionalEncodingBuilder {
     full_turns: bool,
 }
 
-fn build_sinpe(builder: SinpeBuilder) -> Result<SinusoidalPositionalEncoding, Exception> {
+fn build_sinpe(builder: SinpeBuilder) -> Result<SinusoidalPositionalEncoding> {
     let SinpeBuilder {
         dimensions,
         min_frequency,
@@ -236,7 +237,7 @@ impl Module<&Array> for Sinpe {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Self::Output, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let mut y = x
             .expand_dims_axes(&[-1])
             .and_then(|x| x.multiply(&self.sigmas))?;
@@ -283,14 +284,14 @@ pub struct Alibi {
 }
 
 impl Alibi {
-    fn slope(num_heads: i32) -> Result<Array, Exception> {
+    fn slope(num_heads: i32) -> Result<Array> {
         let x = 2.0_f32.powi(8).powf(1.0 / num_heads as f32);
         array!(x)
             .power(&arange::<_, f32>(1, num_heads + 1, None)?)?
             .expand_dims_axes(&[-1, -2])
     }
 
-    fn matrix(&mut self, key: AlibiKey) -> Result<Array, Exception> {
+    fn matrix(&mut self, key: AlibiKey) -> Result<Array> {
         if let Some(value) = self.cache.get(&key) {
             return Ok(value.clone());
         }
@@ -393,7 +394,7 @@ where
     type Output = Array;
     type Error = Exception;
 
-    fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error> {
+    fn forward(&mut self, input: Input) -> Result<Array> {
         let AlibiInput {
             attention_scores,
             offset,
@@ -429,16 +430,20 @@ mod tests {
     #![allow(clippy::missing_assert_message, reason = "test code")]
     #![allow(clippy::print_stdout, reason = "test code")]
     #![allow(clippy::print_stderr, reason = "test code")]
-    use crate::{layers::AlibiInput, module::Module, random::uniform, Dtype};
+    use crate::{
+        layers::{Alibi, AlibiInput, Rope, Sinpe},
+        module::Module,
+        random,
+        random::uniform,
+        Dtype,
+    };
     use float_eq::assert_float_eq;
-
-    use crate::layers::Rope;
 
     // The unit test below is adapted from the swift binding at:
     // mlx-swift/Tests/MLXTests/IntegrationTests.swift
     #[test]
     fn test_rope() {
-        crate::random::seed(71).unwrap();
+        random::seed(71).unwrap();
         let a = uniform::<_, f32>(0, 1, &[2, 8, 16], None).unwrap();
         assert_eq!(a.shape(), &[2, 8, 16]);
         assert_eq!(a.dtype(), Dtype::Float32);
@@ -473,7 +478,7 @@ mod tests {
     // mlx-swift/Tests/MLXTests/IntegrationTests.swift
     #[test]
     fn test_sinpe() {
-        crate::random::seed(226).unwrap();
+        random::seed(226).unwrap();
         let a = uniform::<_, f32>(0, 1, &[2, 8, 16], None).unwrap();
         assert_eq!(a.shape(), &[2, 8, 16]);
         assert_eq!(a.dtype(), Dtype::Float32);
@@ -488,7 +493,7 @@ mod tests {
             abs <= 2.5736187744140624
         );
 
-        let mut sinpe = crate::layers::Sinpe::new(8).unwrap();
+        let mut sinpe = Sinpe::new(8).unwrap();
         let result = sinpe.forward(&a).unwrap();
         assert_eq!(result.shape(), &[2, 8, 16, 8]);
         assert_eq!(result.dtype(), Dtype::Float32);
@@ -506,7 +511,7 @@ mod tests {
 
     #[test]
     fn test_alibi() {
-        let mut alibi = crate::layers::Alibi::default();
+        let mut alibi = Alibi::default();
         let shape = [1, 8, 20, 20];
         let x = uniform::<_, f32>(0, 1, &shape, None).unwrap();
         let input = AlibiInput::from(&x);

@@ -1,9 +1,9 @@
 use std::{borrow::Borrow, collections::HashMap, hash::Hash, path::Path, rc::Rc};
 
 use crate::{
-    error::{Exception, IoError},
+    error::{IoError, Result},
     nested::{NestedHashMap, NestedValue},
-    Array,
+    transforms, Array,
 };
 
 /// Type alias for owned module parameters.
@@ -33,7 +33,7 @@ pub trait Module<Input>: ModuleParameters + std::fmt::Debug {
     type Error: std::error::Error;
 
     /// Forward pass of the module.
-    fn forward(&mut self, input: Input) -> Result<Self::Output, Self::Error>;
+    fn forward(&mut self, input: Input) -> std::result::Result<Self::Output, Self::Error>;
 
     /// Set whether the module is in training mode.
     ///
@@ -259,12 +259,12 @@ where
 /// `ModuleParameters`.
 pub trait ModuleParametersExt: ModuleParameters {
     /// Evaluate the module parameters.
-    fn eval(&self) -> Result<(), Exception> {
-        crate::transforms::eval_params(self.parameters())
+    fn eval(&self) -> Result<()> {
+        transforms::eval_params(self.parameters())
     }
 
     /// Load module parameters from a `safetensors` file.
-    fn load_safetensors(&mut self, path: impl AsRef<Path>) -> Result<(), IoError> {
+    fn load_safetensors(&mut self, path: impl AsRef<Path>) -> std::result::Result<(), IoError> {
         let loaded = Array::load_safetensors(path)?;
 
         // Load the parameters
@@ -282,7 +282,7 @@ pub trait ModuleParametersExt: ModuleParameters {
     }
 
     /// Save module parameters to a file in `safetensors` format.
-    fn save_safetensors(&self, path: impl AsRef<Path>) -> Result<(), IoError> {
+    fn save_safetensors(&self, path: impl AsRef<Path>) -> std::result::Result<(), IoError> {
         let params = self.parameters().flatten();
         Array::save_safetensors(params, None, path)?;
         Ok(())

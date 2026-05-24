@@ -17,7 +17,6 @@
 use std::path::Path;
 
 use mlxr::builder::Builder;
-use mlxr::error::Exception;
 use mlxr::layers;
 use mlxr::layers::sigmoid;
 use mlxr::macros::{ModuleParameters, Quantizable};
@@ -28,8 +27,10 @@ use mlxr::quantization::{MaybeQuantized, Quantizable as _};
 use mlxr::transforms::eval_params;
 use mlxr::Array;
 
+use super::config::TextConfig;
 use crate::config::ModelConfig as Config;
 use crate::error::Error;
+use crate::loader::apply_post_load_memory_policy;
 use crate::nn::switch::{SplitSwitchFfn, SwigluActivation};
 use crate::nn::SwigluMlp;
 use crate::quantization::QuantizationConfig;
@@ -84,7 +85,7 @@ impl Qwen35MoeBlock {
         shared_expert_intermediate_size: i32,
         num_experts: i32,
         num_experts_per_tok: i32,
-    ) -> Result<Self, Exception> {
+    ) -> Result<Self, Error> {
         let gate = layers::LinearBuilder::new(hidden_size, num_experts)
             .bias(false)
             .build()?;
@@ -110,9 +111,9 @@ impl Qwen35MoeBlock {
 
 impl Module<&Array> for Qwen35MoeBlock {
     type Output = Array;
-    type Error = Exception;
+    type Error = Error;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Exception> {
+    fn forward(&mut self, x: &Array) -> Result<Array, Error> {
         // Shared branch.
         let shared = self.shared_expert.forward(x)?;
         let sg = self.shared_expert_gate.forward(x)?;
@@ -141,7 +142,7 @@ impl Module<&Array> for Qwen35MoeBlock {
             .switch_mlp
             .forward_with_combine(x, &top_k_indices, &top_k_weights)?;
 
-        shared.add(&routed)
+        Ok(shared.add(&routed)?)
     }
 
     fn training_mode(&mut self, mode: bool) {
@@ -223,13 +224,13 @@ pub(crate) fn load_qwen3_5_moe_model(
         ));
     }
     eval_params(model.parameters()).map_err(Error::Exception)?;
-    crate::loader::apply_post_load_memory_policy();
+    apply_post_load_memory_policy();
     Ok(model)
 }
 
 /// Build the MoE model with the [`Qwen35Model::new`] generic,
 /// supplying a [`Qwen35MoeBlock`] factory closure per layer.
-fn make_moe_language_model(cfg: &super::config::TextConfig) -> Result<Qwen35MoeModel, Error> {
+fn make_moe_language_model(cfg: &TextConfig) -> Result<Qwen35MoeModel, Error> {
     Qwen35Model::<Qwen35MoeBlock>::new(cfg.clone(), |c| {
         Qwen35MoeBlock::new(
             c.hidden_size,
@@ -239,7 +240,6 @@ fn make_moe_language_model(cfg: &super::config::TextConfig) -> Result<Qwen35MoeM
             c.num_experts_per_tok,
         )
     })
-    .map_err(Error::Exception)
 }
 
 /// Quantise per-slot, honouring per-tensor overrides for `mlp.gate`

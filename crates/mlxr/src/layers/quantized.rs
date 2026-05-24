@@ -2,7 +2,7 @@ use std::iter::once;
 
 use crate::{
     array,
-    error::Exception,
+    error::{Exception, Result},
     module::{Module, ModuleParameters, Param},
     ops::indexing::IndexOp,
     ops::{self, dequantize, quantized_matmul, zeros},
@@ -26,7 +26,7 @@ pub fn quantize<M>(
     module: M,
     group_size: impl Into<Option<i32>>,
     bits: impl Into<Option<i32>>,
-) -> Result<M::Quantized, M::QuantizationError>
+) -> std::result::Result<M::Quantized, M::QuantizationError>
 where
     M: Quantizable,
 {
@@ -84,16 +84,13 @@ pub struct QuantizedEmbedding {
 
 impl QuantizedEmbeddingBuilder {
     /// Convenience method to build a new [`QuantizedEmbedding`] with an existing [`Embedding`]
-    pub fn build_with_embedding(
-        self,
-        embedding: Embedding,
-    ) -> Result<QuantizedEmbedding, Exception> {
+    pub fn build_with_embedding(self, embedding: Embedding) -> Result<QuantizedEmbedding> {
         let weight = embedding.weight.value;
         self.build_with_weight(weight)
     }
 
     /// Convenience method to build a new [`QuantizedEmbedding`] with an existing weight matrix
-    pub fn build_with_weight(self, weight: Array) -> Result<QuantizedEmbedding, Exception> {
+    pub fn build_with_weight(self, weight: Array) -> Result<QuantizedEmbedding> {
         let group_size = self.group_size;
         let bits = self.bits;
         build_quantized_embedding_inner(weight, group_size, bits)
@@ -104,7 +101,7 @@ fn build_quantized_embedding_inner(
     weight: Array,
     group_size: i32,
     bits: i32,
-) -> Result<QuantizedEmbedding, Exception> {
+) -> Result<QuantizedEmbedding> {
     let (quantized_weight, scales, biases) = ops::quantize(&weight, group_size, bits)?;
 
     let inner = Embedding {
@@ -125,9 +122,7 @@ fn build_quantized_embedding_inner(
     Ok(qe)
 }
 
-fn build_quantized_embedding(
-    builder: QuantizedEmbeddingBuilder,
-) -> Result<QuantizedEmbedding, Exception> {
+fn build_quantized_embedding(builder: QuantizedEmbeddingBuilder) -> Result<QuantizedEmbedding> {
     let embedding_count = builder.embedding_count;
     let dims = builder.dimensions;
 
@@ -156,7 +151,7 @@ impl QuantizedEmbedding {
         embedding: Embedding,
         group_size: impl Into<Option<i32>>,
         bits: impl Into<Option<i32>>,
-    ) -> Result<Self, Exception> {
+    ) -> Result<Self> {
         let group_size = group_size.into().unwrap_or(Self::DEFAULT_GROUP_SIZE);
         let bits = bits.into().unwrap_or(Self::DEFAULT_BITS);
         build_quantized_embedding_inner(embedding.weight.value, group_size, bits)
@@ -166,7 +161,7 @@ impl QuantizedEmbedding {
     ///
     /// Use this for example when input embedding and output projection
     /// weights are tied.
-    pub fn as_linear(&self, x: impl AsRef<Array>) -> Result<Array, Exception> {
+    pub fn as_linear(&self, x: impl AsRef<Array>) -> Result<Array> {
         quantized_matmul(
             x.as_ref(),
             &self.inner.weight,
@@ -182,7 +177,7 @@ impl QuantizedEmbedding {
 impl TryFrom<Embedding> for QuantizedEmbedding {
     type Error = Exception;
 
-    fn try_from(embedding: Embedding) -> Result<Self, Self::Error> {
+    fn try_from(embedding: Embedding) -> Result<Self> {
         Self::try_from_embedding(embedding, None, None)
     }
 }
@@ -191,7 +186,7 @@ impl Module<&Array> for QuantizedEmbedding {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let s = x.shape();
         let x = x.flatten(None, None)?;
         let w = self.inner.weight.index(&x);
@@ -238,7 +233,7 @@ pub struct QuantizedLinearBuilder {
 
 impl QuantizedLinearBuilder {
     /// Convenience method to build a new [`QuantizedLinear`] with an existing [`Linear`]
-    pub fn build_with_linear(self, other: Linear) -> Result<QuantizedLinear, Exception> {
+    pub fn build_with_linear(self, other: Linear) -> Result<QuantizedLinear> {
         self.build_with_weight_and_bias(other.weight.value, other.bias.value)
     }
 
@@ -246,7 +241,7 @@ impl QuantizedLinearBuilder {
         self,
         weight: Array,
         bias: Option<Array>,
-    ) -> Result<QuantizedLinear, Exception> {
+    ) -> Result<QuantizedLinear> {
         build_quantized_linear_inner(weight, bias, self.group_size, self.bits)
     }
 }
@@ -256,7 +251,7 @@ fn build_quantized_linear_inner(
     bias: Option<Array>,
     group_size: i32,
     bits: i32,
-) -> Result<QuantizedLinear, Exception> {
+) -> Result<QuantizedLinear> {
     let (quantized_weight, scales, biases) = ops::quantize(&weight, group_size, bits)?;
 
     let inner = Linear {
@@ -279,9 +274,7 @@ fn build_quantized_linear_inner(
 }
 
 /// Builds a new [`QuantizedLinear`]
-pub fn build_quantized_linear(
-    builder: QuantizedLinearBuilder,
-) -> Result<QuantizedLinear, Exception> {
+pub fn build_quantized_linear(builder: QuantizedLinearBuilder) -> Result<QuantizedLinear> {
     let input_dims = builder.input_dims;
     let output_dims = builder.output_dims;
     let scale = f32::sqrt(1.0 / (input_dims as f32));
@@ -345,7 +338,7 @@ impl QuantizedLinear {
         linear: Linear,
         group_size: impl Into<Option<i32>>,
         bits: impl Into<Option<i32>>,
-    ) -> Result<Self, Exception> {
+    ) -> Result<Self> {
         let group_size = group_size.into().unwrap_or(Self::DEFAULT_GROUP_SIZE);
         let bits = bits.into().unwrap_or(Self::DEFAULT_BITS);
         build_quantized_linear_inner(linear.weight.value, linear.bias.value, group_size, bits)
@@ -355,7 +348,7 @@ impl QuantizedLinear {
 impl TryFrom<Linear> for QuantizedLinear {
     type Error = Exception;
 
-    fn try_from(linear: Linear) -> Result<Self, Self::Error> {
+    fn try_from(linear: Linear) -> Result<Self> {
         Self::try_from_linear(linear, None, None)
     }
 }
@@ -364,7 +357,7 @@ impl Module<&Array> for QuantizedLinear {
     type Error = Exception;
     type Output = Array;
 
-    fn forward(&mut self, x: &Array) -> Result<Array, Self::Error> {
+    fn forward(&mut self, x: &Array) -> Result<Array> {
         let mut x = quantized_matmul(
             x,
             &self.inner.weight,
