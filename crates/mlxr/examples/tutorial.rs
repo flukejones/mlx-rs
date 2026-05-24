@@ -80,13 +80,16 @@ fn array_basics() {
 }
 
 fn automatic_differentiation() {
-    use mlxr::error::Result;
+    use mlxr::error::Exception;
 
-    fn f(x: &Array) -> Result<Array> {
+    fn f(x: &Array) -> Result<Array, Exception> {
         x.square()
     }
 
-    fn calculate_grad(func: impl Fn(&Array) -> Result<Array>, arg: &Array) -> Result<Array> {
+    fn calculate_grad(
+        func: impl Fn(&Array) -> Result<Array, Exception>,
+        arg: &Array,
+    ) -> Result<Array, Exception> {
         grad(&func)(arg)
     }
 

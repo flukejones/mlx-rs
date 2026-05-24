@@ -35,7 +35,7 @@ impl Module<&Array> for LinearFunctionModel {
 }
 
 impl LinearFunctionModel {
-    pub fn new<'a>(shape: impl IntoOption<&'a [i32]>) -> mlxr::error::Result<Self> {
+    pub fn new<'a>(shape: impl IntoOption<&'a [i32]>) -> Result<Self, Exception> {
         let shape = shape.into_option();
         let m = uniform::<_, f32>(-5.0, 5.0, shape, None)?;
         let b = uniform::<_, f32>(-5.0, 5.0, shape, None)?;

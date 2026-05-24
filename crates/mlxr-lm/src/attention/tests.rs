@@ -9,11 +9,13 @@
 #![allow(clippy::print_stdout, reason = "test code")]
 #![allow(clippy::print_stderr, reason = "test code")]
 
-use mlxr::error::Result;
+use mlxr::error::Exception;
 use mlxr::fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask};
 use mlxr::random::{key, normal};
 use mlxr::transforms::eval;
 use mlxr::{Array, Dtype};
+
+type Result<T> = std::result::Result<T, Exception>;
 
 use mlxr::ops::{dequantize, quantize};
 

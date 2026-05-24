@@ -1,5 +1,19 @@
 use mlxr::error::Exception;
 
+/// Crate-internal `Result` shorthand: every fallible mlxr-lm fn
+/// returns this. `Exception` (mlxr ops), `io::Error`,
+/// `serde_json::Error`, and `mlxr::error::IoError` all auto-convert
+/// via `?` thanks to the `#[from]` arms on [`Error`].
+///
+/// `pub(crate)` deliberately — consumers should be explicit with the
+/// error type (`Result<_, mlxr_lm::Error>`) or use `anyhow`, not
+/// import a `Result` alias that would collide across crates.
+#[allow(
+    dead_code,
+    reason = "alias awaits the workspace-wide sweep that adopts it"
+)]
+pub(crate) type Result<T> = std::result::Result<T, Error>;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]

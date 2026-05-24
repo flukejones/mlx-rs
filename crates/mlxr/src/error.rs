@@ -9,8 +9,11 @@ use std::sync::Once;
 use std::{cell::Cell, ffi::c_char};
 use thiserror::Error;
 
-/// Type alias for a `Result` with an `Exception` error type.
-pub type Result<T> = std::result::Result<T, Exception>;
+/// Crate-internal `Result` shorthand. `pub(crate)` deliberately —
+/// consumers should be explicit with the error type
+/// (`Result<_, mlxr::error::Exception>`) or use `anyhow`, not import
+/// a `Result` alias that would collide across crates.
+pub(crate) type Result<T> = std::result::Result<T, Exception>;
 
 /// Error with io operations
 #[derive(Error, PartialEq, Eq, Debug)]

@@ -10,9 +10,11 @@ pub mod params;
 #[cfg(test)]
 mod tests;
 
-use mlxr::error::{Exception, Result};
+use mlxr::error::Exception;
 use mlxr::fast::{metal_kernel, MetalKernel, MetalKernelConfig};
 use mlxr::{Array, Dtype, Stream};
+
+type Result<T> = std::result::Result<T, Exception>;
 
 use crate::attention::kernel_source::{KERNEL_HEADER, KERNEL_SOURCE, KERNEL_SOURCE_QUANT};
 use crate::attention::params::FlatAttnParams;

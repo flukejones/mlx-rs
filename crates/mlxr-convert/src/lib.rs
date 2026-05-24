@@ -42,4 +42,8 @@ impl Error {
     }
 }
 
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+/// Crate-internal `Result` shorthand. `pub(crate)` deliberately —
+/// consumers should be explicit with the error type
+/// (`Result<_, mlxr_convert::Error>`) or use `anyhow`, not import a
+/// `Result` alias that would collide across crates.
+pub(crate) type Result<T> = std::result::Result<T, Error>;

@@ -134,6 +134,10 @@ When N is known at compile time, draining FFI vectors or iterators through a `Ve
 
 ## Error handling
 
+- **`anyhow` is bin-only.** Library crates (`mlxr`, `mlxr-lm`, `mlxr-convert`, `mlxr-sys`, `mlxr-macros`, `mlxr-codegen`) define a typed `Error` enum via `thiserror`; binaries (`examples/*/src/bin/*.rs`, `examples/*/src/main.rs`) may use `anyhow::Result` for top-level error glue. Flag a lib crate's `Cargo.toml` that pulls in `anyhow` or any `anyhow::` usage in lib source.
+- **`thiserror` is lib-only.** Bins should not declare their own thiserror enum — they consume the lib's. Inline `format!`-into-`anyhow!` is the bin idiom.
+- **Per-crate `pub(crate) type Result<T>` alias.** Every fallible-fn-heavy lib crate defines `pub(crate) type Result<T> = std::result::Result<T, Error>;` in its `error.rs` (or `lib.rs`). `pub(crate)` deliberately — exposing `Result<T>` as `pub` forces every downstream consumer to disambiguate `mlxr::Result` vs `mlxr_lm::Result` vs `mlxr_convert::Result` at every call site. External callers spell `Result<_, mlxr_lm::Error>` (or use `anyhow`). In-tree references: `mlxr::error::Result`, `mlxr_lm::error::Result`, `mlxr_convert::Result` (all `pub(crate)`).
+- **Flag bare `std::result::Result<T, MyError>` in lib fn signatures.** Inside the crate, write `Result<T>` (the alias). The std-Result spelling is reserved for the alias definition itself and for cases where the error type genuinely differs from the crate default (e.g. an `impl TryFrom<&str> for Foo` whose `Error = UnknownFoo`).
 - **Flag silent `.ok()`** that discards a `Result` from a meaningful operation. Channel sends, I/O writes, weight-loader probes, EOS-id parsing should `log::warn!` on error.
 - **Verify error variants carry context** — `Error::Other(_)` with a bare string loses the call-site detail. Prefer typed variants where the recovery path differs.
 - **Flag `?` in `main`** that swallows error context — prefer explicit handling at the top level.

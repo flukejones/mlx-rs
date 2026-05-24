@@ -2,9 +2,11 @@
 //! end-to-end with K/V held as packed `(wq, scales, biases)` triples.
 //! n_q=1 decode only; prefill falls back to ops-composed.
 
-use mlxr::error::{Exception, Result};
+use mlxr::error::Exception;
 use mlxr::fast::{metal_kernel, MetalKernel, MetalKernelConfig};
 use mlxr::{Array, Dtype, Stream};
+
+type Result<T> = std::result::Result<T, Exception>;
 
 const KERNEL_NAME: &str = "fused_qsdpa_decode_v10";
 
