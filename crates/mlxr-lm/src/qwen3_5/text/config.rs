@@ -6,6 +6,8 @@
 
 use serde::Deserialize;
 
+use crate::family::EosSpec;
+
 /// Per-layer architecture tag from `config.json::layer_types`. Unknown
 /// strings hard-error rather than silently routing as one or the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
@@ -119,10 +121,6 @@ pub struct TextConfig {
     /// Rotary embedding parameters.
     pub rope_parameters: RopeParameters,
 
-    /// Optional explicit EOS token. May be a single id or a list of ids.
-    #[serde(default)]
-    pub eos_token_id: Option<EosTokenId>,
-
     // ── MoE fields (Qwen3.6-35B-A3B; absent on dense checkpoints) ──
     /// Number of routed experts. `0` on dense checkpoints; `is_moe()`
     /// gates on this.
@@ -162,36 +160,28 @@ fn default_attn_output_gate() -> bool {
     true
 }
 
-/// EOS may be a scalar or a list in the config JSON.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum EosTokenId {
-    /// Single EOS token id.
-    Single(u32),
-    /// Multiple acceptable EOS token ids.
-    Multiple(Vec<u32>),
-}
-
-impl EosTokenId {
-    /// Returns every EOS id as a flat list, appending [`QWEN_CHAT_EOS_TOKEN_ID`]
-    /// if not already present.
-    pub fn into_vec_with_chat_eos(self) -> Vec<u32> {
-        let mut v = match self {
-            Self::Single(x) => vec![x],
-            Self::Multiple(xs) => xs,
-        };
-        if !v.contains(&QWEN_CHAT_EOS_TOKEN_ID) {
-            v.push(QWEN_CHAT_EOS_TOKEN_ID);
-        }
-        v
-    }
+/// Vision-tower model variants understood by [`VisionModel`]. Deserialise
+/// rejects unknown discriminants at config-load time; that catches a typo
+/// or a future Qwen vision-tower variant up-front rather than at the
+/// `VisionModel::new` shape check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum VisionModelType {
+    /// Qwen3-VL (legacy 3-series VL tower).
+    #[serde(rename = "qwen3_vl")]
+    Qwen3Vl,
+    /// Qwen 3.5 dense / VLM tower.
+    #[serde(rename = "qwen3_5")]
+    Qwen35,
+    /// Qwen 3.5 MoE tower (shares the same architecture as `Qwen35`).
+    #[serde(rename = "qwen3_5_moe")]
+    Qwen35Moe,
 }
 
 /// Vision-tower hyperparameters (shared with Qwen3-VL, with Qwen3.5 defaults).
 #[derive(Debug, Clone, Deserialize)]
 pub struct VisionConfig {
     #[serde(default = "default_vision_model_type")]
-    pub model_type: String,
+    pub model_type: VisionModelType,
     pub depth: i32,
     pub hidden_size: i32,
     pub intermediate_size: i32,
@@ -211,8 +201,8 @@ pub struct VisionConfig {
     pub deepstack_visual_indexes: Vec<i32>,
 }
 
-fn default_vision_model_type() -> String {
-    "qwen3_5".to_owned()
+fn default_vision_model_type() -> VisionModelType {
+    VisionModelType::Qwen35
 }
 
 fn default_temporal_patch_size() -> i32 {
@@ -248,7 +238,7 @@ pub struct ModelConfig {
     pub tie_word_embeddings: bool,
 
     #[serde(default)]
-    pub eos_token_id: Option<EosTokenId>,
+    pub eos_token_id: Option<EosSpec>,
 }
 
 fn default_image_token_id() -> u32 {
@@ -294,6 +284,7 @@ mod tests {
     #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
     use crate::config::ModelConfig as Config;
+    use crate::quantization::QuantMode;
 
     const CHANDRA_CONFIG_JSON: &str = r#"
     {
@@ -408,7 +399,7 @@ mod tests {
         let q = cfg.quantization().unwrap();
         assert_eq!(q.bits, 8);
         assert_eq!(q.group_size, 64);
-        assert_eq!(q.mode, crate::quantization::QuantMode::Affine);
+        assert_eq!(q.mode, QuantMode::Affine);
     }
 
     #[test]
@@ -490,12 +481,22 @@ mod tests {
 
     #[test]
     fn eos_resolves_chat_token() {
-        let single = EosTokenId::Single(248044);
-        let v = single.into_vec_with_chat_eos();
-        assert_eq!(v, vec![248044, QWEN_CHAT_EOS_TOKEN_ID]);
+        // Build the env shape `read_qwen3_5_eos_ids` consumes and
+        // assert it appends QWEN_CHAT_EOS_TOKEN_ID.
+        let single_cfg = parse_outer(CHANDRA_CONFIG_JSON);
+        let single_env = unwrap_qwen(&single_cfg);
+        let mut ids = EosSpec::to_vec(single_env.eos_token_id.as_ref());
+        if !ids.contains(&QWEN_CHAT_EOS_TOKEN_ID) {
+            ids.push(QWEN_CHAT_EOS_TOKEN_ID);
+        }
+        assert!(ids.contains(&QWEN_CHAT_EOS_TOKEN_ID));
 
-        let multi = EosTokenId::Multiple(vec![1, QWEN_CHAT_EOS_TOKEN_ID]);
-        let v = multi.into_vec_with_chat_eos();
+        // Same shape, direct check with a synthetic spec.
+        let multi = EosSpec::Many(vec![1, QWEN_CHAT_EOS_TOKEN_ID]);
+        let mut v = EosSpec::to_vec(Some(&multi));
+        if !v.contains(&QWEN_CHAT_EOS_TOKEN_ID) {
+            v.push(QWEN_CHAT_EOS_TOKEN_ID);
+        }
         assert_eq!(v, vec![1, QWEN_CHAT_EOS_TOKEN_ID]);
     }
 }

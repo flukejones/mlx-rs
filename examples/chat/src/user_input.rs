@@ -8,8 +8,6 @@ pub fn build_chat_input(messages: Vec<ChatMessage>, images: Vec<Image>) -> UserI
     UserInput {
         prompt: Prompt::Chat(messages),
         images,
-        audios: Vec::new(),
-        videos: Vec::new(),
         template_kwargs: HashMap::new(),
     }
 }

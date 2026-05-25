@@ -47,25 +47,12 @@ pub fn load_sharded<M: ModuleParametersExt>(model: &mut M, model_dir: &Path) -> 
             raw.insert(k, v);
         }
     }
-
-    let quantised_prefixes: HashSet<String> = raw
-        .keys()
-        .filter_map(|k| k.strip_suffix(".scales").map(|p| p.to_owned()))
-        .collect();
+    let raw = rewrite_quantised_keys(raw);
 
     let mut filled: HashSet<String> = HashSet::new();
     {
         let mut params = model.parameters_mut().flatten();
-        for (k, v) in raw {
-            let key = if let Some(prefix) = k.strip_suffix(".weight") {
-                if quantised_prefixes.contains(prefix) {
-                    format!("{prefix}.inner.weight")
-                } else {
-                    k
-                }
-            } else {
-                k
-            };
+        for (key, v) in raw {
             // Extra checkpoint keys (e.g. `lm_head.weight` on a
             // tied-embedding model) are silently ignored; the
             // post-loop coverage check catches missing model params.
@@ -150,14 +137,55 @@ fn parse_env_bytes(name: &str) -> Option<usize> {
     raw.trim().parse::<usize>().ok()
 }
 
-fn list_shards(model_dir: &Path) -> Result<Vec<PathBuf>, Error> {
-    let index = model_dir.join("model.safetensors.index.json");
-    if index.exists() {
-        let json = std::fs::read_to_string(index)?;
-        let map: ShardIndex = serde_json::from_str(&json)?;
-        let files: HashSet<&String> = map.weight_map.values().collect();
-        Ok(files.into_iter().map(|f| model_dir.join(f)).collect())
-    } else {
-        Ok(vec![model_dir.join("model.safetensors")])
+/// Enumerate the safetensors shard paths for a checkpoint directory.
+/// Single-file layouts return `[<dir>/model.safetensors]`; sharded
+/// layouts read `model.safetensors.index.json` and return the unique
+/// referenced filenames joined to `model_dir`, sorted lexicographically
+/// for deterministic load order.
+///
+/// Errors if neither layout is present. Used by the shared
+/// [`load_sharded`] walk and by family-specific sanitised loaders.
+pub(crate) fn list_shards(model_dir: &Path) -> Result<Vec<PathBuf>, Error> {
+    let single = model_dir.join("model.safetensors");
+    if single.is_file() {
+        return Ok(vec![single]);
     }
+    let index = model_dir.join("model.safetensors.index.json");
+    if !index.is_file() {
+        return Err(Error::Other(
+            format!(
+                "weights: neither model.safetensors nor model.safetensors.index.json in {}",
+                model_dir.display()
+            )
+            .into(),
+        ));
+    }
+    let json = std::fs::read_to_string(&index)?;
+    let map: ShardIndex = serde_json::from_str(&json)?;
+    let unique: HashSet<&String> = map.weight_map.values().collect();
+    let mut shards: Vec<PathBuf> = unique.into_iter().map(|f| model_dir.join(f)).collect();
+    shards.sort();
+    Ok(shards)
+}
+
+/// Rewrite `<prefix>.weight` → `<prefix>.inner.weight` for every key
+/// that has a `<prefix>.scales` sibling. Matches the
+/// `MaybeQuantized::Quantized(QuantizedLinear { inner })` param shape
+/// the model walks expose. Pure in-place transform; quantised siblings
+/// (`.scales`, `.biases`) pass through unchanged.
+pub(crate) fn rewrite_quantised_keys(raw: HashMap<String, Array>) -> HashMap<String, Array> {
+    let quantised_prefixes: HashSet<String> = raw
+        .keys()
+        .filter_map(|k| k.strip_suffix(".scales").map(|p| p.to_owned()))
+        .collect();
+    let mut out: HashMap<String, Array> = HashMap::with_capacity(raw.len());
+    for (mut k, v) in raw {
+        if let Some(prefix) = k.strip_suffix(".weight") {
+            if quantised_prefixes.contains(prefix) {
+                k = format!("{prefix}.inner.weight");
+            }
+        }
+        out.insert(k, v);
+    }
+    out
 }

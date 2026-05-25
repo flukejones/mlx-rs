@@ -62,8 +62,6 @@ fn text_only_rejects_image_input() {
     let input = UserInput {
         prompt: mlxr_lm::Prompt::Text("hi".into()),
         images: vec![mlxr_lm::Image::Decoded(image::DynamicImage::new_rgb8(1, 1))],
-        audios: Vec::new(),
-        videos: Vec::new(),
         template_kwargs: HashMap::new(),
     };
     let params = GenerateParams {

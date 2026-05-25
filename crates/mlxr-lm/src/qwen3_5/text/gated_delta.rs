@@ -214,14 +214,18 @@ pub(crate) fn gated_delta_update_ops(
 
     let mut state = state;
     let mut ys = Vec::with_capacity(time as usize);
-    for t in 0..time {
-        let q_t = slice_t(&q_eff, t)?;
-        let k_t = slice_t(&k_eff, t)?;
-        let v_t = slice_t(v, t)?;
-        let g_t = slice_t(&g, t)?;
-        let beta_t = slice_t(&beta, t)?;
+    // Build the T index arrays once. `slice_t` previously rebuilt one per
+    // call (6× per step), turning the ops scan into 6T host→device
+    // allocations per forward.
+    let idxs: Vec<Array> = (0..time).map(|t| Array::from_slice(&[t], &[1])).collect();
+    for idx in &idxs {
+        let q_t = slice_t(&q_eff, idx)?;
+        let k_t = slice_t(&k_eff, idx)?;
+        let v_t = slice_t(v, idx)?;
+        let g_t = slice_t(&g, idx)?;
+        let beta_t = slice_t(&beta, idx)?;
         let mask_t = match mask {
-            Some(m) => Some(slice_t(m, t)?),
+            Some(m) => Some(slice_t(m, idx)?),
             None => None,
         };
         let (y_t, new_state) = step_ops(&q_t, &k_t, &v_t, &g_t, &beta_t, &state, mask_t.as_ref())?;
@@ -239,7 +243,9 @@ pub(crate) fn gated_delta_update_ops(
 /// breaks chained launches.
 pub(crate) fn make_gated_delta_kernel() -> Result<MetalKernel, Error> {
     Ok(metal_kernel(
-        "qwen3_5_gated_delta_step",
+        // Bump the `_vN` suffix on every change to GATED_DELTA_STEP_SOURCE
+        // so the mlx kernel-name cache doesn't serve a stale binary.
+        "qwen3_5_gated_delta_step_v1",
         &["q", "k", "v", "g", "beta", "state_in", "T"],
         &["y", "state_out"],
         GATED_DELTA_STEP_SOURCE,
@@ -384,14 +390,15 @@ const GATED_DELTA_STEP_SOURCE: &str = r#"
     }
 "#;
 
-/// Index the time axis at `t` and squeeze it out. `x[:, t]` in numpy / mlx.
-fn slice_t(x: &Array, t: i32) -> Result<Array, Error> {
-    // Use a length-1 index so take_axis preserves the axis at size 1, then
-    // squeeze that axis away. A 0-D scalar index would drop the axis directly
-    // in some builds but not others, so the explicit shape keeps behaviour
-    // consistent.
-    let idx = Array::from_slice(&[t], &[1]);
-    let y = take_axis(x, &idx, 1)?;
+/// Index the time axis with a pre-built length-1 index Array and squeeze
+/// the axis out. `x[:, t]` in numpy / mlx. The caller hoists the index
+/// Array out of any per-step loop — see [`gated_delta_update_ops`] for
+/// why per-call rebuild costs add up.
+fn slice_t(x: &Array, idx: &Array) -> Result<Array, Error> {
+    // Length-1 index preserves the axis at size 1 so `take_axis` plus
+    // explicit reshape squeezes it deterministically across mlx builds
+    // (a 0-D scalar index drops the axis in some builds but not others).
+    let y = take_axis(x, idx, 1)?;
     let shape = y.shape();
     if shape[1] != 1 {
         return Err(Error::shape(format!(

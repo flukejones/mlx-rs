@@ -7,16 +7,14 @@ use mlxr::{
     layers,
     macros::{ModuleParameters, Quantizable},
     module::Module,
-    ops::{arange, broadcast_to, reshape, split, transpose_axes},
+    ops::{reshape, split, transpose_axes},
     quantization::MaybeQuantized,
     Array,
 };
 
 use super::config::TextConfig;
-use super::rope::{apply_multimodal_rotary_pos_emb, MultimodalRope};
+use super::rope::apply_multimodal_rotary_pos_emb;
 use crate::activations::{attention_gate, swiglu, AttentionGateCache, SwigluCache};
-use crate::attention::{attention_dispatch, AttentionInputs};
-use crate::cache::kernels::{cached_attention_kernel, SUPPORTED_HEAD_DIMS};
 use crate::cache::{KVCache, KeyValueCache};
 use crate::error::Error;
 use crate::utils::create_attention_mask;
@@ -89,10 +87,10 @@ impl Module<&Array> for Mlp {
 ///   element-wise multiplied by `sigmoid(gate)` before `o_proj`.
 /// - Rotary embedding is the multimodal partial-rotary mrope from
 ///   [`super::rope::MultimodalRope`]; only the first
-///   `head_dim * partial_rotary_factor` features get rotated.
-/// - `position_ids` may be supplied explicitly (multimodal flow). When `None`,
-///   the cache offset is used to derive a 1-D `[B, S]` range that the mrope
-///   broadcasts across the three axes.
+///   `head_dim * partial_rotary_factor` features get rotated. cos/sin
+///   are precomputed once per forward at the decoder level and shared
+///   across every layer — see
+///   [`super::layer::Qwen35Decoder::forward_pre_and_post_norm`].
 #[derive(Debug, ModuleParameters, Quantizable)]
 pub struct Attention {
     pub n_heads: i32,
@@ -117,18 +115,8 @@ pub struct Attention {
     #[param]
     pub k_norm: layers::RmsNorm,
 
-    /// Not a learnable parameter — kept inline because mrope is stateless
-    /// (`inv_freq` and `axis_index` are precomputed at construction).
-    rope: MultimodalRope,
-
     /// Per-layer compiled-graph cache for [`attention_gate`].
     attention_gate_cache: AttentionGateCache,
-
-    /// When set, prefill (`l > 1`, no explicit mask) routes through
-    /// `attention_dispatch(causal=true)` instead of
-    /// `fast::SDPA(Causal)`. Off by default; toggle with
-    /// [`Self::set_use_steel_prefill`].
-    use_steel_prefill: bool,
 }
 
 impl Attention {
@@ -161,17 +149,6 @@ impl Attention {
             .eps(cfg.rms_norm_eps)
             .build()?;
 
-        let rotary_dim =
-            (head_dim as f32 * cfg.rope_parameters.partial_rotary_factor).floor() as i32;
-        // Unsupported rope variants (yarn / longrope) reject at
-        // `config.json` deserialize via `QwenRopeType`, so the only
-        // values reaching here are `default` / `mrope`.
-        let rope = MultimodalRope::new(
-            rotary_dim,
-            cfg.rope_parameters.rope_theta,
-            &cfg.rope_parameters.mrope_section,
-        )?;
-
         Ok(Self {
             n_heads,
             n_kv_heads,
@@ -183,34 +160,19 @@ impl Attention {
             o_proj: MaybeQuantized::Original(o_proj),
             q_norm,
             k_norm,
-            rope,
             attention_gate_cache: AttentionGateCache::default(),
-            use_steel_prefill: false,
         })
     }
 
-    /// Opt this layer into the steel-attention tiled prefill kernel for
-    /// `l > 1` calls with no explicit mask. Steel supports head_dim ∈
-    /// {128, 256}; layers with other dims silently keep `fast::SDPA`.
-    pub fn set_use_steel_prefill(&mut self, on: bool) {
-        self.use_steel_prefill = on;
-    }
-
-    /// Run the attention block.
-    ///
-    /// - `x`: `[B, L, hidden_size]`
-    /// - `mask`: optional additive causal mask of shape `[..., L, kv_len]`.
-    /// - `cache`: optional KV cache — mutated in place.
-    /// - `position_ids`: optional `[3, B, L]` (or `[B, L]` text-only) tensor.
-    ///   When `None`, derived from `cache.offset`.
-    ///
-    /// Returns `[B, L, hidden_size]`.
-    pub fn forward(
+    /// `[B, L, hidden] -> [B, L, hidden]`. Cache is generic so the
+    /// adapter picks the backing (see `CacheOptions`).
+    pub fn forward<C: KeyValueCache>(
         &mut self,
         x: &Array,
         mask: Option<&Array>,
-        cache: Option<&mut KVCache>,
-        position_ids: Option<&Array>,
+        cache: Option<&mut C>,
+        cos: &Array,
+        sin: &Array,
     ) -> Result<Array, Error> {
         let shape = x.shape();
         let b = shape[0];
@@ -237,54 +199,12 @@ impl Attention {
         let values = reshape(&values, &[b, l, self.n_kv_heads, self.head_dim])?;
         let values = transpose_axes(&values, &[0, 2, 1, 3])?;
 
-        // Resolve position ids. MultimodalRope::cos_sin accepts either
-        // 2D [B, L] (auto-expands to text-only mrope) or 3D [3, B, L].
-        let offset = cache.as_ref().map(|c| c.offset()).unwrap_or(0);
-        let owned_pos;
-        let pos: &Array = if let Some(p) = position_ids {
-            p
-        } else {
-            let range = arange::<_, i32>(offset, offset + l, None)?;
-            let range = reshape(&range, &[1, l])?;
-            owned_pos = broadcast_to(&range, &[b, l])?;
-            &owned_pos
-        };
+        let (queries, keys) = apply_multimodal_rotary_pos_emb(&queries, &keys, cos, sin)?;
 
-        let (cos, sin) = self.rope.cos_sin(pos)?;
-        let (queries, keys) = apply_multimodal_rotary_pos_emb(&queries, &keys, &cos, &sin)?;
-
-        let (keys, values) = if let Some(cache) = cache {
-            cache.update_and_fetch(keys, values)?
-        } else {
-            (keys, values)
-        };
-
-        // Steel prefill is eligible whenever the toggle is on and the
-        // shape is prefill (l > 1) at a supported head_dim. The supplied
-        // `mask` is the decoder's standard causal mask
-        // (`Qwen35Decoder::build_full_attn_mask`); we replace it with
-        // the kernel's `causal=true` semantics rather than feeding the
-        // boolean tensor through. `qL_off = offset` shifts the diagonal
-        // for prefill calls that continue past prior decode tokens.
-        let steel_eligible =
-            self.use_steel_prefill && l > 1 && SUPPORTED_HEAD_DIMS.contains(&self.head_dim);
-
-        let output = if steel_eligible {
-            attention_dispatch(
-                cached_attention_kernel(),
-                AttentionInputs {
-                    q: &queries,
-                    k: &keys,
-                    v: &values,
-                    mask: None,
-                    causal: true,
-                    ql_off: offset,
-                    scale: self.scale,
-                    head_dim: self.head_dim,
-                    h_q: self.n_heads,
-                    h_kv: self.n_kv_heads,
-                },
-            )?
+        // Cache owns kernel dispatch (steel prefill / fused qsdpa / SDPA).
+        // No cache → bare SDPA, test paths only.
+        let output = if let Some(cache) = cache {
+            cache.attention(&queries, keys, values, self.scale, mask)?
         } else {
             match mask {
                 Some(m) => scaled_dot_product_attention(
@@ -347,9 +267,41 @@ mod tests {
     #![allow(clippy::print_stdout, reason = "test code")]
     #![allow(clippy::print_stderr, reason = "test code")]
     use super::super::config::RopeParameters;
+    use super::super::rope::MultimodalRope;
     use super::*;
     use crate::cache::KeyValueCache;
+    use mlxr::ops::{arange, broadcast_to, expand_dims, reshape as reshape_op};
     use mlxr::{random::uniform, transforms::eval};
+
+    /// Build a `MultimodalRope` matching `cfg` and materialise cos/sin
+    /// shaped + dtype-cast the way `Attention::forward` expects: shape
+    /// `[B, 1, S, rotary_dim]`, cast to `Float32` (the dtype the test
+    /// inputs use). Production code does the same expand+cast inside
+    /// `Qwen35Decoder::cos_sin_for_forward` once per forward — these
+    /// tests call `Attention::forward` directly so they reproduce the
+    /// prep locally.
+    fn rope_cos_sin(cfg: &TextConfig, b: i32, offset: i32, l: i32) -> (Array, Array) {
+        let head_dim = cfg.head_dim;
+        let rotary_dim =
+            (head_dim as f32 * cfg.rope_parameters.partial_rotary_factor).floor() as i32;
+        let rope = MultimodalRope::new(
+            rotary_dim,
+            cfg.rope_parameters.rope_theta,
+            &cfg.rope_parameters.mrope_section,
+        )
+        .unwrap();
+        let range = arange::<_, i32>(offset, offset + l, None).unwrap();
+        let range = reshape_op(&range, &[1, l]).unwrap();
+        let pos = broadcast_to(&range, &[b, l]).unwrap();
+        let (cos, sin) = rope.cos_sin(&pos).unwrap();
+        // Match `Qwen35Decoder::cos_sin_for_forward`: unsqueeze the
+        // per-head broadcast axis (axis=1). Test inputs are f32, which
+        // is also `cos_sin`'s native dtype, so no `.as_dtype` cast
+        // is needed here.
+        let cos = expand_dims(&cos, 1).unwrap();
+        let sin = expand_dims(&sin, 1).unwrap();
+        (cos, sin)
+    }
 
     fn synthetic_text_config() -> TextConfig {
         let json = serde_json::json!({
@@ -405,7 +357,10 @@ mod tests {
         let cfg = synthetic_text_config();
         let mut a = Attention::new(&cfg).unwrap();
         let x = uniform::<_, f32>(0.0, 1.0, &[2, 4, cfg.hidden_size], None).unwrap();
-        let y = a.forward(&x, None, None, None).unwrap();
+        let (cos, sin) = rope_cos_sin(&cfg, 2, 0, 4);
+        let y = a
+            .forward::<KVCache>(&x, None, None, &cos, &sin)
+            .unwrap();
         assert_eq!(y.shape(), &[2, 4, cfg.hidden_size]);
     }
 
@@ -439,22 +394,25 @@ mod tests {
         serde_json::from_value(json).unwrap()
     }
 
-    /// Toggling `set_use_steel_prefill(true)` should produce numerically
-    /// matching prefill output vs the default `fast::SDPA(Causal)` path.
+    /// A steel-prefill-enabled `KVCache` should produce numerically
+    /// matching prefill output vs a default `KVCache` (which goes
+    /// through `fast::SDPA(Causal)`).
     #[test]
     fn attention_steel_prefill_matches_fast_sdpa() {
         let cfg = steel_eligible_text_config();
         let prompt = uniform::<_, f32>(0.0, 1.0, &[1, 8, cfg.hidden_size], None).unwrap();
+        let (cos, sin) = rope_cos_sin(&cfg, 1, 0, 8);
 
-        let mut a_ref = Attention::new(&cfg).unwrap();
-        let baseline = a_ref.forward(&prompt, None, None, None).unwrap();
+        let mut a = Attention::new(&cfg).unwrap();
+        let mut c_ref = KVCache::new();
+        let baseline = a
+            .forward(&prompt, None, Some(&mut c_ref), &cos, &sin)
+            .unwrap();
 
-        // Reset & rebuild a steel-prefill Attention with identical weights.
-        // Easiest: clone the projections via from-the-same-seed init isn't
-        // exposed, so we run with the same `Attention` after toggling.
-        let mut a_steel = a_ref;
-        a_steel.set_use_steel_prefill(true);
-        let routed = a_steel.forward(&prompt, None, None, None).unwrap();
+        let mut c_steel = KVCache::new().with_steel_prefill();
+        let routed = a
+            .forward(&prompt, None, Some(&mut c_steel), &cos, &sin)
+            .unwrap();
 
         eval([&baseline, &routed]).unwrap();
         let diff = baseline
@@ -472,15 +430,16 @@ mod tests {
     }
 
     /// Production path: the decoder builds a `[1, 1, T, T]` boolean
-    /// causal mask and passes it to `Attention::forward`. With steel
-    /// toggled on, the kernel must ignore the supplied mask and apply
-    /// its own `causal=true` logic, yielding the same output as
-    /// `fast::SDPA(Array(mask))`.
+    /// causal mask and passes it to `Attention::forward`. With a
+    /// steel-prefill cache, the kernel must ignore the supplied mask
+    /// and apply its own `causal=true` logic, yielding the same output
+    /// as `fast::SDPA(Array(mask))`.
     #[test]
     fn attention_steel_prefill_ignores_decoder_causal_mask() {
         let cfg = steel_eligible_text_config();
         let l = 8;
         let prompt = uniform::<_, f32>(0.0, 1.0, &[1, l, cfg.hidden_size], None).unwrap();
+        let (cos, sin) = rope_cos_sin(&cfg, 1, 0, l);
 
         // Build a `[1, 1, T, T]` lower-triangular bool mask the same
         // way `Qwen35Decoder::build_full_attn_mask` does for offset=0.
@@ -493,13 +452,15 @@ mod tests {
         let mask_2d = Array::from_slice(&buf, &[l, l]);
         let mask_4d = mask_2d.expand_dims_axes(&[0, 1]).unwrap();
 
-        let mut a_ref = Attention::new(&cfg).unwrap();
-        let baseline = a_ref.forward(&prompt, Some(&mask_4d), None, None).unwrap();
+        let mut a = Attention::new(&cfg).unwrap();
+        let mut c_ref = KVCache::new();
+        let baseline = a
+            .forward(&prompt, Some(&mask_4d), Some(&mut c_ref), &cos, &sin)
+            .unwrap();
 
-        let mut a_steel = a_ref;
-        a_steel.set_use_steel_prefill(true);
-        let routed = a_steel
-            .forward(&prompt, Some(&mask_4d), None, None)
+        let mut c_steel = KVCache::new().with_steel_prefill();
+        let routed = a
+            .forward(&prompt, Some(&mask_4d), Some(&mut c_steel), &cos, &sin)
             .unwrap();
 
         eval([&baseline, &routed]).unwrap();
@@ -523,14 +484,20 @@ mod tests {
         let mut a = Attention::new(&cfg).unwrap();
 
         let prompt = uniform::<_, f32>(0.0, 1.0, &[1, 5, cfg.hidden_size], None).unwrap();
+        let (cos_p, sin_p) = rope_cos_sin(&cfg, 1, 0, 5);
         let mut cache = KVCache::new();
-        let prefill_out = a.forward(&prompt, None, Some(&mut cache), None).unwrap();
+        let prefill_out = a
+            .forward(&prompt, None, Some(&mut cache), &cos_p, &sin_p)
+            .unwrap();
         eval([&prefill_out]).unwrap();
         assert_eq!(prefill_out.shape(), &[1, 5, cfg.hidden_size]);
         assert_eq!(cache.offset(), 5);
 
         let next = uniform::<_, f32>(0.0, 1.0, &[1, 1, cfg.hidden_size], None).unwrap();
-        let decode_out = a.forward(&next, None, Some(&mut cache), None).unwrap();
+        let (cos_d, sin_d) = rope_cos_sin(&cfg, 1, 5, 1);
+        let decode_out = a
+            .forward(&next, None, Some(&mut cache), &cos_d, &sin_d)
+            .unwrap();
         eval([&decode_out]).unwrap();
         assert_eq!(decode_out.shape(), &[1, 1, cfg.hidden_size]);
         assert_eq!(cache.offset(), 6);

@@ -23,7 +23,7 @@ pub(crate) fn cached_attention_kernel() -> &'static MetalKernel {
     KERNEL.get_or_init(|| make_attention_kernel().expect("make_attention_kernel"))
 }
 
-pub(crate) fn cached_steel_quant_attention_kernel() -> &'static MetalKernel {
+pub(crate) fn cached_quant_attention_kernel() -> &'static MetalKernel {
     static KERNEL: OnceLock<MetalKernel> = OnceLock::new();
     KERNEL.get_or_init(|| make_quant_attention_kernel().expect("make_quant_attention_kernel"))
 }

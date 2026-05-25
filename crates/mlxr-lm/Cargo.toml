@@ -46,11 +46,10 @@ default = ["qwen3_5", "gemma4", "image"]
 qwen3_5 = ["mlxr/layers"]
 gemma4 = ["mlxr/layers"]
 
-# Modalities. Per-family modality sub-modules (e.g. `qwen3_5/image/`)
-# activate when the matching family AND modality are both enabled.
+# Image modality. Per-family modality sub-modules (e.g.
+# `qwen3_5/image/`) activate when the matching family AND `image` are
+# both enabled.
 image = ["dep:image"]
-audio = []
-video = []
 
 [dev-dependencies]
 lazy_static = "1"

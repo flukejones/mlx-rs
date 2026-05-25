@@ -2,6 +2,7 @@ use mlxr_codegen::{generate_builder, Buildable};
 
 use crate::{
     array,
+    ops::sign,
     utils::{get_mut_or_insert_with, Updatable},
     Array,
 };
@@ -84,9 +85,7 @@ impl Optimizer for Lion {
         key: &Rc<str>,
         gradient: &Array,
         parameter: &mut Array,
-    ) -> Result<(), crate::error::Exception> {
-        use crate::ops::sign;
-
+    ) -> crate::error::Result<()> {
         let (b1, b2) = &self.betas;
         let m = get_mut_or_insert_with(&mut self.state, key, || array!(0.0));
 

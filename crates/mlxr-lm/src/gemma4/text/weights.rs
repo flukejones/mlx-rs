@@ -15,7 +15,7 @@
 //!   remapped to `<prefix>.inner.weight` to line up with the Rust
 //!   `MaybeQuantized::Quantized` param path.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use mlxr::module::ModuleParameters;
@@ -26,13 +26,8 @@ use crate::config::ModelConfig as Config;
 use crate::error::Error;
 use crate::gemma4::text::config::ModelConfig;
 use crate::gemma4::text::text::Model;
+use crate::loader::{apply_post_load_memory_policy, list_shards, rewrite_quantised_keys};
 use mlxr::quantization::Quantizable;
-use serde::Deserialize;
-
-#[derive(Debug, Clone, Deserialize)]
-struct WeightIndex {
-    weight_map: HashMap<String, String>,
-}
 
 /// Substrings that mark a checkpoint key for unconditional removal.
 const DROP_SUBSTRINGS: &[&str] = &[
@@ -71,29 +66,6 @@ fn rewrite_outer_key(key: &str) -> String {
     key.to_owned()
 }
 
-fn list_shards(model_dir: &Path) -> Result<Vec<String>, Error> {
-    let single = model_dir.join("model.safetensors");
-    if single.is_file() {
-        return Ok(vec!["model.safetensors".to_owned()]);
-    }
-    let index_path = model_dir.join("model.safetensors.index.json");
-    if !index_path.is_file() {
-        return Err(Error::Other(
-            format!(
-                "gemma4 weights: neither model.safetensors nor model.safetensors.index.json in {}",
-                model_dir.display()
-            )
-            .into(),
-        ));
-    }
-    let f = std::fs::File::open(index_path)?;
-    let index: WeightIndex = serde_json::from_reader(f)?;
-    let unique: HashSet<&String> = index.weight_map.values().collect();
-    let mut shards: Vec<String> = unique.into_iter().cloned().collect();
-    shards.sort();
-    Ok(shards)
-}
-
 /// Sanitise one (key, tensor) pair. Returns a vec because a single
 /// `experts.gate_up_proj` entry expands into two `switch_glu` entries.
 fn sanitize_entry(key: &str, value: Array) -> Vec<(String, Array)> {
@@ -127,15 +99,14 @@ fn sanitize_entry(key: &str, value: Array) -> Vec<(String, Array)> {
 
 /// Load every shard, sanitise per-entry, then rewrite quantised
 /// `<prefix>.weight` → `<prefix>.inner.weight` for Rust param paths.
-pub fn load_sanitized_gemma4_weights(
+pub(crate) fn load_sanitized_weights(
     model_dir: impl AsRef<Path>,
 ) -> Result<HashMap<String, Array>, Error> {
     let model_dir = model_dir.as_ref();
     let shards = list_shards(model_dir)?;
 
     let mut raw: HashMap<String, Array> = HashMap::new();
-    for shard in shards {
-        let path = model_dir.join(shard);
+    for path in shards {
         let loaded = Array::load_safetensors(&path).map_err(Error::LoadWeights)?;
         for (k, v) in loaded {
             for (san_k, san_v) in sanitize_entry(&k, v) {
@@ -151,25 +122,8 @@ pub fn load_sanitized_gemma4_weights(
     // the q-matmul kernel sweet spot on M4 Max and regressed decode.
     merge_gate_up(&mut raw, ".switch_glu", -2)?;
 
-    // Quantised tensors carry `<prefix>.scales` (and `.biases`)
-    // siblings; the `<prefix>.weight` slot must be redirected to
-    // `<prefix>.inner.weight` to land on the
-    // `MaybeQuantized::Quantized(QuantizedLinear { inner })` param.
-    let quantised_prefixes: HashSet<String> = raw
-        .keys()
-        .filter_map(|k| k.strip_suffix(".scales").map(|p| p.to_owned()))
-        .collect();
-
-    let mut out: HashMap<String, Array> = HashMap::with_capacity(raw.len());
-    for (mut k, v) in raw {
-        if let Some(prefix) = k.strip_suffix(".weight") {
-            if quantised_prefixes.contains(prefix) {
-                k = format!("{prefix}.inner.weight");
-            }
-        }
-        out.insert(k, v);
-    }
-    Ok(out)
+    // Align quantised keys with `MaybeQuantized::Quantized(QuantizedLinear { inner })`.
+    Ok(rewrite_quantised_keys(raw))
 }
 
 /// True if `key` targets a `model.layers.N.self_attn.{k,v}_*` slot on a
@@ -226,7 +180,7 @@ fn merge_gate_up(raw: &mut HashMap<String, Array>, module: &str, axis: i32) -> R
 
 /// End-to-end load: build `Model::new`, apply quantisation config, load
 /// sanitised weights into the parameter walk, then `eval_params`.
-pub(crate) fn load_gemma4_model_sanitized(
+pub(crate) fn load_model(
     cfg: &Config,
     env: &ModelConfig,
     model_dir: &Path,
@@ -239,7 +193,7 @@ pub(crate) fn load_gemma4_model_sanitized(
         model = model.try_into_quantized(q.group_size, q.bits)?;
     }
 
-    let weights = load_sanitized_gemma4_weights(model_dir)?;
+    let weights = load_sanitized_weights(model_dir)?;
 
     let mut leftover: Vec<String> = Vec::new();
     {
@@ -271,7 +225,7 @@ pub(crate) fn load_gemma4_model_sanitized(
         ));
     }
     eval_params(model.parameters()).map_err(Error::Exception)?;
-    crate::loader::apply_post_load_memory_policy();
+    apply_post_load_memory_policy();
     Ok(model)
 }
 

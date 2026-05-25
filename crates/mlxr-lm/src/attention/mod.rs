@@ -7,6 +7,12 @@
 pub mod kernel_source;
 pub mod params;
 
+// Tests live in `attention/tests.rs` rather than inline. mod.rs is
+// already 500+ LOC of substantive dispatch code (the canonical
+// project pattern is inline `#[cfg(test)] mod tests { … }`); inlining
+// 400 more would push this file past 900 LOC. A follow-up renames
+// this module's substantive contents to `attention/dispatch.rs`, at
+// which point the tests fold inline next to the code they exercise.
 #[cfg(test)]
 mod tests;
 
@@ -20,6 +26,12 @@ use crate::error::Error;
 type Result<T> = std::result::Result<T, Error>;
 
 const KERNEL_NAME: &str = "steel_attention_v0";
+
+/// Apple Silicon SIMD width — one warp = 32 lanes. Used for both the
+/// threadgroup size (`WM * WN * SIMD_WIDTH`) and the quant pack factor
+/// (`BITS_PER_WORD / bits` quantised values per 32-bit word).
+const SIMD_WIDTH: i32 = 32;
+const BITS_PER_WORD: i32 = 32;
 
 /// Per-D kernel-template tuple. D=512 needs a 1-warp tile so
 /// `Q_smem + KV_smem` fits Apple's 32 KB TG-mem cap at fp16/bf16:
@@ -215,9 +227,9 @@ pub fn attention_dispatch(kernel: &MetalKernel, inputs: AttentionInputs<'_>) -> 
     let mask_present_buf = Array::from_int(0);
     let do_causal_buf = Array::from_int(inputs.causal as i32);
 
-    // Grid: one TG per (q-block, head, batch). TG size = WM*WN*32 threads.
+    // Grid: one TG per (q-block, head, batch). TG size = WM*WN simdgroups.
     let nq = (q_len + shape.bq - 1) / shape.bq;
-    let threads_per_tg = shape.wm * shape.wn * 32;
+    let threads_per_tg = shape.wm * shape.wn * SIMD_WIDTH;
     let config = MetalKernelConfig::new()
         .add_output(vec![b, h_q, q_len, d], out_dtype)
         .grid(nq * threads_per_tg, h_q, b)
@@ -402,7 +414,7 @@ pub fn quant_attention_dispatch(
         ));
     }
 
-    let pack_factor = 32 / inputs.bits;
+    let pack_factor = BITS_PER_WORD / inputs.bits;
     let expected_wq_d = d / pack_factor;
     let expected_meta_d = d / inputs.group_size;
     if k_wq_shape[3] != expected_wq_d || v_wq_shape[3] != expected_wq_d {
@@ -471,7 +483,7 @@ pub fn quant_attention_dispatch(
     let do_causal_buf = Array::from_int(inputs.causal as i32);
 
     let nq = (q_len + shape.bq - 1) / shape.bq;
-    let threads_per_tg = shape.wm * shape.wn * 32;
+    let threads_per_tg = shape.wm * shape.wn * SIMD_WIDTH;
     let config = MetalKernelConfig::new()
         .add_output(vec![b, h_q, q_len, d], out_dtype)
         .grid(nq * threads_per_tg, h_q, b)

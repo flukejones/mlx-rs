@@ -26,12 +26,39 @@ use mlxr::{
     transforms::{async_eval, eval},
     Array,
 };
+use mlxr_lm::cache::CacheOptions;
 use mlxr_lm::language_model::UserInputProcessor;
 use mlxr_lm::lm_input::{LMInput, PrepareResult, Text};
 use mlxr_lm::{load, ModelContext, Sampler, SamplerState, UserInput};
 
 const DECODE_TOKENS: i32 = 100;
 const SHORT_PROMPT_LEN: usize = 13;
+/// Fixed seed so turbo-quant Π is reproducible across runs.
+const TURBO_QUANT_SEED: u64 = 42;
+
+/// KV-cache configs swept per bench cell. Each entry produces a
+/// `<phase>/<name>` BenchmarkId. Adapter's `set_cache_options` is
+/// called once per config before any timing.
+fn kv_configs() -> Vec<(&'static str, CacheOptions)> {
+    vec![
+        ("dense", CacheOptions::standard_with_steel_prefill()),
+        ("q8", CacheOptions::quantized_q8()),
+        ("q8_turbo", CacheOptions::quantized_q8_with_turbo(TURBO_QUANT_SEED)),
+        ("q4", CacheOptions::quantized_q4()),
+        ("q4_turbo", CacheOptions::quantized_q4_with_turbo(TURBO_QUANT_SEED)),
+    ]
+}
+
+/// Substring filter on KV-config name; if `MLX_LM_BENCH_KV_ONLY` is
+/// set, configs whose name doesn't contain the substring are skipped.
+fn kv_only_skip(name: &str) -> bool {
+    match std::env::var("MLX_LM_BENCH_KV_ONLY") {
+        Ok(v) if !v.is_empty() => !name.contains(&v),
+        _ => false,
+    }
+}
+
+
 const LONG_PROMPT_LEN: usize = 1024;
 /// 2× LONG_PROMPT_LEN, sized to **exceed** the gemma 4 26B-A4B and
 /// 31B sliding-window cap (1024 tokens) so `prefill_xlong` always
@@ -53,6 +80,46 @@ fn log_mlx_mem(tag: &str) {
         active as f64 / 1e6,
         cache as f64 / 1e6,
         peak as f64 / 1e6,
+    );
+}
+
+/// Drain GPU + heap state between consecutive models in the same bench
+/// run. Called immediately before each model load.
+///
+/// Steps, in order:
+/// 1. `eval([])` — sync any pending GPU work from a prior cell so the
+///    timing window doesn't absorb a drain that should have happened
+///    after the previous `group.finish()`.
+/// 2. `clear_cache()` twice — the second call catches any deferred
+///    `mlx_*_free` that landed between the first call and now (mlx-c
+///    has lazy paths in a few code branches).
+/// 3. `reset_peak_memory()` — the next model's peak should be its own
+///    peak, not a watermark from the previous load.
+/// 4. Assert the heap is actually drained. A non-zero `active_memory`
+///    here means a prior cell leaked Arrays; fail loudly rather than
+///    silently absorb it into the next model's timing window.
+fn between_models_quiesce(tag: &str) {
+    // 1. Drain any pending GPU dispatch the prior model might have left.
+    let _ = eval(std::iter::empty::<&Array>());
+    // 2. Double-drain the buffer-reuse pool.
+    mlxr::memory::clear_cache();
+    mlxr::memory::clear_cache();
+    // 3. Reset peak watermark so the next model's peak isn't shadowed.
+    mlxr::memory::reset_peak_memory();
+    // 4. Heap must be clean before the next load.
+    let active = mlxr::memory::active_memory();
+    let cache = mlxr::memory::cache_memory();
+    log_mlx_mem(tag);
+    assert!(
+        active == 0,
+        "[bench] {tag}: heap leak — active_memory={active} bytes \
+         (prior model didn't drain). Per-model isolation is broken; \
+         results from this point are unreliable."
+    );
+    assert!(
+        cache == 0,
+        "[bench] {tag}: reuse pool not drained — cache_memory={cache} \
+         bytes. clear_cache() didn't release. Process restart needed."
     );
 }
 
@@ -220,8 +287,6 @@ fn make_lm_input(prompt: &Array) -> LMInput {
             mask: None,
         },
         image: None,
-        audio: None,
-        video: None,
     }
 }
 
@@ -404,8 +469,10 @@ fn bench_one(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
     let Some(dir) = ensure_model(repo_id) else {
         return;
     };
+    // Drain + assert clean heap before load. Catches a leak from the
+    // prior model rather than absorbing it into this model's timings.
+    between_models_quiesce(&format!("{group_prefix}/pre_load"));
     eprintln!("loading {repo_id}");
-    log_mlx_mem(&format!("{group_prefix}/pre_load"));
     let mut ctx = match load(&dir) {
         Ok(c) => c,
         Err(e) => {
@@ -420,28 +487,29 @@ fn bench_one(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
     let xlong = synthetic_prompt(XLONG_PROMPT_LEN);
     let decode_steps = DECODE_TOKENS - 1;
 
-    {
+    for (kv_name, kv_opts) in kv_configs() {
+        if kv_only_skip(kv_name) {
+            continue;
+        }
+        // One config change per outer iteration. Rebuild happens
+        // before `iter_custom` starts; no timed-window contamination.
+        ctx.model
+            .set_cache_options(kv_opts)
+            .expect("set_cache_options");
+
         let mut group = c.benchmark_group(group_prefix.clone());
         group.sample_size(SAMPLE_SIZE);
         group.measurement_time(Duration::from_secs(MEASUREMENT_SECS));
 
-        for (label, prompt) in [
-            (
-                BenchmarkId::new("prefill_short", SHORT_PROMPT_LEN as i32),
-                &short,
-            ),
-            (
-                BenchmarkId::new("prefill_long", LONG_PROMPT_LEN as i32),
-                &long,
-            ),
-            (
-                BenchmarkId::new("prefill_xlong", XLONG_PROMPT_LEN as i32),
-                &xlong,
-            ),
+        for (phase, prompt) in [
+            ("prefill_short", &short),
+            ("prefill_long", &long),
+            ("prefill_xlong", &xlong),
         ] {
             let prompt_len = prompt.shape().last().copied().unwrap_or(0) as u64;
             group.throughput(Throughput::Elements(prompt_len));
-            group.bench_function(label, |b| {
+            let id = BenchmarkId::new(format!("{phase}/{kv_name}"), prompt_len as i32);
+            group.bench_function(id, |b| {
                 b.iter_custom(|iters| {
                     let mut total = Duration::ZERO;
                     for _ in 0..iters {
@@ -453,11 +521,9 @@ fn bench_one(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
         }
 
         group.throughput(Throughput::Elements(decode_steps as u64));
-        for (label, prompt) in [
-            (BenchmarkId::new("decode_short", decode_steps), &short),
-            (BenchmarkId::new("decode_long", decode_steps), &long),
-        ] {
-            group.bench_function(label, |b| {
+        for (phase, prompt) in [("decode_short", &short), ("decode_long", &long)] {
+            let id = BenchmarkId::new(format!("{phase}/{kv_name}"), decode_steps);
+            group.bench_function(id, |b| {
                 b.iter_custom(|iters| {
                     let mut total = Duration::ZERO;
                     for _ in 0..iters {
@@ -469,10 +535,9 @@ fn bench_one(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
         }
 
         // Sampled cell: same shape as decode_short but routes through
-        // SamplerState (temp=0.1 + top_p=0.95). Measures the cost of
-        // the cached scalar arrays + top-p chain that greedy bypasses.
+        // SamplerState (temp=0.1 + top_p=0.95).
         group.bench_function(
-            BenchmarkId::new("decode_short_sampled", decode_steps),
+            BenchmarkId::new(format!("decode_short_sampled/{kv_name}"), decode_steps),
             |b| {
                 b.iter_custom(|iters| {
                     let mut total = Duration::ZERO;
@@ -484,28 +549,22 @@ fn bench_one(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
             },
         );
 
-        // MTP self-speculative cells. Only for models whose adapter
-        // ships an MTP head (Qwen 3.6-35B-A3B q8 today). Greedy sampler
-        // so the comparison vs `decode_short` / `decode_long` isolates
-        // MTP's contribution from the sampling-path cost. Real-text
-        // prompt: synthetic period-100 IDs suppress acceptance and
-        // underrepresent MTP's real win; the natural-text tile keeps
-        // it close to real chat workloads.
-        //
-        // Two depth settings: `_mtp` = depth 1 (one draft per call,
-        // commits 1 or 2 tokens); `_mtp_depth2` = depth 2 (chained
-        // two-token draft, commits 1, 2, or 3 tokens per call). The
-        // depth setter is invoked before each cell so the two
-        // configurations are independently measurable.
-        if ctx.model.has_mtp() {
+        // MTP cells: greedy speculative decode. Only for models with
+        // an MTP head; only meaningful for dense KV (MTP rejection
+        // sampling against a quantised verify distribution is
+        // out-of-scope here).
+        if ctx.model.has_mtp() && kv_name == "dense" {
             let short_real = real_text_prompt(ctx.processor.as_mut(), SHORT_PROMPT_LEN);
             let long_real = real_text_prompt(ctx.processor.as_mut(), LONG_PROMPT_LEN);
             for (depth, suffix) in [(1u32, "mtp"), (2u32, "mtp_depth2"), (3u32, "mtp_depth3")] {
                 for (label_kind, prompt) in
                     [("decode_short", &short_real), ("decode_long", &long_real)]
                 {
-                    let label = BenchmarkId::new(format!("{label_kind}_{suffix}"), decode_steps);
-                    group.bench_function(label, |b| {
+                    let id = BenchmarkId::new(
+                        format!("{label_kind}_{suffix}/{kv_name}"),
+                        decode_steps,
+                    );
+                    group.bench_function(id, |b| {
                         b.iter_custom(|iters| {
                             let mut total = Duration::ZERO;
                             for _ in 0..iters {
@@ -521,9 +580,16 @@ fn bench_one(c: &mut Criterion, family: &str, label: &str, repo_id: &str) {
         group.finish();
     }
 
+    // Defensive GPU sync: criterion's `iter_custom` synced each sample,
+    // but `group.finish()` itself doesn't barrier. Force-drain any
+    // remaining work so it doesn't bleed into the next cell's load.
+    let _ = eval(std::iter::empty::<&Array>());
     // Release the model + unmap mlx-core's buffer cache so peak
     // RAM in a multi-model run is max-of-models, not sum.
     ctx.unload();
+    // `unload` already calls `clear_cache` once; a second pass catches
+    // anything lazily freed in the interim. Cheap if the pool is empty.
+    mlxr::memory::clear_cache();
     mlxr::memory::reset_peak_memory();
     log_mlx_mem(&format!("{group_prefix}/post_unload"));
 }

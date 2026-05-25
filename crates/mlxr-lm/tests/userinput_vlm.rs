@@ -39,8 +39,6 @@ fn vlm_image_chat_round_trips() {
     let input = UserInput {
         prompt: Prompt::Chat(vec![ChatMessage::user("What colour is this image?")]),
         images: vec![Image::Decoded(synthetic_image())],
-        audios: Vec::new(),
-        videos: Vec::new(),
         template_kwargs: HashMap::new(),
     };
     let params = GenerateParams {

@@ -14,8 +14,12 @@ use mlxr::{ops::indexing::IndexOp, transforms::async_eval, Array};
 use crate::config::{Family, ModelConfig as Config};
 use crate::error::Error;
 use crate::family::LoadedContext;
+#[cfg(feature = "gemma4")]
+use crate::gemma4::load_context as load_gemma4;
 use crate::language_model::{LanguageModel, UserInputProcessor};
 use crate::lm_input::{LMInput, PrepareResult, Text};
+#[cfg(feature = "qwen3_5")]
+use crate::qwen3_5::load_context as load_qwen3_5;
 use crate::sampler::{Sampler, SamplerState};
 use crate::user_input::UserInput;
 
@@ -365,12 +369,12 @@ fn run_mtp_loop(
 /// (gemma4's sliding cache), feed all but the trailing chunk
 /// through [`LanguageModel::prefill_chunk`], then drive the tail
 /// through the normal [`LanguageModel::prepare`] to get the
-/// first-step logits. Multimodal inputs (`image`/`audio`/`video`
-/// set) bypass chunking — they go straight to `prepare`, which the
-/// VLM adapter handles with a single stitched forward pass.
+/// first-step logits. Multimodal inputs (`image` set) bypass
+/// chunking — they go straight to `prepare`, which the VLM adapter
+/// handles with a single stitched forward pass.
 fn run_prefill(model: &mut dyn LanguageModel, mut input: LMInput) -> Result<Array, Error> {
     let chunk_size = model.prefill_chunk_size();
-    let is_multimodal = input.image.is_some() || input.audio.is_some() || input.video.is_some();
+    let is_multimodal = input.image.is_some();
     let prompt_len = input.text.tokens.shape()[1];
 
     if let Some(window) = chunk_size {
@@ -393,8 +397,6 @@ fn run_prefill(model: &mut dyn LanguageModel, mut input: LMInput) -> Result<Arra
                     mask: None,
                 },
                 image: None,
-                audio: None,
-                video: None,
             };
         }
     }
@@ -423,9 +425,9 @@ fn run_prefill(model: &mut dyn LanguageModel, mut input: LMInput) -> Result<Arra
 fn dispatch_load(cfg: &Config, dir: &Path) -> Result<LoadedContext, Error> {
     match &cfg.family {
         #[cfg(feature = "qwen3_5")]
-        Family::Qwen35(_) | Family::Qwen35Moe(_) => crate::qwen3_5::load_context(cfg, dir),
+        Family::Qwen35(_) | Family::Qwen35Moe(_) => load_qwen3_5(cfg, dir),
         #[cfg(feature = "gemma4")]
-        Family::Gemma4(_) => crate::gemma4::load_context(cfg, dir),
+        Family::Gemma4(_) => load_gemma4(cfg, dir),
     }
 }
 
@@ -459,8 +461,6 @@ mod tests {
                     mask: None,
                 },
                 image: None,
-                audio: None,
-                video: None,
             })
         }
         fn decode(&self, ids: &[u32]) -> Result<String, Error> {
@@ -566,8 +566,6 @@ mod tests {
                     mask: None,
                 },
                 image: None,
-                audio: None,
-                video: None,
             })
         }
         fn decode(&self, ids: &[u32]) -> Result<String, Error> {

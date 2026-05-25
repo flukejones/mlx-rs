@@ -4,13 +4,11 @@
 //! returns: the boxed model + processor + EOS-id list. The crate-root
 //! `mlxr_lm::load` wraps it into a [`crate::ModelContext`].
 //!
-//! [`read_eos_ids`] reads `config.json::eos_token_id`, normalising
-//! the `int | [int]` shape that Hugging Face configs use.
+//! [`EosSpec`] normalises the `int | [int]` shape that Hugging Face
+//! configs use for `eos_token_id`. Each family envelope owns its own
+//! `eos_token_id: Option<EosSpec>` field that serde populates at the
+//! one-and-only `config.json` parse.
 
-#[cfg(any(feature = "qwen3_5", feature = "gemma4"))]
-use std::path::Path;
-
-#[cfg(any(feature = "qwen3_5", feature = "gemma4"))]
 use serde::Deserialize;
 
 use crate::language_model::{LanguageModel, UserInputProcessor};
@@ -21,36 +19,25 @@ pub(crate) type LoadedContext = (
     Vec<u32>,
 );
 
-#[cfg(any(feature = "qwen3_5", feature = "gemma4"))]
-#[derive(Debug, Deserialize)]
+/// `config.json::eos_token_id` — either a single id or a list of ids.
+/// Each family envelope carries `Option<EosSpec>` so the value is
+/// parsed once at load and read off the typed struct afterwards.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
-enum EosSpec {
+pub enum EosSpec {
+    /// Single EOS token id.
     Single(u32),
+    /// Multiple acceptable EOS token ids.
     Many(Vec<u32>),
 }
 
-/// Read `config.json::eos_token_id` from `dir`. Empty vec on a
-/// missing field; the caller may still apply a family default.
-#[cfg(any(feature = "qwen3_5", feature = "gemma4"))]
-pub(crate) fn read_eos_ids(dir: &Path) -> Vec<u32> {
-    let Ok(raw) = std::fs::read_to_string(dir.join("config.json")) else {
-        return Vec::new();
-    };
-    let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return Vec::new();
-    };
-    let Some(eos) = val.get("eos_token_id") else {
-        return Vec::new();
-    };
-    match serde_json::from_value::<EosSpec>(eos.clone()) {
-        Ok(EosSpec::Single(id)) => vec![id],
-        Ok(EosSpec::Many(ids)) => ids,
-        Err(e) => {
-            log::warn!(
-                "config.json::eos_token_id parse failed ({e}); model will only \
-                 stop on family-default chat-EOS — generations may over-run."
-            );
-            Vec::new()
+impl EosSpec {
+    /// Flatten to a `Vec<u32>`. Empty when `spec` is `None`.
+    pub(crate) fn to_vec(spec: Option<&Self>) -> Vec<u32> {
+        match spec {
+            Some(Self::Single(id)) => vec![*id],
+            Some(Self::Many(ids)) => ids.clone(),
+            None => Vec::new(),
         }
     }
 }

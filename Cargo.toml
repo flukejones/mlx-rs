@@ -23,22 +23,16 @@ members = [
   "crates/mlxr",
   "crates/mlxr-lm",
   "crates/mlxr-convert",
-  "crates/mlxr-tests",
   "xtask",
   "examples/chat",
-  "examples/lm",
+  "examples/generate",
   "examples/mnist",
 ]
 
 resolver = "2"
 
-# Bench binaries default to `release` with debuginfo stripped — leaves
-# Instruments / samply / xctrace showing raw addresses instead of
-# Rust fn names. Keep release optimisation, add line-table-only debug
-# info so symbolication works without bloating the binary much.
 [profile.bench]
-debug = "line-tables-only"
-strip = "none"
+inherits = "release"
 
 # Same shape as bench, applied to regular bins. `cargo build --profile profiling`
 # yields optimised binaries with line-table debug info for xctrace /
@@ -48,12 +42,14 @@ inherits = "release"
 debug = "line-tables-only"
 strip = "none"
 
-# Single source of truth for the upstream mlx version that mlxr-sys
-# (cmake FetchContent) and mlxr-lm (steel-attention preamble generator)
-# both consume.
+# Single source of truth for the upstream `ml-explore/mlx` (C++ kernel
+# library) revision that mlxr-sys (cmake FetchContent) and mlxr-lm
+# (steel-attention preamble generator) both consume. The mlx-c ABI shim
+# itself is pinned separately by the git submodule under
+# `crates/mlxr-sys/src/mlx-c`.
 [workspace.metadata.mlx]
 version = "v0.31.2"                              # last bumped 2026-05-16
-sha = "68cf2fddd8de5edd8ab3d926391772b2e2cedad8" # mlx-c #114
+sha = "68cf2fddd8de5edd8ab3d926391772b2e2cedad8" # ml-explore/mlx
 
 [workspace.dependencies]
 # workspace local dependencies

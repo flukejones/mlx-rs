@@ -9,67 +9,45 @@
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Instant;
 
+use anyhow::Result;
+use argh::FromArgs;
 use mlxr_lm::chat_template::ChatMessage;
 use mlxr_lm::{generate, load, GenerateParams, Sampler, UserInput};
 
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-type Result<T> = std::result::Result<T, BoxError>;
-
-const DEFAULT_MAX_TOKENS: i32 = 256;
-
+/// One-shot text completion against any `mlxr_lm` checkpoint.
+#[derive(FromArgs)]
 struct Args {
+    /// checkpoint directory (must contain config.json + safetensors)
+    #[argh(option)]
     model: PathBuf,
-    prompt: String,
-    temperature: f32,
-    top_p: Option<f32>,
-    max_tokens: i32,
-    no_chat_template: bool,
-}
 
-fn parse_args() -> Result<Args> {
-    let mut model: Option<PathBuf> = None;
-    let mut prompt: Option<String> = None;
-    let mut temperature: f32 = 0.0;
-    let mut top_p: Option<f32> = None;
-    let mut max_tokens: i32 = DEFAULT_MAX_TOKENS;
-    let mut no_chat_template = false;
-    let mut it = std::env::args().skip(1);
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--model" => model = Some(PathBuf::from(it.next().ok_or("--model needs a path")?)),
-            "--prompt" => prompt = Some(it.next().ok_or("--prompt needs a value")?),
-            "--temp" | "--temperature" => {
-                temperature = it.next().ok_or("--temp needs a value")?.parse()?;
-            }
-            "--top-p" => top_p = Some(it.next().ok_or("--top-p needs a value")?.parse()?),
-            "--max-tokens" | "--max_tokens" => {
-                max_tokens = it.next().ok_or("--max-tokens needs a value")?.parse()?;
-            }
-            "--no-chat-template" => no_chat_template = true,
-            "-h" | "--help" => {
-                println!(
-                    "generate --model <dir> --prompt <s> [--temp 0.0] [--top-p <f>] \
-                     [--max-tokens {DEFAULT_MAX_TOKENS}] [--no-chat-template]"
-                );
-                std::process::exit(0);
-            }
-            other => return Err(format!("unknown argument: {other}").into()),
-        }
-    }
-    Ok(Args {
-        model: model.ok_or("--model is required")?,
-        prompt: prompt.ok_or("--prompt is required")?,
-        temperature,
-        top_p,
-        max_tokens,
-        no_chat_template,
-    })
+    /// user prompt
+    #[argh(option)]
+    prompt: String,
+
+    /// sampling temperature; 0.0 = greedy (default)
+    #[argh(option, default = "0.0")]
+    temperature: f32,
+
+    /// nucleus-sampling top-p cutoff
+    #[argh(option)]
+    top_p: Option<f32>,
+
+    /// maximum new tokens to generate (default 256)
+    #[argh(option, default = "256")]
+    max_tokens: i32,
+
+    /// skip chat-template rendering; feed the prompt as raw text
+    #[argh(switch)]
+    no_chat_template: bool,
 }
 
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
-    let args = parse_args()?;
+    let args: Args = argh::from_env();
+
     eprintln!("[loading {}]", args.model.display());
     let mut ctx = load(&args.model)?;
 
@@ -90,17 +68,17 @@ fn main() -> Result<()> {
     };
 
     let mut stdout = std::io::stdout().lock();
-    let t_start = std::time::Instant::now();
-    let mut t_first: Option<std::time::Instant> = None;
+    let t_start = Instant::now();
+    let mut t_first: Option<Instant> = None;
     let result = generate(&mut ctx, input, params, &mut |_, delta| {
         if t_first.is_none() {
-            t_first = Some(std::time::Instant::now());
+            t_first = Some(Instant::now());
         }
         let _ = stdout.write_all(delta.as_bytes());
         let _ = stdout.flush();
         std::ops::ControlFlow::Continue(())
     })?;
-    let t_end = std::time::Instant::now();
+    let t_end = Instant::now();
     println!();
     let t_first = t_first.unwrap_or(t_end);
     let prefill_s = (t_first - t_start).as_secs_f64();

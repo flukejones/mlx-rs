@@ -584,15 +584,10 @@ pub struct VisionModel {
 impl VisionModel {
     /// Build a freshly-initialised vision tower.
     pub fn new(cfg: &VisionConfig) -> Result<Self, Error> {
-        if !matches!(
-            cfg.model_type.as_str(),
-            "qwen3_vl" | "qwen3_5" | "qwen3_5_moe"
-        ) {
-            return Err(Error::config(format!(
-                "VisionModel: unsupported model_type {}",
-                cfg.model_type
-            )));
-        }
+        // `cfg.model_type` is the typed [`VisionModelType`] enum, so any
+        // unknown discriminant was already rejected at config deserialise.
+        // No runtime branch needed — every variant uses the same tower
+        // architecture and the shared `cfg.*` knobs drive the shape.
         let head_dim = cfg.hidden_size / cfg.num_heads;
         let num_grid_per_side = (cfg.num_position_embeddings as f32).sqrt() as i32;
         let patch_embed = PatchEmbed::new(cfg)?;

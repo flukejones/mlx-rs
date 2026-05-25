@@ -1,18 +1,20 @@
-//! Per-layer cache factory for Gemma 4. The weight loader lives in
-//! `weights::load_gemma4_model_sanitized` (one fn, called by the
-//! adapter directly).
+//! Gemma 4 per-layer cache factory.
+//! Global → shared `FullAttnCache`; sliding → `RotatingKVCache`
+//! (quantised rotating not implemented; sliding ignores `opts.kind`).
+//! Shared-KV slots are `None`; upstream layers own the state.
 
 use mlxr::Array;
 
-use crate::cache::{KVCache, KeyValueCache, RotatingKVCache};
-use crate::error::Error;
+use crate::cache::{CacheOptions, FullAttnCache, KeyValueCache, RotatingKVCache};
 use crate::gemma4::text::config::{LayerKind, TextConfig};
 
-/// One cache slot per non-shared layer. Shared-KV layers share the
-/// underlying KV state of an earlier same-kind layer at forward time
-/// via `Gemma4TextModel::previous_kvs`; the cache vec only owns the
-/// upstream slots (`num_hidden_layers - num_kv_shared_layers`).
-pub(crate) fn make_gemma4_caches(args: &TextConfig) -> Vec<Option<Gemma4LayerCache>> {
+/// Build caches with an externally-provided Π. Caller shares the matrix
+/// across resets by holding it on the adapter.
+pub(crate) fn make_caches_with_rotation(
+    args: &TextConfig,
+    opts: CacheOptions,
+    rotation: Option<&Array>,
+) -> Vec<Option<LayerCache>> {
     let first_kv_shared = (args.num_hidden_layers - args.num_kv_shared_layers).max(0);
     let layer_types = args.layer_types_resolved();
     (0..args.num_hidden_layers as usize)
@@ -21,14 +23,11 @@ pub(crate) fn make_gemma4_caches(args: &TextConfig) -> Vec<Option<Gemma4LayerCac
                 None
             } else {
                 Some(match layer_types[i] {
-                    // Full attention: steel `causal=true` ≡ standard causal mask.
                     LayerKind::FullAttention => {
-                        Gemma4LayerCache::Global(KVCache::new().with_steel_prefill())
+                        LayerCache::Global(FullAttnCache::from_options(opts, rotation.cloned()))
                     }
-                    // Sliding attention: steel `causal=true` ≠ sliding-causal once
-                    // prompt > sliding_window. Keep `fast::SDPA` for correctness.
                     LayerKind::SlidingAttention => {
-                        Gemma4LayerCache::Sliding(RotatingKVCache::new(args.sliding_window, 0))
+                        LayerCache::Sliding(RotatingKVCache::new(args.sliding_window, 0))
                     }
                 })
             }
@@ -36,44 +35,19 @@ pub(crate) fn make_gemma4_caches(args: &TextConfig) -> Vec<Option<Gemma4LayerCac
         .collect()
 }
 
+
 #[derive(Debug, Clone)]
-pub enum Gemma4LayerCache {
-    Global(KVCache),
+pub enum LayerCache {
+    Global(FullAttnCache),
     Sliding(RotatingKVCache),
 }
 
-impl Default for Gemma4LayerCache {
+impl Default for LayerCache {
     fn default() -> Self {
-        Self::Global(KVCache::new())
+        Self::Global(FullAttnCache::default())
     }
 }
 
-impl KeyValueCache for Gemma4LayerCache {
-    fn update_and_fetch(&mut self, keys: Array, values: Array) -> Result<(Array, Array), Error> {
-        match self {
-            Self::Global(c) => c.update_and_fetch(keys, values),
-            Self::Sliding(c) => c.update_and_fetch(keys, values),
-        }
-    }
-
-    fn offset(&self) -> i32 {
-        match self {
-            Self::Global(c) => c.offset(),
-            Self::Sliding(c) => c.offset(),
-        }
-    }
-
-    fn max_size(&self) -> Option<i32> {
-        match self {
-            Self::Global(c) => c.max_size(),
-            Self::Sliding(c) => c.max_size(),
-        }
-    }
-
-    fn class_name(&self) -> &'static str {
-        match self {
-            Self::Global(_) => "Gemma4LayerCache::Global",
-            Self::Sliding(_) => "Gemma4LayerCache::Sliding",
-        }
-    }
+impl KeyValueCache for LayerCache {
+    crate::delegate_kv!(LayerCache { Global, Sliding });
 }

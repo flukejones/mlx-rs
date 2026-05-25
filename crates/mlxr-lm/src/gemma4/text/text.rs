@@ -1001,6 +1001,11 @@ pub struct Gemma4TextModel {
     /// same-kind layer's index < first_kv_shared).
     pub previous_kvs: Vec<usize>,
 
+    /// Scratch slot for the shared-KV lookup. Allocated once at model
+    /// build (size = `num_hidden_layers`); cleared with `fill(None)`
+    /// at the top of each forward instead of re-allocating the `Vec`.
+    intermediates_scratch: Vec<Option<(Array, Array, i32)>>,
+
     #[quantizable]
     #[param]
     pub embed_tokens: MaybeQuantized<layers::Embedding>,
@@ -1058,6 +1063,7 @@ impl Gemma4TextModel {
             (None, None, None)
         };
 
+        let n = args.num_hidden_layers as usize;
         Ok(Self {
             vocab_size: args.vocab_size,
             num_hidden_layers: args.num_hidden_layers,
@@ -1068,6 +1074,7 @@ impl Gemma4TextModel {
             per_layer_input_scale: (2.0_f32).powf(-0.5),
             per_layer_projection_scale: (args.hidden_size as f32).powf(-0.5),
             previous_kvs,
+            intermediates_scratch: (0..n).map(|_| None).collect(),
             embed_tokens: MaybeQuantized::Original(embed_tokens),
             layers,
             norm,
@@ -1133,15 +1140,24 @@ where
         // `[B, L, N, D_pl]` tensor and slice axis-2 per layer below.
         let per_layer_inputs: Option<Vec<Array>> = if self.hidden_size_per_layer_input > 0 {
             let pl = self.hidden_size_per_layer_input;
-            let etps = self
-                .embed_tokens_per_layer_scale_arr
-                .get_or_init(|| Array::from_f32(self.embed_tokens_per_layer_scale));
-            let pps = self
-                .per_layer_projection_scale_arr
-                .get_or_init(|| Array::from_f32(self.per_layer_projection_scale));
-            let pis = self
-                .per_layer_input_scale_arr
-                .get_or_init(|| Array::from_f32(self.per_layer_input_scale));
+            // All three scales feed multiplies whose left operand is in
+            // `h_dtype` (embedding lookup or Linear projection). Stage
+            // each in `h_dtype` so the multiply doesn't promote to f32.
+            let etps = self.embed_tokens_per_layer_scale_arr.get_or_init(|| {
+                Array::from_f32(self.embed_tokens_per_layer_scale)
+                    .as_dtype(h_dtype)
+                    .expect("embed_tokens_per_layer_scale cast cannot fail")
+            });
+            let pps = self.per_layer_projection_scale_arr.get_or_init(|| {
+                Array::from_f32(self.per_layer_projection_scale)
+                    .as_dtype(h_dtype)
+                    .expect("per_layer_projection_scale cast cannot fail")
+            });
+            let pis = self.per_layer_input_scale_arr.get_or_init(|| {
+                Array::from_f32(self.per_layer_input_scale)
+                    .as_dtype(h_dtype)
+                    .expect("per_layer_input_scale cast cannot fail")
+            });
             let etpl = self
                 .embed_tokens_per_layer
                 .as_mut()
@@ -1204,9 +1220,14 @@ where
         let global_arr = global_mask.map(expand_mask).transpose()?;
         let sliding_arr = sliding_mask.map(expand_mask).transpose()?;
 
-        // Intermediate KV per layer index for shared lookup.
+        // Intermediate KV per layer index for shared lookup. Reuse
+        // the pre-allocated scratch slot on `self`; clearing is O(n)
+        // and avoids a `num_hidden_layers`-sized Vec alloc per token.
         let n = self.layers.len();
-        let mut intermediates: Vec<Option<(Array, Array, i32)>> = (0..n).map(|_| None).collect();
+        let intermediates = &mut self.intermediates_scratch;
+        for slot in intermediates.iter_mut() {
+            *slot = None;
+        }
 
         // Split borrow: previous_kvs is immutable, layers is mutated.
         let layers = &mut self.layers;

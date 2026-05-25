@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use mlxr::{
-    fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask},
+    fast::scaled_dot_product_attention,
     ops::{
         indexing::{Ellipsis, IndexOp, TryIndexMutOp},
         zeros_dtype,
@@ -17,7 +17,7 @@ use crate::error::Error;
 
 use super::io::parse_meta;
 use super::kernels::{cached_attention_kernel, SUPPORTED_HEAD_DIMS};
-use super::trait_def::{assert_mask_matches_keys, ceil_step, KeyValueCache};
+use super::trait_def::{assert_mask_matches_keys, ceil_step, resolve_sdpa_mask, KeyValueCache};
 
 /// Default step in tokens for [`KVCache`]'s pre-allocated buffer growth.
 pub const DEFAULT_KV_CACHE_STEP: i32 = 256;
@@ -315,7 +315,7 @@ impl KeyValueCache for KVCache {
             k_full,
             v_full,
             scale,
-            mask.map(ScaledDotProductAttentionMask::Array),
+            resolve_sdpa_mask(mask, n_q),
             None,
         )?)
     }

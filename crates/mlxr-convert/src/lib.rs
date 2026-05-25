@@ -8,8 +8,8 @@
 //! Currently supports Qwen 3.6 MoE (with MTP). Other families are deferred
 //! until they're actually needed.
 //!
-//! See [`convert`] for the entry point and `bin/convert.rs` in
-//! `examples/lm` for the CLI.
+//! See [`convert`] for the entry point and `src/bin/mlxr-convert.rs`
+//! for the CLI driver.
 
 mod plan;
 mod quantize;
@@ -21,29 +21,9 @@ pub mod qwen3_5;
 pub use plan::{QuantClass, RewriteOutput, Rewriter};
 pub use runner::{convert, ConvertOptions, ConvertReport};
 
-/// Error type surfaced from the converter.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("json: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("safetensors: {0}")]
-    Safetensors(#[from] mlxr::error::IoError),
-    #[error("mlx: {0}")]
-    Mlx(#[from] mlxr::error::Exception),
-    #[error("{0}")]
-    Other(String),
-}
-
-impl Error {
-    pub fn custom(msg: impl Into<String>) -> Self {
-        Self::Other(msg.into())
-    }
-}
-
-/// Crate-internal `Result` shorthand. `pub(crate)` deliberately —
-/// consumers should be explicit with the error type
-/// (`Result<_, mlxr_convert::Error>`) or use `anyhow`, not import a
-/// `Result` alias that would collide across crates.
-pub(crate) type Result<T> = std::result::Result<T, Error>;
+// `mlxr-convert` is logically a binary with helper modules — every
+// caller of the lib is its own bin (`src/bin/mlxr-convert.rs`). The
+// project's "thiserror in libs, anyhow in bins" rule applies cleanly:
+// re-export `anyhow::{Result, anyhow}` so module code reads the same
+// way as the bin and there is no per-crate Error enum to maintain.
+pub use anyhow::{anyhow, Result};

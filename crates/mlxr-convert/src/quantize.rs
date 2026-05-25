@@ -4,7 +4,7 @@
 
 use mlxr::{ops::quantize, Array};
 
-use crate::{plan::QuantClass, Result};
+use crate::{anyhow, plan::QuantClass, Result};
 
 /// One entry to write into the output sharded safetensors.
 pub struct OutTensor {
@@ -37,11 +37,9 @@ pub fn classify_and_quantize(
         QuantClass::Pinned { group_size, bits } => (bits, group_size),
     };
 
-    let stem = dst_key.strip_suffix(".weight").ok_or_else(|| {
-        crate::Error::custom(format!(
-            "quantize: expected dst_key to end in .weight, got {dst_key:?}"
-        ))
-    })?;
+    let stem = dst_key
+        .strip_suffix(".weight")
+        .ok_or_else(|| anyhow!("quantize: expected dst_key to end in .weight, got {dst_key:?}"))?;
 
     let (packed, scales, biases) = quantize(&tensor, group_size, bits)?;
     Ok(vec![

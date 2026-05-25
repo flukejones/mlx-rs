@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 
 use mlxr::{
-    fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask},
+    fast::scaled_dot_product_attention,
     ops::{
         concatenate_axis,
         indexing::{Ellipsis, IndexOp, TryIndexMutOp},
@@ -34,8 +34,9 @@ use mlxr::{
     Array,
 };
 
+use super::io::parse_meta;
 use super::kernels::{cached_attention_kernel, SUPPORTED_HEAD_DIMS};
-use super::trait_def::{assert_mask_matches_keys, KeyValueCache};
+use super::trait_def::{assert_mask_matches_keys, resolve_sdpa_mask, KeyValueCache};
 use crate::attention::{attention_dispatch, AttentionInputs};
 use crate::error::Error;
 
@@ -88,6 +89,38 @@ impl RotatingKVCache {
     pub fn with_steel_prefill(mut self) -> Self {
         self.use_steel_prefill = true;
         self
+    }
+
+    /// Inverse of [`KeyValueCache::state`] / [`KeyValueCache::meta_state`].
+    /// Restores the ring-buffer state saved by `save_prompt_cache`.
+    pub fn from_state(
+        mut state: Vec<Array>,
+        meta: &HashMap<String, String>,
+    ) -> Result<Self, Error> {
+        if state.len() != 2 {
+            return Err(Error::Other(
+                format!(
+                    "RotatingKVCache::from_state expected 2 arrays, got {}",
+                    state.len()
+                )
+                .into(),
+            ));
+        }
+        let values = state.pop().expect("len checked");
+        let keys = state.pop().expect("len checked");
+        let offset = parse_meta(meta, "offset")?;
+        let write_head = parse_meta(meta, "write_head")?;
+        let max_size = parse_meta(meta, "max_size")?;
+        let keep = parse_meta(meta, "keep")?;
+        Ok(Self {
+            keys: Some(keys),
+            values: Some(values),
+            offset,
+            write_head,
+            max_size,
+            keep,
+            use_steel_prefill: false,
+        })
     }
 
     #[inline]
@@ -371,7 +404,7 @@ impl KeyValueCache for RotatingKVCache {
             k_full,
             v_full,
             scale,
-            mask.map(ScaledDotProductAttentionMask::Array),
+            resolve_sdpa_mask(mask, n_q),
             None,
         )?)
     }

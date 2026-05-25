@@ -1,98 +1,81 @@
-//! Per-layer caches for the Qwen3.5 hybrid decoder.
-//!
-//! Full-attention layers reuse [`crate::cache::KVCache`]. Linear-
-//! attention (Gated DeltaNet) layers carry their own recurrent state plus the
-//! tail of the causal Conv1d input from previous steps, which we model with
-//! [`LinearAttnCache`]. [`LayerCache`] is the per-layer slot the model walks
-//! through during forward.
+//! Qwen3.5 per-layer cache slot. Full-attn → shared `FullAttnCache`;
+//! linear-attn → qwen-specific GDN recurrent state.
 
 use mlxr::Array;
 
-use crate::cache::KVCache;
+use crate::cache::{build_rotation, CacheOptions, FullAttnCache, KeyValueCache};
+use crate::error::Error;
+use crate::qwen3_5::text::config::ModelConfig;
 
-/// State carried across decode steps inside a Gated DeltaNet block.
-///
-/// `conv_state` is the last `linear_conv_kernel_dim - 1` rows of the projected
-/// `(q, k, v)` features along the sequence axis — i.e. the causal Conv1d
-/// history.
-///
-/// `recurrent_state` is the live `[B, Hv, Dv, Dk]` SSM state.
-///
-/// Both fields are `None` for the first forward pass; the GDN block treats
-/// `None` as a zero-initialised tensor of the right shape.
+/// Gated DeltaNet recurrent state. Not a KV cache.
+/// `None` fields are treated as zero-initialised on first pass.
 #[derive(Debug, Clone, Default)]
 pub struct LinearAttnCache {
-    /// Causal Conv1d history. `[B, conv_kernel_size - 1, conv_dim]`.
-    pub conv_state: Option<Array>,
-    /// Recurrent SSM state. `[B, Hv, Dv, Dk]`.
-    pub recurrent_state: Option<Array>,
-    /// Number of tokens absorbed so far. Mirrors the offset on the KV cache.
-    pub offset: i32,
+    /// `[B, conv_kernel_size - 1, conv_dim]`.
+    pub(crate) conv_state: Option<Array>,
+    /// `[B, Hv, Dv, Dk]`.
+    pub(crate) recurrent_state: Option<Array>,
+    pub(crate) offset: i32,
 }
 
 impl LinearAttnCache {
-    /// Create an empty cache.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Resets the cache as if no tokens had been seen yet.
     pub fn reset(&mut self) {
         *self = Self::default();
     }
 }
 
-/// One slot in the per-layer cache list. Each Qwen3.5 layer holds exactly one
-/// of these and uses it for the full duration of a generation.
 #[derive(Debug, Clone)]
 pub enum LayerCache {
-    /// Cache for a full-attention (GQA) layer.
-    FullAttention(KVCache),
-    /// Cache for a linear-attention (Gated DeltaNet) layer.
+    FullAttention(FullAttnCache),
     LinearAttention(LinearAttnCache),
 }
 
 impl LayerCache {
-    /// Build the matching cache for a layer based on whether it is a
-    /// linear-attention (Gated DeltaNet) layer.
-    pub fn for_layer(is_linear: bool) -> Self {
+    /// `rotation` is the shared Π (built once per `make_caches`).
+    pub fn for_layer(is_linear: bool, opts: CacheOptions, rotation: Option<&Array>) -> Self {
         if is_linear {
             Self::LinearAttention(LinearAttnCache::new())
         } else {
-            Self::FullAttention(KVCache::new())
+            Self::FullAttention(FullAttnCache::from_options(opts, rotation.cloned()))
         }
     }
 
-    /// Get a mutable reference to the full-attention cache, panicking if this
-    /// slot is a linear-attention cache instead.
-    pub fn as_full_attention_mut(&mut self) -> &mut KVCache {
+    pub fn as_full_attention_mut(&mut self) -> &mut FullAttnCache {
         match self {
             Self::FullAttention(c) => c,
-            Self::LinearAttention(_) => {
-                panic!("LayerCache: expected FullAttention slot, got LinearAttention")
-            }
+            Self::LinearAttention(_) => panic!("expected FullAttention slot"),
         }
     }
 
-    /// Get a mutable reference to the linear-attention cache, panicking if
-    /// this slot is a full-attention cache instead.
     pub fn as_linear_attention_mut(&mut self) -> &mut LinearAttnCache {
         match self {
             Self::LinearAttention(c) => c,
-            Self::FullAttention(_) => {
-                panic!("LayerCache: expected LinearAttention slot, got FullAttention")
-            }
+            Self::FullAttention(_) => panic!("expected LinearAttention slot"),
         }
     }
 
-    /// Returns true if this slot is a linear-attention cache.
     pub fn is_linear(&self) -> bool {
         matches!(self, Self::LinearAttention(_))
     }
 
-    /// Returns the running offset for this layer.
-    pub fn offset(&self) -> i32 {
-        use crate::cache::KeyValueCache;
+    /// KV-slot count for full-attn layers. `None` for linear-attn —
+    /// the GDN recurrent state isn't a positional KV slot count
+    /// (see [`Self::token_count`] for the GDN absorb counter).
+    pub fn kv_offset(&self) -> Option<i32> {
+        match self {
+            Self::FullAttention(c) => Some(c.offset()),
+            Self::LinearAttention(_) => None,
+        }
+    }
+
+    /// Tokens absorbed so far. For full-attn this matches `kv_offset`;
+    /// for linear-attn this is the GDN recurrent counter (incremented
+    /// per absorbed token, never trimmed).
+    pub fn token_count(&self) -> i32 {
         match self {
             Self::FullAttention(c) => c.offset(),
             Self::LinearAttention(c) => c.offset,
@@ -100,20 +83,35 @@ impl LayerCache {
     }
 }
 
-/// Build one [`LayerCache`] per layer for a [`crate::qwen3_5::text::ModelConfig`].
-pub fn make_caches(config: &crate::qwen3_5::text::ModelConfig) -> Vec<LayerCache> {
+/// Build per-layer caches with an externally-provided rotation matrix.
+/// Caller builds Π once via [`crate::cache::build_rotation`] and shares
+/// it across both `cache` and `mtp_cache` vecs.
+pub fn make_caches_with_rotation(
+    config: &ModelConfig,
+    opts: CacheOptions,
+    rotation: Option<&Array>,
+) -> Vec<LayerCache> {
     let n = config.text_config.num_hidden_layers as usize;
     (0..n)
-        .map(|i| LayerCache::for_layer(config.is_linear_layer(i)))
+        .map(|i| LayerCache::for_layer(config.is_linear_layer(i), opts, rotation))
         .collect()
 }
 
-/// Build per-layer caches for the MTP head. MTP layers are always
-/// self_attn (verified against `Qwen/Qwen3.6-35B-A3B` checkpoint
-/// shape), so every slot is a `KVCache`.
-pub fn make_mtp_caches(config: &crate::qwen3_5::text::ModelConfig) -> Vec<LayerCache> {
+pub fn make_caches(config: &ModelConfig, opts: CacheOptions) -> Result<Vec<LayerCache>, Error> {
+    let rotation = build_rotation(opts, config.text_config.head_dim)?;
+    Ok(make_caches_with_rotation(config, opts, rotation.as_ref()))
+}
+
+/// MTP layers are always self_attn — every slot is `FullAttention`.
+pub fn make_mtp_caches_with_rotation(
+    config: &ModelConfig,
+    opts: CacheOptions,
+    rotation: Option<&Array>,
+) -> Vec<LayerCache> {
     let n = config.text_config.mtp_num_hidden_layers.max(0) as usize;
-    (0..n).map(|_| LayerCache::for_layer(false)).collect()
+    (0..n)
+        .map(|_| LayerCache::for_layer(false, opts, rotation))
+        .collect()
 }
 
 #[cfg(test)]
@@ -124,7 +122,7 @@ mod tests {
     #![allow(clippy::print_stderr, reason = "test code")]
     use super::*;
 
-    fn synthetic_config(layer_types: Vec<&str>) -> crate::qwen3_5::text::ModelConfig {
+    fn synthetic_config(layer_types: Vec<&str>) -> ModelConfig {
         let layers: Vec<String> = layer_types.into_iter().map(String::from).collect();
         let n = layers.len() as i32;
         let json = serde_json::json!({
@@ -175,7 +173,7 @@ mod tests {
             "full_attention",
             "linear_attention",
         ]);
-        let caches = make_caches(&cfg);
+        let caches = make_caches(&cfg, CacheOptions::default()).unwrap();
         assert_eq!(caches.len(), 4);
         assert!(caches[0].is_linear());
         assert!(caches[1].is_linear());
@@ -185,10 +183,20 @@ mod tests {
 
     #[test]
     fn for_layer_dispatches_to_correct_variant() {
-        let a = LayerCache::for_layer(true);
+        let a = LayerCache::for_layer(true, CacheOptions::default(), None);
         assert!(matches!(a, LayerCache::LinearAttention(_)));
-        let b = LayerCache::for_layer(false);
+        let b = LayerCache::for_layer(false, CacheOptions::default(), None);
         assert!(matches!(b, LayerCache::FullAttention(_)));
+    }
+
+    #[test]
+    fn quantized_kind_routes_to_quantized_backing() {
+        let opts = CacheOptions::quantized_q8();
+        let c = LayerCache::for_layer(false, opts, None);
+        match c {
+            LayerCache::FullAttention(FullAttnCache::Quantized(_)) => {}
+            other => panic!("expected quantised backing, got {other:?}"),
+        }
     }
 
     #[test]

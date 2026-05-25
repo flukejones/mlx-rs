@@ -145,11 +145,36 @@ bench-compile:
 
 # Run a generate example. Usage: just generate <model> <prompt...>
 generate model *args:
-	cargo run --release -p lm --bin generate -- --model {{model}} {{args}}
+	cargo run --release -p generate -- --model {{model}} {{args}}
 
 # Run the chat REPL example.
 chat *args:
-	cargo run --release -p lm --bin chat -- {{args}}
+	cargo run --release -p chat --bin chat -- {{args}}
+
+# --- mlx-c upstream tracking ---
+
+# Diff current vs upstream mlx-c bindings. Tag defaults to upstream
+# latest. Usage: `just mlx-c-diff` or `just mlx-c-diff v0.32.0`.
+mlx-c-diff *tag:
+	cargo run --release -q -p xtask -- mlx-c-diff {{tag}}
+
+# Bump the mlx-c submodule to <tag>. Reminder workflow:
+# 1. Checks out the tag in the submodule.
+# 2. Prints the diff so you can update bindings/code accordingly.
+# After this, manually update `[workspace.metadata.mlx]` in root
+# Cargo.toml (`version` + `sha`) and `crates/mlxr-sys/README.md`.
+# Then run `just clean && cargo check` per CLAUDE.md.
+bump-mlx-c tag:
+	/usr/bin/git -C crates/mlxr-sys/src/mlx-c fetch --tags
+	/usr/bin/git -C crates/mlxr-sys/src/mlx-c checkout {{tag}}
+	@echo
+	@echo "--- bindings diff vs prior tag ---"
+	cargo run --release -q -p xtask -- mlx-c-diff
+	@echo
+	@echo "Next steps:"
+	@echo "  1. Update [workspace.metadata.mlx] in Cargo.toml (version + sha)."
+	@echo "  2. Update crates/mlxr-sys/README.md mlx-c pin label if needed."
+	@echo "  3. cargo clean && cargo check --workspace."
 
 # --- maintenance ---
 

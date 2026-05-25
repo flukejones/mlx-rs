@@ -16,7 +16,7 @@ use mlxr::{
     layers,
     macros::{ModuleParameters, Quantizable},
     module::Module,
-    ops::{arange, broadcast_to, concatenate_axis, expand_dims},
+    ops::{arange, broadcast_to, concatenate_axis, expand_dims, reshape},
     quantization::{MaybeQuantized, Quantizable as QuantizableTrait},
     Array,
 };
@@ -27,6 +27,7 @@ use crate::error::Error;
 use super::cache::LayerCache;
 use super::config::TextConfig;
 use super::gated_delta_block::GatedDeltaNet;
+use super::rope::MultimodalRope;
 use super::text::{Attention, Mlp};
 
 /// One Qwen3.5 decoder layer: either linear-attention (GDN) or full-attention.
@@ -101,13 +102,18 @@ where
     }
 
     /// Run the layer forward.
+    ///
+    /// `cos`/`sin` are precomputed once per forward at the decoder level
+    /// and shared across every layer. The linear-attention branch (GDN)
+    /// ignores them.
     pub fn forward(
         &mut self,
         x: &Array,
         full_attn_mask: Option<&Array>,
         ssm_mask: Option<&Array>,
         cache: Option<&mut LayerCache>,
-        position_ids: Option<&Array>,
+        cos: &Array,
+        sin: &Array,
     ) -> Result<Array, Error> {
         let normed = self.input_layernorm.forward(x)?;
         let attn_out = if self.is_linear {
@@ -123,7 +129,7 @@ where
                 .as_mut()
                 .expect("self_attn missing for full-attn layer");
             let cache = cache.map(|c| c.as_full_attention_mut());
-            blk.forward(&normed, full_attn_mask, cache, position_ids)?
+            blk.forward(&normed, full_attn_mask, cache, cos, sin)?
         };
         let h = x.add(&attn_out)?;
         let mlp_out = self
@@ -145,13 +151,6 @@ where
         self.post_attention_layernorm.training_mode(mode);
     }
 
-    /// Forward the steel-prefill toggle to the full-attention block, if
-    /// this layer has one. Linear-attention layers ignore the call.
-    pub fn set_use_steel_prefill(&mut self, on: bool) {
-        if let Some(blk) = self.self_attn.as_mut() {
-            blk.set_use_steel_prefill(on);
-        }
-    }
 }
 
 /// Source-compat alias for the dense (Mlp-FFN) layer.
@@ -160,7 +159,7 @@ pub type DenseDecoderLayer = DecoderLayer<Mlp>;
 impl DecoderLayer<Mlp> {
     /// Convenience constructor for the dense (Mlp-FFN) layer; mirrors
     /// the pre-generic API.
-    pub fn new_dense(cfg: &TextConfig, layer_idx: usize) -> Result<Self, Error> {
+    pub fn with_mlp(cfg: &TextConfig, layer_idx: usize) -> Result<Self, Error> {
         Self::new(cfg, layer_idx, |c| {
             Mlp::new(c.hidden_size, c.intermediate_size)
         })
@@ -230,6 +229,10 @@ where
     pub layers: Vec<DecoderLayer<F>>,
     #[param]
     pub norm: layers::RmsNorm,
+
+    /// Multimodal RoPE — same shape as the main decoder's. cos/sin is
+    /// computed once per MTP call and threaded into each layer below.
+    rope: MultimodalRope,
 }
 
 impl<F> MtpHead<F>
@@ -258,12 +261,14 @@ where
         let norm = layers::RmsNormBuilder::new(h)
             .eps(cfg.rms_norm_eps)
             .build()?;
+        let rope = build_rope(cfg)?;
         Ok(Self {
             pre_fc_norm_hidden,
             pre_fc_norm_embedding,
             fc: MaybeQuantized::Original(fc),
             layers,
             norm,
+            rope,
         })
     }
 
@@ -319,10 +324,42 @@ where
         let e_n = self.pre_fc_norm_embedding.forward(embed_next)?;
         let combined = concatenate_axis(&[e_n, h_n], -1)?;
         let mut h = self.fc.forward(&combined)?;
+        // cos/sin once per MTP call, shared across every layer.
+        let (cos, sin) = self.cos_sin_for_run(&h, caches, position_ids)?;
         for (layer, cache) in self.layers.iter_mut().zip(caches.iter_mut()) {
-            h = layer.forward(&h, None, None, Some(cache), position_ids)?;
+            h = layer.forward(&h, None, None, Some(cache), &cos, &sin)?;
         }
         Ok(h)
+    }
+
+    /// Build cos/sin pre-cast + pre-shaped for the per-layer rope.
+    /// See [`Qwen35Decoder::cos_sin_for_forward`] for the rationale.
+    fn cos_sin_for_run(
+        &self,
+        h: &Array,
+        caches: &[LayerCache],
+        position_ids: Option<&Array>,
+    ) -> Result<(Array, Array), Error> {
+        let h_shape = h.shape();
+        let b = h_shape[0];
+        let l = h_shape[1];
+        let owned_pos;
+        let pos: &Array = if let Some(p) = position_ids {
+            p
+        } else {
+            // MTP layers are always full-attention; the first cache
+            // slot's KV offset drives the position window.
+            let offset = caches.first().and_then(|c| c.kv_offset()).unwrap_or(0);
+            let range = arange::<_, i32>(offset, offset + l, None)?;
+            let range = reshape(&range, &[1, l])?;
+            owned_pos = broadcast_to(&range, &[b, l])?;
+            &owned_pos
+        };
+        let (cos, sin) = self.rope.cos_sin(pos)?;
+        let dtype = h.dtype();
+        let cos = expand_dims(&cos, 1)?.as_dtype(dtype)?;
+        let sin = expand_dims(&sin, 1)?.as_dtype(dtype)?;
+        Ok((cos, sin))
     }
 
     pub fn training_mode(&mut self, mode: bool) {
@@ -335,11 +372,6 @@ where
         self.norm.training_mode(mode);
     }
 
-    pub fn set_use_steel_prefill(&mut self, on: bool) {
-        for layer in &mut self.layers {
-            layer.set_use_steel_prefill(on);
-        }
-    }
 }
 
 fn layer_is_linear(cfg: &TextConfig, layer_idx: usize) -> bool {
@@ -356,6 +388,22 @@ fn layer_is_linear(cfg: &TextConfig, layer_idx: usize) -> bool {
         return false;
     }
     ((layer_idx as i32 + 1) % interval) != 0
+}
+
+/// Build the shared multimodal RoPE from `cfg`. Used by both the main
+/// decoder and the MTP head so cos/sin runs once per forward, not
+/// once per layer.
+fn build_rope(cfg: &TextConfig) -> Result<MultimodalRope, Error> {
+    let rotary_dim =
+        (cfg.head_dim as f32 * cfg.rope_parameters.partial_rotary_factor).floor() as i32;
+    // Unsupported rope variants (yarn / longrope) reject at
+    // `config.json` deserialize via `QwenRopeType`, so the only
+    // values reaching here are `default` / `mrope`.
+    MultimodalRope::new(
+        rotary_dim,
+        cfg.rope_parameters.rope_theta,
+        &cfg.rope_parameters.mrope_section,
+    )
 }
 
 /// Hidden states returned by [`Qwen35Decoder::forward_pre_and_post_norm`].
@@ -390,6 +438,12 @@ where
 
     #[param]
     pub norm: layers::RmsNorm,
+
+    /// Multimodal rotary embedding. Stateless config (`inv_freq`,
+    /// axis-selector masks) — built once per model load and shared
+    /// across every layer's `Attention::forward`. Held here (not on
+    /// `Attention`) so `cos_sin` runs once per forward, not 64×.
+    rope: MultimodalRope,
 }
 
 impl<F> Qwen35Decoder<F>
@@ -412,12 +466,14 @@ where
         let norm = layers::RmsNormBuilder::new(cfg.hidden_size)
             .eps(cfg.rms_norm_eps)
             .build()?;
+        let rope = build_rope(cfg)?;
         Ok(Self {
             vocab_size: cfg.vocab_size,
             num_hidden_layers: cfg.num_hidden_layers,
             embed_tokens: MaybeQuantized::Original(embed_tokens),
             layers,
             norm,
+            rope,
         })
     }
 
@@ -480,13 +536,19 @@ where
         let full_attn_mask = Self::build_full_attn_mask(&h, caches)?;
         let full_attn_mask_ref = full_attn_mask.as_ref();
         let ssm_mask_ref: Option<&Array> = None;
+        // cos/sin computed ONCE here and threaded to every layer below.
+        // Was previously recomputed inside each `Attention::forward` —
+        // identical inputs, 64 redundant cos_sin / matmul / cos/sin ops
+        // per token on Qwen 3.6-27B.
+        let (cos, sin) = self.cos_sin_for_forward(&h, caches, position_ids)?;
         for (layer, cache) in self.layers.iter_mut().zip(caches.iter_mut()) {
             h = layer.forward(
                 &h,
                 full_attn_mask_ref,
                 ssm_mask_ref,
                 Some(cache),
-                position_ids,
+                &cos,
+                &sin,
             )?;
         }
         let post = self.norm.forward(&h)?;
@@ -494,6 +556,53 @@ where
             pre_norm: h,
             post_norm: post,
         })
+    }
+
+    /// Build `(cos, sin)` for this forward, fully prepared for every
+    /// layer's `apply_multimodal_rotary_pos_emb`: shape
+    /// `[B, 1, S, rotary_dim]` and cast to the input dtype. Doing the
+    /// `expand_dims(axis=1) + as_dtype(h_dtype)` here means the per-layer
+    /// rope call is just two `multiply` + add; both ops would otherwise
+    /// fire 64× per token.
+    ///
+    /// Pulls the position-id offset from the first full-attention cache
+    /// slot (matches [`Self::build_full_attn_mask`]) when `position_ids`
+    /// is `None`; otherwise uses the supplied tensor directly.
+    fn cos_sin_for_forward(
+        &self,
+        h: &Array,
+        caches: &[LayerCache],
+        position_ids: Option<&Array>,
+    ) -> Result<(Array, Array), Error> {
+        let h_shape = h.shape();
+        let b = h_shape[0];
+        let l = h_shape[1];
+        let owned_pos;
+        let pos: &Array = if let Some(p) = position_ids {
+            p
+        } else {
+            // Derive [B, L] positions from the first full-attention
+            // cache slot's offset. Linear-attn slots don't track an
+            // SDPA offset, so they're skipped in `Self::find_full_attn_offset`.
+            let offset = Self::find_full_attn_offset(caches);
+            let range = arange::<_, i32>(offset, offset + l, None)?;
+            let range = reshape(&range, &[1, l])?;
+            owned_pos = broadcast_to(&range, &[b, l])?;
+            &owned_pos
+        };
+        let (cos, sin) = self.rope.cos_sin(pos)?;
+        let dtype = h.dtype();
+        // Unsqueeze the per-head broadcast axis and cast once; downstream
+        // `apply_multimodal_rotary_pos_emb` consumes the pair as-is.
+        let cos = expand_dims(&cos, 1)?.as_dtype(dtype)?;
+        let sin = expand_dims(&sin, 1)?.as_dtype(dtype)?;
+        Ok((cos, sin))
+    }
+
+    /// Pick the offset of the first full-attention cache slot; 0 if
+    /// none exists (pure linear-attn config, or no cache attached).
+    fn find_full_attn_offset(caches: &[LayerCache]) -> i32 {
+        caches.iter().find_map(|c| c.kv_offset()).unwrap_or(0)
     }
 
     /// Build the additive causal mask the full-attention layers need.
@@ -543,12 +652,6 @@ where
         self.norm.training_mode(mode);
     }
 
-    /// Propagate the steel-prefill toggle to every full-attention layer.
-    pub fn set_use_steel_prefill(&mut self, on: bool) {
-        for layer in &mut self.layers {
-            layer.set_use_steel_prefill(on);
-        }
-    }
 }
 
 /// Source-compat alias for the dense (Mlp-FFN) decoder.
@@ -556,7 +659,7 @@ pub type DenseQwen35Decoder = Qwen35Decoder<Mlp>;
 
 impl Qwen35Decoder<Mlp> {
     /// Dense convenience constructor.
-    pub fn new_dense(cfg: &TextConfig) -> Result<Self, Error> {
+    pub fn with_mlp(cfg: &TextConfig) -> Result<Self, Error> {
         Self::new(cfg, |c| Mlp::new(c.hidden_size, c.intermediate_size))
     }
 }
@@ -696,15 +799,11 @@ where
         }
     }
 
-    /// Propagate the steel-prefill toggle to every full-attention layer.
-    pub fn set_use_steel_prefill(&mut self, on: bool) {
-        self.model.set_use_steel_prefill(on);
-    }
 }
 
 impl Qwen35Model<Mlp> {
     /// Dense convenience constructor; mirrors the pre-generic API.
-    pub fn new_dense(cfg: TextConfig) -> Result<Self, Error> {
+    pub fn with_mlp(cfg: TextConfig) -> Result<Self, Error> {
         Self::new(cfg, |c| Mlp::new(c.hidden_size, c.intermediate_size))
     }
 }
@@ -717,6 +816,7 @@ mod tests {
     #![allow(clippy::print_stderr, reason = "test code")]
     use super::super::config::ModelConfig;
     use super::*;
+    use crate::cache::CacheOptions;
     use crate::qwen3_5::text::cache::make_caches;
     use mlxr::{random::uniform, transforms::eval, Array};
 
@@ -773,8 +873,8 @@ mod tests {
             "linear_attention",
             "full_attention",
         ]);
-        let mut lm = Qwen35Model::new_dense(cfg.text_config.clone()).unwrap();
-        let mut caches = make_caches(&cfg);
+        let mut lm = Qwen35Model::with_mlp(cfg.text_config.clone()).unwrap();
+        let mut caches = make_caches(&cfg, CacheOptions::default()).unwrap();
 
         // Token ids in [0, vocab_size).
         let ids: Vec<i32> = (0..5).collect();
@@ -808,8 +908,8 @@ mod tests {
     #[test]
     fn forward_accepts_inputs_embeds() {
         let cfg = synthetic_config(vec!["linear_attention", "full_attention"]);
-        let mut lm = Qwen35Model::new_dense(cfg.text_config.clone()).unwrap();
-        let mut caches = make_caches(&cfg);
+        let mut lm = Qwen35Model::with_mlp(cfg.text_config.clone()).unwrap();
+        let mut caches = make_caches(&cfg, CacheOptions::default()).unwrap();
         let embeds =
             uniform::<_, f32>(0.0, 1.0, &[1, 3, cfg.text_config.hidden_size], None).unwrap();
         let logits = lm.forward(None, Some(&embeds), &mut caches, None).unwrap();

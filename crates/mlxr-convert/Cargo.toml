@@ -25,7 +25,6 @@ mlxr-lm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
-thiserror = { workspace = true }
 anyhow = { workspace = true }
 argh = { workspace = true }
 env_logger = { workspace = true }

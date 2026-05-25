@@ -13,7 +13,6 @@ use crate::cache::KeyValueCache;
 use crate::error::Error;
 
 pub mod rope;
-pub mod tokenizer;
 
 /// Try-and-propagate macro for `Iterator::next` style returns.
 /// On `Err`, returns `Some(Err(e.into()))` from the enclosing function.
@@ -26,49 +25,6 @@ macro_rules! tri {
         }
     };
 }
-
-// def quantized_scaled_dot_product_attention(
-//     queries: mx.array,
-//     q_keys: tuple[mx.array, mx.array, mx.array],
-//     q_values: tuple[mx.array, mx.array, mx.array],
-//     scale: float,
-//     mask: Optional[mx.array],
-//     group_size: int = 64,
-//     bits: int = 8,
-// ) -> mx.array:
-//     B, n_q_heads, L, D = queries.shape
-//     n_kv_heads = q_keys[0].shape[-3]
-//     n_repeats = n_q_heads // n_kv_heads
-
-//     queries *= scale
-
-//     if n_repeats > 1:
-//         queries = mx.reshape(queries, (B, n_kv_heads, n_repeats, L, D))
-//         q_keys = tree_map(lambda x: mx.expand_dims(x, axis=-3), q_keys)
-//         q_values = tree_map(lambda x: mx.expand_dims(x, axis=-3), q_values)
-
-//     scores = mx.quantized_matmul(
-//         queries, *q_keys, transpose=True, group_size=group_size, bits=bits
-//     )
-//     if mask is not None:
-//         if isinstance(mask, str):
-//             qL, kL = scores.shape[-2:]
-//             q_indices = mx.arange(kL - qL, kL)
-//             k_indices = mx.arange(kL)
-//             mask = q_indices[:, None] >= k_indices[None]
-//         if mask.dtype == mx.bool_:
-//             scores = mx.where(mask, scores, mx.finfo(scores.dtype).min)
-//         else:
-//             scores += mask
-//     scores = mx.softmax(scores, axis=-1, precise=True)
-//     out = mx.quantized_matmul(
-//         scores, *q_values, transpose=False, group_size=group_size, bits=bits
-//     )
-
-//     if n_repeats > 1:
-//         out = mx.reshape(out, (B, n_q_heads, L, D))
-
-//     return out
 
 fn index_out_of_bound_error() -> Error {
     Error::out_of_bounds("index out of bound")
@@ -172,40 +128,6 @@ pub struct QuantizedValues {
     pub values: Array,
     pub scales: Array,
     pub biases: Array,
-}
-
-pub enum MaybeQuantizedKeys {
-    Original(Array),
-    Quantized(QuantizedKeys),
-}
-
-impl From<Array> for MaybeQuantizedKeys {
-    fn from(value: Array) -> Self {
-        Self::Original(value)
-    }
-}
-
-impl From<QuantizedKeys> for MaybeQuantizedKeys {
-    fn from(value: QuantizedKeys) -> Self {
-        Self::Quantized(value)
-    }
-}
-
-pub enum MaybeQuantizedValues {
-    Original(Array),
-    Quantized(QuantizedValues),
-}
-
-impl From<Array> for MaybeQuantizedValues {
-    fn from(value: Array) -> Self {
-        Self::Original(value)
-    }
-}
-
-impl From<QuantizedValues> for MaybeQuantizedValues {
-    fn from(value: QuantizedValues) -> Self {
-        Self::Quantized(value)
-    }
 }
 
 #[cfg(any(feature = "qwen3_5", feature = "gemma4"))]

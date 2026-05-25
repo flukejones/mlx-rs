@@ -15,9 +15,10 @@ use mlxr::Array;
 
 /// Output of a [`crate::UserInputProcessor::prepare`] call.
 ///
-/// Every modality slot is independent: a VLM with both image and
-/// audio sets `image` and `audio` to `Some`. A text-only request
-/// leaves both `None` and the model takes the text-only path.
+/// `image` is independent of `text`: a VLM sets `image` to `Some` and
+/// a text-only request leaves it `None`. Audio / video are not
+/// represented; no in-tree model consumes them and they were dropped
+/// from the public surface.
 #[derive(Debug)]
 pub struct LMInput {
     /// The tokenised prompt + optional attention mask.
@@ -27,13 +28,6 @@ pub struct LMInput {
     /// for text-only requests or for models that don't accept image
     /// input.
     pub image: Option<ProcessedImage>,
-
-    /// Pre-processed audio features for the audio tower. `None` for
-    /// text-only requests or for models that don't accept audio.
-    pub audio: Option<ProcessedAudio>,
-
-    /// Pre-processed video frames. Reserved; currently always `None`.
-    pub video: Option<ProcessedVideo>,
 }
 
 /// Tokenised text portion of an [`LMInput`]. Same shape as

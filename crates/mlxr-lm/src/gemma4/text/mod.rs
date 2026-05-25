@@ -15,7 +15,7 @@ pub mod weights;
 use crate::nn::switch::{GegluActivation, PackedSwitchFfn};
 
 pub use config::{LayerKind, TextConfig};
-pub use loader::Gemma4LayerCache;
+pub use loader::LayerCache;
 pub use rope::ProportionalRope;
 pub use text::{
     Attention, AttentionInput, AttentionOut, DecoderLayer, Gemma4TextModel, LayerRope, Mlp, Model,

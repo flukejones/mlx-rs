@@ -24,7 +24,7 @@ pub(crate) fn load_full_model(
     env: &ModelConfig,
     model_dir: &Path,
 ) -> Result<(Qwen35Model, VisionModel, Vec<String>), Error> {
-    let mut lm = Qwen35Model::new_dense(env.text_config.clone())?;
+    let mut lm = Qwen35Model::with_mlp(env.text_config.clone())?;
     if let Some(q) = cfg.quantization() {
         quantize_language_model(&mut lm, q)?;
     }

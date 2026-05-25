@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use mlxr::{
-    fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask},
+    fast::scaled_dot_product_attention,
     ops::{
         dequantize,
         indexing::{Ellipsis, IndexOp, TryIndexMutOp},
@@ -16,16 +16,18 @@ use mlxr::{
 
 use crate::attention::{quant_attention_dispatch, QuantAttentionInputs};
 use crate::error::Error;
-use crate::utils::{quantized_scaled_dot_product_attention, QuantizedKeys, QuantizedValues};
+use crate::utils::{
+    create_causal_mask, quantized_scaled_dot_product_attention, QuantizedKeys, QuantizedValues,
+};
 
 use super::fused_quantized_sdpa::{fused_qsdpa_decode, FusedQsdpaInputs};
-use super::io::{parse_meta, parse_meta_or};
+use super::io::{parse_meta, parse_meta_bool_or, parse_meta_or};
 use super::kernels::{
-    cached_fused_qsdpa_kernel, cached_steel_quant_attention_kernel, SUPPORTED_HEAD_DIMS,
+    cached_fused_qsdpa_kernel, cached_quant_attention_kernel, SUPPORTED_HEAD_DIMS,
 };
 use super::kvcache::DEFAULT_KV_CACHE_STEP;
 use super::rotation;
-use super::trait_def::{assert_mask_matches_keys, ceil_step, KeyValueCache};
+use super::trait_def::{assert_mask_matches_keys, ceil_step, resolve_sdpa_mask, KeyValueCache};
 
 /// Perf crossover for the fused qsdpa kernel. Past this, the per-
 /// simdgroup serial K-token processing loses to mlx's tiled
@@ -122,13 +124,23 @@ impl QuantizedKVCache {
         }
     }
 
-    /// Random orthogonal Π applied to K/V pre-quantize for better
-    /// 4-bit quality (KL 0.039 vs 0.20 unrotated on Qwen3-1.7B-bf16).
+    /// Build + install rotation matrix from `(head_dim, seed)`.
+    /// Prefer [`Self::with_rotation_matrix`] when sharing one matrix
+    /// across many layers — `Array` is shared-ptr cheap to clone.
     pub fn with_rotation(mut self, head_dim: i32, seed: u64) -> Result<Self, Error> {
         self.rotation = Some(rotation::generate_rotation_matrix(head_dim, seed)?);
         self.rotation_input_dtype = None;
         self.rotation_out_dtype = None;
         Ok(self)
+    }
+
+    /// Install a pre-built rotation matrix. Caller is responsible for
+    /// shape `[head_dim, head_dim]`.
+    pub fn with_rotation_matrix(mut self, pi: Array) -> Self {
+        self.rotation = Some(pi);
+        self.rotation_input_dtype = None;
+        self.rotation_out_dtype = None;
+        self
     }
 
     /// Get the cached rotation matrix cast to `dtype`, building it on
@@ -194,7 +206,7 @@ impl QuantizedKVCache {
     /// `n_q > 1` prefill with supported head_dim, 4/8-bit quantisation,
     /// and group_size dividing head_dim. Caller mask is dropped; the
     /// kernel applies causal+ql_off internally.
-    fn can_dispatch_steel_quant(&self, n_q: i32, head_dim: i32, h_q: i32, h_kv: i32) -> bool {
+    fn can_dispatch_quant_attention(&self, n_q: i32, head_dim: i32, h_q: i32, h_kv: i32) -> bool {
         self.use_steel_prefill
             && n_q > 1
             && SUPPORTED_HEAD_DIMS.contains(&head_dim)
@@ -315,6 +327,11 @@ impl QuantizedKVCache {
         let step = parse_meta_or(meta, "step", DEFAULT_KV_CACHE_STEP)?;
         let group_size = parse_meta_or(meta, "group_size", 64)?;
         let bits = parse_meta_or(meta, "bits", 8)?;
+        // Default matches `with_config`'s default-on packed-matmul path
+        // (fast path; the dequant fallback is opt-in via `with_dequant_path`).
+        let use_quantized_matmul = parse_meta_bool_or(meta, "use_quantized_matmul", true)?;
+        let use_fused_kernel = parse_meta_bool_or(meta, "use_fused_kernel", false)?;
+        let use_steel_prefill = parse_meta_bool_or(meta, "use_steel_prefill", false)?;
         Ok(Self {
             keys_wq: Some(k_wq),
             keys_scales: Some(k_s),
@@ -330,9 +347,9 @@ impl QuantizedKVCache {
             rotation: None,
             rotation_input_dtype: None,
             rotation_out_dtype: None,
-            use_quantized_matmul: false,
-            use_fused_kernel: false,
-            use_steel_prefill: false,
+            use_quantized_matmul,
+            use_fused_kernel,
+            use_steel_prefill,
         })
     }
 
@@ -481,6 +498,12 @@ impl KeyValueCache for QuantizedKVCache {
         m.insert("step".into(), self.step.to_string());
         m.insert("group_size".into(), self.group_size.to_string());
         m.insert("bits".into(), self.bits.to_string());
+        m.insert(
+            "use_quantized_matmul".into(),
+            self.use_quantized_matmul.to_string(),
+        );
+        m.insert("use_fused_kernel".into(), self.use_fused_kernel.to_string());
+        m.insert("use_steel_prefill".into(), self.use_steel_prefill.to_string());
         if let Some(dt) = self.dtype {
             m.insert("dtype".into(), format!("{dt:?}"));
         }
@@ -514,12 +537,13 @@ impl KeyValueCache for QuantizedKVCache {
         if !self.use_quantized_matmul {
             let (k_full, v_full) = self.update_and_fetch(keys, values)?;
             assert_mask_matches_keys(mask, &k_full);
+            let n_q = queries.shape()[queries.shape().len() - 2];
             return Ok(scaled_dot_product_attention(
                 queries,
                 k_full,
                 v_full,
                 scale,
-                mask.map(ScaledDotProductAttentionMask::Array),
+                resolve_sdpa_mask(mask, n_q),
                 None,
             )?);
         }
@@ -541,12 +565,12 @@ impl KeyValueCache for QuantizedKVCache {
         let h_kv = k_wq.shape()[1];
         let n_k_cache = k_wq.shape()[2];
 
-        let steel_quant_supported = self.can_dispatch_steel_quant(n_q, head_dim, h_q, h_kv);
+        let quant_attention_supported = self.can_dispatch_quant_attention(n_q, head_dim, h_q, h_kv);
         let fused_supported = self.can_dispatch_fused(n_q, head_dim, h_q, h_kv, n_k_cache);
 
-        let out = if steel_quant_supported {
+        let out = if quant_attention_supported {
             quant_attention_dispatch(
-                cached_steel_quant_attention_kernel(),
+                cached_quant_attention_kernel(),
                 QuantAttentionInputs {
                     q: queries_for_sdpa,
                     k_wq: &k_wq,
@@ -597,12 +621,20 @@ impl KeyValueCache for QuantizedKVCache {
                 scales: v_s,
                 biases: v_b,
             };
+            // None + prefill is causal — `quantized_scaled_dot_product_attention`
+            // applies the mask explicitly, so we must materialise one here.
+            let causal_owned = if mask.is_none() && n_q > 1 {
+                Some(create_causal_mask(n_q, Some(ql_off), None, None)?)
+            } else {
+                None
+            };
+            let effective_mask = mask.or(causal_owned.as_ref());
             quantized_scaled_dot_product_attention(
                 queries_for_sdpa,
                 q_keys,
                 q_values,
                 scale,
-                mask,
+                effective_mask,
                 self.group_size,
                 self.bits,
             )?

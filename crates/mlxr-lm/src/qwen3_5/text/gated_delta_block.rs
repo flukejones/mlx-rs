@@ -21,7 +21,7 @@ use mlxr::{
     macros::{ModuleParameters, Quantizable},
     module::{Module, Param},
     ops::{
-        concatenate_axis, expand_dims, indexing::take_axis, ones, r#where, reshape, split_sections,
+        concatenate_axis, expand_dims, indexing::IndexOp, ones, r#where, reshape, split_sections,
         zeros,
     },
     quantization::MaybeQuantized,
@@ -276,20 +276,31 @@ impl GatedDeltaNet {
 
         // Concatenate the cached conv history with the new tokens. The history
         // is the last `conv_kernel_size - 1` tokens of the prior conv_input.
+        // `conv_state_owned` holds the zero-fill when no cache exists; the
+        // borrow goes through `conv_state_ref` so cached histories pass to
+        // `concatenate_axis` by reference (no per-step FFI refcount bump).
         let history_len = self.conv_kernel_size - 1;
-        let conv_state = match cache.as_ref().and_then(|c| c.conv_state.as_ref()) {
-            Some(cs) if cs.shape() == [b, history_len, self.conv_dim] => cs.clone(),
-            _ => zeros::<f32>(&[b, history_len, self.conv_dim])?.as_dtype(mixed_qkv.dtype())?,
+        let conv_state_owned;
+        let conv_state_ref: &Array = match cache.as_ref().and_then(|c| c.conv_state.as_ref()) {
+            Some(cs) if cs.shape() == [b, history_len, self.conv_dim] => cs,
+            _ => {
+                conv_state_owned =
+                    zeros::<f32>(&[b, history_len, self.conv_dim])?.as_dtype(mixed_qkv.dtype())?;
+                &conv_state_owned
+            }
         };
-        let conv_input = concatenate_axis(&[conv_state, mixed_qkv], 1)?;
+        let conv_input = concatenate_axis(&[conv_state_ref, &mixed_qkv], 1)?;
 
         let conv_out = self.conv1d.forward(&conv_input)?;
         let conv_out = layers::silu(conv_out)?;
 
-        // Persist the new conv history tail.
+        // Persist the new conv history tail. Range-index on axis 1
+        // avoids the per-step `Vec<i32> + Array::from_slice` round-trip
+        // that `take_axis` requires.
         if let Some(cache) = cache.as_deref_mut() {
             let total_len = history_len + s;
-            let new_history = take_tail_axis(&conv_input, 1, history_len, total_len)?;
+            let start = total_len - history_len;
+            let new_history = conv_input.index((.., start..total_len, ..));
             cache.conv_state = Some(new_history);
         }
 
@@ -386,19 +397,6 @@ impl GatedDeltaNet {
         self.in_proj_a.training_mode(mode);
         self.out_proj.training_mode(mode);
     }
-}
-
-/// Slice `x[:, start:stop]` along `axis`. Returns the same rank.
-fn take_tail_axis(
-    x: &Array,
-    axis: i32,
-    slice_len: i32,
-    total_len: i32,
-) -> Result<Array, Exception> {
-    let start = total_len - slice_len;
-    let idx: Vec<i32> = (start..total_len).collect();
-    let idx_arr = Array::from_slice(&idx, &[idx.len() as i32]);
-    take_axis(x, &idx_arr, axis)
 }
 
 /// Build a depthwise Conv1d with weight shape `[conv_dim, kernel_size, 1]`

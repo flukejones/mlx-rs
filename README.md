@@ -46,8 +46,9 @@ generate(&mut ctx, input, GenerateParams::default(), &mut |_id, delta| {
 ```
 
 See [examples/chat/](examples/chat/) for a REPL + OpenAI-compatible
-HTTP server, [examples/lm/](examples/lm/) for KV-cache variant demos,
-[examples/mnist/](examples/mnist/) for a minimal training example.
+HTTP server, [examples/generate/](examples/generate/) for one-shot
+completion, [examples/mnist/](examples/mnist/) for a minimal training
+example.
 
 ## Features
 

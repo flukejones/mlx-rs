@@ -100,7 +100,7 @@ impl Optimizer for AdamW {
         key: &Rc<str>,
         gradient: &Array,
         parameter: &mut Array,
-    ) -> Result<(), crate::error::Exception> {
+    ) -> crate::error::Result<()> {
         let betas = &self.betas;
         let state = get_mut_or_insert_with(&mut self.state, key, || (array!(0.0), array!(0.0)));
 

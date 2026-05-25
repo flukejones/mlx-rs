@@ -11,21 +11,27 @@ use std::path::Path;
 
 use mlxr::{ops::indexing::IndexOp, Array};
 
+use crate::cache::{build_rotation, CacheOptions};
 use crate::config::ModelConfig as Config;
 use crate::error::Error;
 use crate::family::LoadedContext;
 use crate::language_model::{LanguageModel, TextOnlyProcessor};
 use crate::lm_input::{LMInput, LMOutput, PrepareResult};
-use crate::qwen3_5::text::cache::{make_caches, LayerCache};
+use crate::qwen3_5::text::cache::{make_caches_with_rotation, LayerCache};
 use crate::qwen3_5::text::config::ModelConfig;
 use crate::qwen3_5::text::layer::Qwen35Model;
 use crate::qwen3_5::text::text::Mlp;
 use crate::qwen3_5::text::weights::load_language_model;
+use crate::qwen3_5::text::{leftover_keys_error, load_common};
 
 pub(crate) struct Qwen35DenseAdapter {
     pub(crate) model: Qwen35Model<Mlp>,
     pub(crate) cfg: ModelConfig,
     pub(crate) cache: Vec<LayerCache>,
+    pub(crate) cache_options: CacheOptions,
+    /// TurboQuant Π, built once per `set_cache_options` and shared
+    /// across all full-attn slots via `make_caches_with_rotation`.
+    rotation: Option<Array>,
     /// Cumulative position (prompt tokens + decoded tokens). Only
     /// used by the multimodal `step` path to compute mrope `[3,1,1]`
     /// position ids; pure text never reads it.
@@ -37,17 +43,21 @@ pub(crate) struct Qwen35DenseAdapter {
 }
 
 impl Qwen35DenseAdapter {
-    pub(crate) fn new(model: Qwen35Model<Mlp>, cfg: ModelConfig) -> Self {
-        let cache = make_caches(&cfg);
+    pub(crate) fn new(model: Qwen35Model<Mlp>, cfg: ModelConfig) -> Result<Self, Error> {
+        let cache_options = CacheOptions::default();
+        let rotation = build_rotation(cache_options, cfg.text_config.head_dim)?;
+        let cache = make_caches_with_rotation(&cfg, cache_options, rotation.as_ref());
         let vocab_size = cfg.text_config.vocab_size;
-        Self {
+        Ok(Self {
             model,
             cfg,
             cache,
+            cache_options,
+            rotation,
             cursor: 0,
             rope_delta: None,
             vocab_size,
-        }
+        })
     }
 
     /// Multimodal prefill seed: pre-stitched embeddings + mrope
@@ -74,15 +84,13 @@ impl Qwen35DenseAdapter {
 
 impl LanguageModel for Qwen35DenseAdapter {
     fn reset(&mut self) {
-        self.cache = make_caches(&self.cfg);
+        self.cache =
+            make_caches_with_rotation(&self.cfg, self.cache_options, self.rotation.as_ref());
         self.cursor = 0;
         self.rope_delta = None;
     }
 
     fn prepare(&mut self, input: LMInput) -> Result<PrepareResult, Error> {
-        debug_assert!(input.audio.is_none());
-        debug_assert!(input.video.is_none());
-
         // Dense text-only path; the VLM wrapper handles `input.image`
         // before delegating to `prefill_embeds`.
         debug_assert!(input.image.is_none());
@@ -124,6 +132,26 @@ impl LanguageModel for Qwen35DenseAdapter {
     fn vocab_size(&self) -> i32 {
         self.vocab_size
     }
+
+    fn prefill_chunk_size(&self) -> Option<i32> {
+        // Qwen3.5 caches are unbounded; user cap wins.
+        self.cache_options.max_prefill_chunk
+    }
+
+    fn prefill_chunk(&mut self, tokens: &Array) -> Result<(), Error> {
+        let _ = self
+            .model
+            .forward(Some(tokens), None, &mut self.cache, None)?;
+        Ok(())
+    }
+
+    fn set_cache_options(&mut self, options: CacheOptions) -> Result<(), Error> {
+        let rotation = build_rotation(options, self.cfg.text_config.head_dim)?;
+        self.cache = make_caches_with_rotation(&self.cfg, options, rotation.as_ref());
+        self.rotation = rotation;
+        self.cache_options = options;
+        Ok(())
+    }
 }
 
 /// Load a qwen3_5 dense (text-only) checkpoint. Caller is the
@@ -135,14 +163,12 @@ pub(crate) fn load_context_dense(
     env: &ModelConfig,
     dir: &Path,
 ) -> Result<LoadedContext, Error> {
-    let (tokenizer, chat_template, eos_ids) = crate::qwen3_5::text::load_common(env, dir)?;
+    let (tokenizer, chat_template, eos_ids) = load_common(env, dir)?;
     let (model, leftover) = load_language_model(cfg, env, dir)?;
     if !leftover.is_empty() {
-        return Err(crate::qwen3_5::text::leftover_keys_error(
-            "dense", &leftover,
-        ));
+        return Err(leftover_keys_error("dense", &leftover));
     }
-    let dense = Qwen35DenseAdapter::new(model, env.clone());
+    let dense = Qwen35DenseAdapter::new(model, env.clone())?;
     let processor = TextOnlyProcessor::new("qwen3_5", tokenizer, chat_template);
     Ok((Box::new(dense), Box::new(processor), eos_ids))
 }

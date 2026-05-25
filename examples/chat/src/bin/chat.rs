@@ -7,11 +7,12 @@
 use std::io::Write;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use argh::FromArgs;
 use chat::think_stream::ThinkStream;
+use mlxr_lm::cache::{CacheKind, CacheOptions};
 use mlxr_lm::chat_template::ChatMessage;
 use mlxr_lm::{generate, load, GenerateParams, ModelContext, Sampler, UserInput};
 use rustyline::error::ReadlineError;
@@ -45,6 +46,23 @@ struct Args {
     /// thinking mode: on | off | default (template's `enable_thinking`)
     #[argh(option, default = "ThinkMode::Default", from_str_fn(parse_think_mode))]
     think: ThinkMode,
+
+    /// KV cache backing: standard | q8 | q4 (default standard)
+    #[argh(
+        option,
+        long = "kv-cache",
+        default = "KvCacheArg::Dense",
+        from_str_fn(parse_kv_cache)
+    )]
+    kv_cache: KvCacheArg,
+
+    /// turboquant Π rotation (quantised cache only). Ignored unless --kv-cache is q4/q8.
+    #[argh(switch, long = "turbo-quant")]
+    turbo_quant: bool,
+
+    /// max tokens per prefill chunk (default 2048). 0 disables chunking.
+    #[argh(option, long = "prefill-chunk-size")]
+    prefill_chunk_size: Option<i32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -63,12 +81,73 @@ fn parse_think_mode(s: &str) -> std::result::Result<ThinkMode, String> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KvCacheArg {
+    Dense,
+    Q8,
+    Q4,
+}
+
+fn parse_kv_cache(s: &str) -> std::result::Result<KvCacheArg, String> {
+    match s {
+        "standard" | "std" | "dense" => Ok(KvCacheArg::Dense),
+        "q8" | "quantized-q8" => Ok(KvCacheArg::Q8),
+        "q4" | "quantized-q4" => Ok(KvCacheArg::Q4),
+        other => Err(format!("--kv-cache: expected standard|q8|q4, got {other}")),
+    }
+}
+
+impl KvCacheArg {
+    fn to_options(
+        self,
+        turbo_quant_seed: Option<u64>,
+        max_prefill_chunk: Option<i32>,
+    ) -> CacheOptions {
+        let base = match self {
+            Self::Dense => CacheOptions::default(),
+            Self::Q8 => CacheOptions {
+                kind: CacheKind::quantized_q8(),
+                turbo_quant_seed,
+                ..CacheOptions::default()
+            },
+            Self::Q4 => CacheOptions {
+                kind: CacheKind::quantized_q4(),
+                turbo_quant_seed,
+                ..CacheOptions::default()
+            },
+        };
+        CacheOptions {
+            max_prefill_chunk,
+            ..base
+        }
+    }
+}
+
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let args: Args = argh::from_env();
 
     eprintln!("[loading {}]", args.model.display());
     let mut ctx = load(&args.model).context("load model")?;
+    let turbo_quant_seed = args.turbo_quant.then(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before UNIX_EPOCH")
+            .as_nanos() as u64
+    });
+    // 0 → disable chunking. Otherwise the user-provided value (or
+    // `CacheOptions::default()`'s 2048 fallback) is used.
+    let max_prefill_chunk = match args.prefill_chunk_size {
+        Some(0) => None,
+        Some(n) => Some(n),
+        None => CacheOptions::default().max_prefill_chunk,
+    };
+    ctx.model
+        .set_cache_options(
+            args.kv_cache
+                .to_options(turbo_quant_seed, max_prefill_chunk),
+        )
+        .context("set kv-cache options")?;
 
     let mut history: Vec<ChatMessage> = Vec::new();
     let mut editor = DefaultEditor::new().context("rustyline init")?;

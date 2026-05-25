@@ -16,20 +16,19 @@
 //! - `mtp.*` keys are routed to the `MtpHead` parameter walk (when
 //!   the model was constructed with `mtp_num_hidden_layers > 0`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use mlxr::{
     module::ModuleParameters, ops::move_axis, quantization::Quantizable as _,
     transforms::eval_params, Array, Dtype,
 };
-use serde::Deserialize;
 
 pub use super::config::ModelConfig;
 pub use super::layer::Qwen35Model;
 use crate::config::ModelConfig as Config;
 use crate::error::Error;
-use crate::loader::apply_post_load_memory_policy;
+use crate::loader::{apply_post_load_memory_policy, list_shards, rewrite_quantised_keys};
 use crate::quantization::QuantizationConfig;
 
 const NORM_SUFFIXES: &[&str] = &[
@@ -42,12 +41,6 @@ const NORM_SUFFIXES: &[&str] = &[
     "mtp.pre_fc_norm_embedding.weight",
     "mtp.norm.weight",
 ];
-
-/// `model.safetensors.index.json` schema.
-#[derive(Debug, Deserialize)]
-struct WeightIndex {
-    weight_map: HashMap<String, String>,
-}
 
 /// Returns `true` if the safetensors file's header metadata advertises
 /// `format == "mlx"`. mlx-format checkpoints already have the
@@ -185,8 +178,7 @@ pub(crate) fn load_sanitized_weights(
     let model_dir = model_dir.as_ref();
     let shards = list_shards(model_dir)?;
     let mut raw: HashMap<String, Array> = HashMap::new();
-    for shard in shards {
-        let path = model_dir.join(shard);
+    for path in shards {
         let is_mlx_format = safetensors_is_mlx_format(&path)?;
         let loaded = Array::load_safetensors(&path).map_err(Error::LoadWeights)?;
         for (k, v) in loaded {
@@ -196,61 +188,25 @@ pub(crate) fn load_sanitized_weights(
         }
     }
 
-    // Build the set of prefixes whose tensor is quantised (i.e. there's a
-    // matching `*.scales` companion). Each such `<prefix>.weight` is then
-    // remapped to `<prefix>.inner.weight` so it lines up with the Rust
-    // QuantizedLinear's param path.
-    let quantised_prefixes: HashSet<String> = raw
-        .keys()
-        .filter_map(|k| k.strip_suffix(".scales").map(|p| p.to_owned()))
+    // Checkpoint-vs-Rust parameter-walk naming alignment for the GDN
+    // block:
+    //  - `norm` submodule stores its scale as `norm.weight`; Rust
+    //    collapses it into a single `norm_weight` Param.
+    //  - `A_log` scalar parameter follows Rust's lowercase convention
+    //    as `a_log`.
+    let raw: HashMap<String, Array> = raw
+        .into_iter()
+        .map(|(mut k, v)| {
+            k = k.replace(".linear_attn.norm.weight", ".linear_attn.norm_weight");
+            k = k.replace(".linear_attn.A_log", ".linear_attn.a_log");
+            (k, v)
+        })
         .collect();
 
-    let mut out: HashMap<String, Array> = HashMap::with_capacity(raw.len());
-    for (mut k, v) in raw {
-        // Checkpoint-vs-Rust parameter-walk naming alignment:
-        //
-        //  - the GDN `norm` submodule stores its scale as `norm.weight` —
-        //    Rust collapses it into a single `norm_weight` Param.
-        //  - the GDN `A_log` scalar parameter follows Rust's lowercase
-        //    convention as `a_log`.
-        k = k.replace(".linear_attn.norm.weight", ".linear_attn.norm_weight");
-        k = k.replace(".linear_attn.A_log", ".linear_attn.a_log");
-
-        // For quantised linears, rewrite the underlying weight slot so it
-        // matches the `MaybeQuantized::Quantized(QuantizedLinear { inner })`
-        // shape that `parameters_mut().flatten()` exposes.
-        if let Some(prefix) = k.strip_suffix(".weight") {
-            if quantised_prefixes.contains(prefix) {
-                k = format!("{prefix}.inner.weight");
-            }
-        }
-
-        out.insert(k, v);
-    }
-    Ok(out)
-}
-
-fn list_shards(model_dir: &Path) -> Result<Vec<String>, Error> {
-    let single = model_dir.join("model.safetensors");
-    if single.is_file() {
-        return Ok(vec!["model.safetensors".to_owned()]);
-    }
-    let index_path = model_dir.join("model.safetensors.index.json");
-    if !index_path.is_file() {
-        return Err(Error::Other(
-            format!(
-                "weights: neither model.safetensors nor model.safetensors.index.json present in {}",
-                model_dir.display()
-            )
-            .into(),
-        ));
-    }
-    let f = std::fs::File::open(index_path)?;
-    let index: WeightIndex = serde_json::from_reader(f)?;
-    let unique: HashSet<&String> = index.weight_map.values().collect();
-    let mut shards: Vec<String> = unique.into_iter().cloned().collect();
-    shards.sort();
-    Ok(shards)
+    // Rewrite `<prefix>.weight` → `<prefix>.inner.weight` for keys with
+    // a `.scales` sibling so they align with the
+    // `MaybeQuantized::Quantized(QuantizedLinear { inner })` param path.
+    Ok(rewrite_quantised_keys(raw))
 }
 
 /// Load weights into a Rust [`Qwen35Model`] only. Vision-tower keys are
@@ -265,7 +221,7 @@ pub(crate) fn load_language_model(
     env: &ModelConfig,
     model_dir: &Path,
 ) -> Result<(Qwen35Model, Vec<String>), Error> {
-    let mut model = Qwen35Model::new_dense(env.text_config.clone())?;
+    let mut model = Qwen35Model::with_mlp(env.text_config.clone())?;
     if let Some(q) = cfg.quantization() {
         quantize_language_model(&mut model, q)?;
     }
@@ -299,7 +255,7 @@ pub(crate) fn quantize_language_model(
     model: &mut Qwen35Model,
     q: &QuantizationConfig,
 ) -> Result<(), Error> {
-    let original = std::mem::replace(model, Qwen35Model::new_dense(model.cfg.clone())?);
+    let original = std::mem::replace(model, Qwen35Model::with_mlp(model.cfg.clone())?);
     let quantized = original
         .try_into_quantized(q.group_size, q.bits)
         .map_err(Error::Exception)?;
@@ -390,7 +346,7 @@ mod tests {
             }
         }"#;
         let cfg: ModelConfig = serde_json::from_str(cfg_json).unwrap();
-        let mut model = Qwen35Model::new_dense(cfg.text_config.clone()).unwrap();
+        let mut model = Qwen35Model::with_mlp(cfg.text_config.clone()).unwrap();
         // Quantize like the chandra checkpoint would.
         let q = QuantizationConfig {
             group_size: 64,
@@ -410,6 +366,7 @@ mod tests {
     #[test]
     #[ignore = "requires local model files at ~/MLXModels/chandra2/chandra-ocr-2-mlx-q8"]
     fn text_only_prefill_runs_on_loaded_chandra_q8() {
+        use crate::cache::CacheOptions;
         use crate::qwen3_5::text::cache::make_caches;
         use mlxr::transforms::eval;
         use tokenizers::Tokenizer;
@@ -426,7 +383,7 @@ mod tests {
         let s = ids.len() as i32;
         let inputs = Array::from_slice(&ids, &[1, s]);
 
-        let mut caches = make_caches(env);
+        let mut caches = make_caches(env, CacheOptions::default()).unwrap();
         let logits = model
             .forward(Some(&inputs), None, &mut caches, None)
             .expect("forward");

@@ -54,11 +54,7 @@ impl Quantizable for Embedding {
 
     type QuantizationError = Exception;
 
-    fn try_into_quantized(
-        self,
-        group_size: i32,
-        bits: i32,
-    ) -> Result<Self::Quantized> {
+    fn try_into_quantized(self, group_size: i32, bits: i32) -> Result<Self::Quantized> {
         QuantizedEmbedding::try_from_embedding(self, group_size, bits)
     }
 }

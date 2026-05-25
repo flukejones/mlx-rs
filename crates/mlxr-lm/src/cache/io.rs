@@ -9,6 +9,7 @@ use crate::error::Error;
 
 use super::kvcache::KVCache;
 use super::quantized_kvcache::QuantizedKVCache;
+use super::rotating_kvcache::RotatingKVCache;
 use super::trait_def::KeyValueCache;
 
 pub(super) fn parse_meta(meta: &HashMap<String, String>, key: &str) -> Result<i32, Error> {
@@ -25,6 +26,18 @@ pub(super) fn parse_meta_or(
 ) -> Result<i32, Error> {
     meta.get(key)
         .map(|s| s.parse::<i32>())
+        .transpose()
+        .map_err(|e| Error::Other(format!("meta {key:?} parse: {e}").into()))
+        .map(|v| v.unwrap_or(default))
+}
+
+pub(super) fn parse_meta_bool_or(
+    meta: &HashMap<String, String>,
+    key: &str,
+    default: bool,
+) -> Result<bool, Error> {
+    meta.get(key)
+        .map(|s| s.parse::<bool>())
         .transpose()
         .map_err(|e| Error::Other(format!("meta {key:?} parse: {e}").into()))
         .map(|v| v.unwrap_or(default))
@@ -103,10 +116,9 @@ pub fn save_prompt_cache<C: KeyValueCache>(
 /// variant to recover the original cache type.
 #[derive(Debug)]
 pub enum LoadedCache {
-    /// `class_name == "KVCache"`.
     Plain(KVCache),
-    /// `class_name == "QuantizedKVCache"`.
     Quantized(QuantizedKVCache),
+    Rotating(RotatingKVCache),
 }
 
 impl LoadedCache {
@@ -115,6 +127,7 @@ impl LoadedCache {
         match self {
             Self::Plain(_) => "KVCache",
             Self::Quantized(_) => "QuantizedKVCache",
+            Self::Rotating(_) => "RotatingKVCache",
         }
     }
 }
@@ -166,6 +179,9 @@ pub fn load_prompt_cache(
             "QuantizedKVCache" => {
                 LoadedCache::Quantized(QuantizedKVCache::from_state(state, &layer_meta)?)
             }
+            "RotatingKVCache" => {
+                LoadedCache::Rotating(RotatingKVCache::from_state(state, &layer_meta)?)
+            }
             other => {
                 return Err(Error::Other(
                     format!("unsupported prompt-cache class {other}").into(),
@@ -182,7 +198,7 @@ pub fn load_prompt_cache(
 /// [`KeyValueCache::state`] returns them in.
 fn state_slot_names(class_name: &str) -> &'static [&'static str] {
     match class_name {
-        "KVCache" => &["keys", "values"],
+        "KVCache" | "RotatingKVCache" => &["keys", "values"],
         "QuantizedKVCache" => &[
             "keys_wq",
             "keys_scales",

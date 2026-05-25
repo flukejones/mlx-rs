@@ -724,7 +724,7 @@ mod tests {
 
     use crate::{
         array,
-        ops::{eye, indexing::IndexOp, tril, triu},
+        ops::{expand_dims, eye, indexing::IndexOp, tril, triu},
         StreamOrDevice,
     };
 
@@ -978,8 +978,6 @@ mod tests {
 
     #[test]
     fn test_eig() {
-        use crate::ops::expand_dims;
-
         // Helper to check eigenvalues and eigenvectors
         fn check_eigs_and_vecs(a: &Array) {
             let (eig_vals, eig_vecs) = eig_device(a, StreamOrDevice::cpu()).unwrap();

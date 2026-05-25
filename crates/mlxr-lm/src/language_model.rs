@@ -13,9 +13,12 @@
 //! and the parsed config, and the top-level [`crate::generate`]
 //! drives them.
 
+use crate::cache::CacheOptions;
+use crate::chat_template::ChatTemplate;
 use crate::error::Error;
 use crate::lm_input::{LMInput, LMOutput, PrepareResult, Text};
-use crate::user_input::UserInput;
+use crate::sampler::SamplerState;
+use crate::user_input::{Prompt, UserInput};
 
 /// Turn a [`UserInput`] into an [`LMInput`].
 ///
@@ -132,17 +135,16 @@ pub trait LanguageModel: Send {
     /// calling can treat `None` as unreachable (defence-in-depth
     /// against `has_mtp()` returning a stale value).
     ///
-    /// Sampling: `sampler` is the same [`crate::sampler::SamplerState`]
-    /// the non-MTP loop uses for this `generate()` call. At
-    /// `temperature == 0.0` the adapter takes the greedy fast path
-    /// (argmax + accept-if-equal); at `temperature > 0` it runs
-    /// Leviathan-2023 rejection sampling against the verify
-    /// distribution so the output distribution matches what the
-    /// non-MTP path would have produced.
+    /// Sampling: `sampler` is the same [`SamplerState`] the non-MTP
+    /// loop uses for this `generate()` call. At `temperature == 0.0`
+    /// the adapter takes the greedy fast path (argmax + accept-if-equal);
+    /// at `temperature > 0` it runs Leviathan-2023 rejection sampling
+    /// against the verify distribution so the output distribution
+    /// matches what the non-MTP path would have produced.
     fn try_mtp_decode(
         &mut self,
         _last_token: &mlxr::Array,
-        _sampler: &mut crate::sampler::SamplerState,
+        _sampler: &mut SamplerState,
     ) -> Result<Option<(Vec<u32>, mlxr::Array)>, Error> {
         Ok(None)
     }
@@ -152,6 +154,12 @@ pub trait LanguageModel: Send {
     /// own supported range; models without an MTP head ignore the
     /// call. Default is a no-op.
     fn set_mtp_depth(&mut self, _n: u32) {}
+
+    /// Pick the KV-cache backing. Rebuilds the per-layer cache vec.
+    /// Call after `load`, before first turn. Default no-op.
+    fn set_cache_options(&mut self, _options: CacheOptions) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 /// Convenience for text-only models: a processor that does nothing
@@ -163,7 +171,7 @@ pub trait LanguageModel: Send {
 pub struct TextOnlyProcessor {
     family: &'static str,
     tokenizer: tokenizers::Tokenizer,
-    chat_template: crate::chat_template::ChatTemplate,
+    chat_template: ChatTemplate,
 }
 
 impl TextOnlyProcessor {
@@ -171,7 +179,7 @@ impl TextOnlyProcessor {
     pub fn new(
         family: &'static str,
         tokenizer: tokenizers::Tokenizer,
-        chat_template: crate::chat_template::ChatTemplate,
+        chat_template: ChatTemplate,
     ) -> Self {
         Self {
             family,
@@ -194,25 +202,11 @@ impl UserInputProcessor for TextOnlyProcessor {
                 modality: "image",
             });
         }
-        if !input.audios.is_empty() {
-            return Err(Error::ModalityUnsupported {
-                family: self.family,
-                modality: "audio",
-            });
-        }
-        if !input.videos.is_empty() {
-            return Err(Error::ModalityUnsupported {
-                family: self.family,
-                modality: "video",
-            });
-        }
 
         let template_kwargs = input.template_kwargs;
         let rendered = match input.prompt {
-            crate::user_input::Prompt::Text(s) => s,
-            crate::user_input::Prompt::Chat(msgs) => {
-                self.chat_template.render(&msgs, true, &template_kwargs)?
-            }
+            Prompt::Text(s) => s,
+            Prompt::Chat(msgs) => self.chat_template.render(&msgs, true, &template_kwargs)?,
         };
 
         let enc = self
@@ -225,8 +219,6 @@ impl UserInputProcessor for TextOnlyProcessor {
         Ok(LMInput {
             text: Text { tokens, mask: None },
             image: None,
-            audio: None,
-            video: None,
         })
     }
 
@@ -244,7 +236,7 @@ mod tests {
 
     use super::*;
     use crate::chat_template::{ChatMessage, ChatTemplate};
-    use crate::user_input::{Audio, UserInput};
+    use crate::user_input::UserInput;
 
     fn dummy_processor() -> TextOnlyProcessor {
         // Minimal tokenizer + template — exercises the reject paths
@@ -263,40 +255,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_audio() {
-        let mut p = dummy_processor();
-        let input = UserInput {
-            prompt: crate::user_input::Prompt::Text("hi".into()),
-            #[cfg(feature = "image")]
-            images: Vec::new(),
-            audios: vec![Audio::Pcm {
-                samples: vec![0.0],
-                sample_rate: 16_000,
-            }],
-            videos: Vec::new(),
-            template_kwargs: HashMap::new(),
-        };
-        let err = p.prepare(input).unwrap_err();
-        assert!(matches!(
-            err,
-            Error::ModalityUnsupported {
-                modality: "audio",
-                ..
-            }
-        ));
-    }
-
-    #[test]
     #[cfg(feature = "image")]
     fn rejects_image() {
         use crate::user_input::Image;
         use image::DynamicImage;
         let mut p = dummy_processor();
         let input = UserInput {
-            prompt: crate::user_input::Prompt::Text("hi".into()),
+            prompt: Prompt::Text("hi".into()),
             images: vec![Image::Decoded(DynamicImage::new_rgb8(1, 1))],
-            audios: Vec::new(),
-            videos: Vec::new(),
             template_kwargs: HashMap::new(),
         };
         let err = p.prepare(input).unwrap_err();
@@ -315,8 +281,6 @@ mod tests {
         let input = UserInput::text("hello world");
         let lm = p.prepare(input).unwrap();
         assert!(lm.image.is_none());
-        assert!(lm.audio.is_none());
-        assert!(lm.video.is_none());
         let shape = lm.text.tokens.shape();
         assert_eq!(shape[0], 1, "batch dim should be 1");
         assert!(shape[1] >= 1, "tokenized to nothing: shape={shape:?}");

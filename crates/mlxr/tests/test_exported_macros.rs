@@ -7,8 +7,10 @@
 #![allow(clippy::print_stdout, reason = "test code")]
 #![allow(clippy::print_stderr, reason = "test code")]
 
+#[cfg(feature = "fft")]
+use mlxr::complex64;
 use mlxr::{
-    array, complex64,
+    array,
     error::Exception,
     ops::{arange, reshape},
     Array, Dtype, StreamOrDevice,
@@ -122,6 +124,7 @@ fn test_ops_factory_arange() {
 
 // Test functions defined in `mlxr::fft` module.
 
+#[cfg(feature = "fft")]
 #[test]
 fn test_fft_fft() {
     const FFT_EXPECTED: &[complex64; 4] = &[

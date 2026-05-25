@@ -47,16 +47,17 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "compile_overhead"
 harness = false
 
+# mlxr is inference-oriented by default: only the surfaces `mlxr-lm`
+# consumes are on. Training-only features (`losses`, `optimizers`) and
+# signal-processing (`fft`) opt-in explicitly — `examples/mnist`
+# enables them at the consumer.
 [features]
 default = [
     "accelerate",
     "metal",
     "layers",
-    "fft",
     "linalg",
     "fast",
-    "losses",
-    "optimizers",
 ]
 
 # Backend toggles forwarded to mlxr-sys.

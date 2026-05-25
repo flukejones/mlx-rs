@@ -13,6 +13,10 @@ use crate::utils::rope::FloatOrString;
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelConfig {
     pub text_config: TextConfig,
+    /// Optional explicit EOS token(s). May be a single id or a list.
+    /// Read once at load by [`crate::family::read_eos_ids`].
+    #[serde(default)]
+    pub eos_token_id: Option<crate::family::EosSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

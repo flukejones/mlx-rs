@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::plan::Rewriter;
 use crate::quantize::{classify_and_quantize, OutTensor};
 use crate::shards::{write_index, write_shards};
-use crate::{Error, Result};
+use crate::{anyhow, Result};
 
 /// User-visible conversion knobs.
 pub struct ConvertOptions {
@@ -121,10 +121,7 @@ fn list_source_shards(src: &Path) -> Result<Vec<PathBuf>> {
         .collect();
     out.sort();
     if out.is_empty() {
-        return Err(Error::custom(format!(
-            "no model-*.safetensors found in {}",
-            src.display()
-        )));
+        return Err(anyhow!("no model-*.safetensors found in {}", src.display()));
     }
     Ok(out)
 }
@@ -137,12 +134,9 @@ fn write_converted_config(src: &Path, dst: &Path, bits: i32, group_size: i32) ->
     let src_path = src.join("config.json");
     let text = std::fs::read_to_string(&src_path)?;
     let mut value: Value = serde_json::from_str(&text)?;
-    let obj = value.as_object_mut().ok_or_else(|| {
-        Error::custom(format!(
-            "config.json at {} is not a JSON object",
-            src_path.display()
-        ))
-    })?;
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("config.json at {} is not a JSON object", src_path.display()))?;
 
     let mut quant = serde_json::Map::new();
     quant.insert("group_size".to_owned(), Value::from(group_size));

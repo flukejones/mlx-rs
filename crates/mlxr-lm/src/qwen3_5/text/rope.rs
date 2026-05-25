@@ -37,9 +37,12 @@ pub struct MultimodalRope {
     rotary_dim: i32,
     /// Cached inverse frequencies, shape `[rotary_dim/2]`, dtype float32.
     inv_freq: Array,
-    /// Cached axis-selector built from `mrope_section`. Shape `[rotary_dim/2]`,
-    /// dtype int32, values in `{0, 1, 2}`.
-    axis_index: Array,
+    /// Pre-built `axis_index == 1` mask. Bool `[rotary_dim/2]`.
+    /// Cached so `select_per_axis` doesn't allocate a fresh
+    /// `Array::from_int(1)` + comparison per layer per token.
+    mask_h: Array,
+    /// Pre-built `axis_index == 2` mask. Bool `[rotary_dim/2]`.
+    mask_w: Array,
 }
 
 impl MultimodalRope {
@@ -73,12 +76,17 @@ impl MultimodalRope {
         let scaled = indices.multiply(Array::from_f32(scale))?;
         let inv_freq = Array::from_f32(base).power(&scaled)?.reciprocal()?;
 
+        // Pre-build the bool axis-selector masks once. Avoids per-call
+        // `Array::from_int(1/2)` + comparison inside the layer loop.
         let axis_index = build_axis_index(mrope_section);
+        let mask_h = axis_index.eq(Array::from_int(1))?;
+        let mask_w = axis_index.eq(Array::from_int(2))?;
 
         Ok(Self {
             rotary_dim,
             inv_freq,
-            axis_index,
+            mask_h,
+            mask_w,
         })
     }
 
@@ -150,12 +158,10 @@ impl MultimodalRope {
         let h = parts[1].squeeze_axes(&[0])?;
         let w = parts[2].squeeze_axes(&[0])?;
 
-        // axis_index: [half] -> broadcast against [B, S, half]
-        let mask_h = self.axis_index.eq(Array::from_int(1))?;
-        let mask_w = self.axis_index.eq(Array::from_int(2))?;
-
-        let pick_w = r#where(&mask_w, &w, &t)?;
-        Ok(r#where(&mask_h, &h, &pick_w)?)
+        // axis_index masks are pre-built in `Self::new`; broadcast
+        // `[half]` against `[B, S, half]` inside the `where` op.
+        let pick_w = r#where(&self.mask_w, &w, &t)?;
+        Ok(r#where(&self.mask_h, &h, &pick_w)?)
     }
 }
 
@@ -187,22 +193,25 @@ fn build_axis_index(mrope_section: &[i32]) -> Array {
 ///
 /// Both `q` and `k` have shape `[B, n_heads, S, head_dim]`. The first
 /// `rotary_dim` features of each head are rotated; the remainder are returned
-/// as-is. `cos`/`sin` have shape `[B, S, rotary_dim]` and are unsqueezed on
-/// `axis=1` to broadcast across heads.
+/// as-is.
 ///
-/// Returns `(q_embed, k_embed)` with the original dtype preserved.
+/// `cos`/`sin` MUST already be shaped `[B, 1, S, rotary_dim]` and cast to
+/// `q`'s dtype — both are caller responsibilities. The decoder builds them
+/// once per forward (see `Qwen35Decoder::cos_sin_for_forward` /
+/// `MtpHead::cos_sin_for_run`) and threads the prepared pair into every
+/// layer's `Attention::forward`, so per-layer expand_dims + cast launches
+/// don't recur in the forward.
+///
+/// Returns `(q_embed, k_embed)` with `q`'s dtype preserved.
 pub fn apply_multimodal_rotary_pos_emb(
     q: &Array,
     k: &Array,
     cos: &Array,
     sin: &Array,
 ) -> Result<(Array, Array), Error> {
-    let cos = expand_dims(cos, 1)?;
-    let sin = expand_dims(sin, 1)?;
     let rotary_dim = cos.shape()[3];
-
-    let q_embed = apply_one(q, &cos, &sin, rotary_dim)?;
-    let k_embed = apply_one(k, &cos, &sin, rotary_dim)?;
+    let q_embed = apply_one(q, cos, sin, rotary_dim)?;
+    let k_embed = apply_one(k, cos, sin, rotary_dim)?;
     Ok((q_embed, k_embed))
 }
 
@@ -211,24 +220,23 @@ fn apply_one(x: &Array, cos: &Array, sin: &Array, rotary_dim: i32) -> Result<Arr
         .shape()
         .last()
         .ok_or_else(|| Error::shape("apply_rope: x has no axes"))?;
-    let dtype = x.dtype();
     if rotary_dim == last {
-        let rotated = rotate(x, cos, sin, dtype)?;
-        return Ok(rotated);
+        return rotate(x, cos, sin);
     }
     let parts = split_sections(x, &[rotary_dim], -1)?;
     let x_rot = &parts[0];
     let x_pass = &parts[1];
-    let rotated = rotate(x_rot, cos, sin, dtype)?;
+    let rotated = rotate(x_rot, cos, sin)?;
     Ok(concatenate_axis(&[&rotated, x_pass], -1)?)
 }
 
-fn rotate(x: &Array, cos: &Array, sin: &Array, dtype: Dtype) -> Result<Array, Error> {
-    let x_f32 = x.as_dtype(Dtype::Float32)?;
-    let lhs = x_f32.multiply(cos)?;
-    let rh = rotate_half(&x_f32)?;
+/// `x * cos + rotate_half(x) * sin`. cos/sin must already be cast to
+/// `x`'s dtype by the caller — see [`apply_multimodal_rotary_pos_emb`].
+fn rotate(x: &Array, cos: &Array, sin: &Array) -> Result<Array, Error> {
+    let lhs = x.multiply(cos)?;
+    let rh = rotate_half(x)?;
     let rhs = rh.multiply(sin)?;
-    Ok(lhs.add(&rhs)?.as_dtype(dtype)?)
+    Ok(lhs.add(&rhs)?)
 }
 
 fn rotate_half(x: &Array) -> Result<Array, Error> {
@@ -380,6 +388,11 @@ mod tests {
         let rope = MultimodalRope::new(rotary_dim, 10_000.0, &[2, 1, 1]).unwrap();
         let pos = Array::from_slice(&[0_i32, 1], &[1, 2]);
         let (cos, sin) = rope.cos_sin(&pos).unwrap();
+        // `apply_multimodal_rotary_pos_emb` now expects cos/sin pre-shaped
+        // to `[B, 1, S, rotary_dim]` (production does this once in the
+        // decoder). q is already f32 so no `.as_dtype` cast.
+        let cos = expand_dims(&cos, 1).unwrap();
+        let sin = expand_dims(&sin, 1).unwrap();
 
         // q/k shape [B=1, H=1, S=2, head_dim=10]
         let q_data: Vec<f32> = (0..(2 * head_dim)).map(|v| v as f32 * 0.1).collect();

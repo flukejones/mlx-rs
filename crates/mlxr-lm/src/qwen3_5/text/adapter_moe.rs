@@ -11,14 +11,18 @@ use mlxr::ops::{concatenate_axis, exp, log, maximum, r#where, stack_axis, sum_ax
 use mlxr::random::uniform;
 use mlxr::{argmax_axis, categorical, Array};
 
+use crate::cache::{build_rotation, CacheOptions};
 use crate::config::ModelConfig as Config;
 use crate::error::Error;
 use crate::family::LoadedContext;
 use crate::language_model::{LanguageModel, TextOnlyProcessor};
 use crate::lm_input::{LMInput, LMOutput, PrepareResult};
-use crate::qwen3_5::text::cache::{make_caches, make_mtp_caches, LayerCache};
+use crate::qwen3_5::text::cache::{
+    make_caches_with_rotation, make_mtp_caches_with_rotation, LayerCache,
+};
 use crate::qwen3_5::text::config::ModelConfig;
 use crate::qwen3_5::text::layer::Qwen35Model;
+use crate::qwen3_5::text::load_common;
 use crate::qwen3_5::text::moe::{load_qwen3_5_moe_model, Qwen35MoeBlock};
 use crate::qwen3_5::text::sampling::top_p_keep_mask;
 use crate::sampler::{Sampler, SamplerState};
@@ -40,6 +44,10 @@ pub struct Qwen35MoeAdapter {
     cache: Vec<LayerCache>,
     /// Per-MTP-layer caches. Empty when the checkpoint has no MTP head.
     mtp_cache: Vec<LayerCache>,
+    cache_options: CacheOptions,
+    /// TurboQuant rotation matrix, shared across `cache` and
+    /// `mtp_cache`. `None` for non-quantised or no-seed configs.
+    rotation: Option<Array>,
     /// Post-final-norm hidden at the last decoded position, sliced
     /// to `[B=1, 1, hidden]`. Fed into the MTP head, which applies
     /// its own `pre_fc_norm_hidden` on top. `None` before the first
@@ -55,14 +63,18 @@ pub struct Qwen35MoeAdapter {
 impl Qwen35MoeAdapter {
     pub fn load(cfg: &Config, env: &ModelConfig, dir: &Path) -> Result<Self, Error> {
         let model = load_qwen3_5_moe_model(cfg, env, dir)?;
-        let cache = make_caches(env);
-        let mtp_cache = make_mtp_caches(env);
+        let cache_options = CacheOptions::default();
+        let rotation = build_rotation(cache_options, env.text_config.head_dim)?;
+        let cache = make_caches_with_rotation(env, cache_options, rotation.as_ref());
+        let mtp_cache = make_mtp_caches_with_rotation(env, cache_options, rotation.as_ref());
         let vocab_size = env.text_config.vocab_size;
         Ok(Self {
             model,
             cfg: env.clone(),
             cache,
             mtp_cache,
+            cache_options,
+            rotation,
             prev_hidden: None,
             vocab_size,
             mtp_depth: 1,
@@ -77,15 +89,15 @@ impl Qwen35MoeAdapter {
 
 impl LanguageModel for Qwen35MoeAdapter {
     fn reset(&mut self) {
-        self.cache = make_caches(&self.cfg);
-        self.mtp_cache = make_mtp_caches(&self.cfg);
+        self.cache =
+            make_caches_with_rotation(&self.cfg, self.cache_options, self.rotation.as_ref());
+        self.mtp_cache =
+            make_mtp_caches_with_rotation(&self.cfg, self.cache_options, self.rotation.as_ref());
         self.prev_hidden = None;
     }
 
     fn prepare(&mut self, input: LMInput) -> Result<PrepareResult, Error> {
         debug_assert!(input.image.is_none());
-        debug_assert!(input.audio.is_none());
-        debug_assert!(input.video.is_none());
 
         let tokens = input.text.tokens;
         let (hidden, logits) =
@@ -140,6 +152,36 @@ impl LanguageModel for Qwen35MoeAdapter {
     fn set_mtp_depth(&mut self, n: u32) {
         self.mtp_depth = n.clamp(1, MAX_MTP_DEPTH);
     }
+
+    fn prefill_chunk_size(&self) -> Option<i32> {
+        // Qwen3.5 caches are unbounded; user cap wins.
+        self.cache_options.max_prefill_chunk
+    }
+
+    fn prefill_chunk(&mut self, tokens: &Array) -> Result<(), Error> {
+        // MoE prefill chunks must also advance the MTP cache —
+        // otherwise speculative decode after the final chunk sees
+        // out-of-sync RoPE positions.
+        let (hidden, _logits) =
+            self.model
+                .forward_hidden_and_logits(Some(tokens), None, &mut self.cache, None)?;
+        prime_mtp_cache(&mut self.model, tokens, &hidden, &mut self.mtp_cache)?;
+        // Track `prev_hidden` so the final `prepare` chunk's MTP step
+        // has the right anchor.
+        self.prev_hidden = Some(hidden.index((.., -1..)));
+        Ok(())
+    }
+
+    fn set_cache_options(&mut self, options: CacheOptions) -> Result<(), Error> {
+        let rotation = build_rotation(options, self.cfg.text_config.head_dim)?;
+        let cache = make_caches_with_rotation(&self.cfg, options, rotation.as_ref());
+        let mtp_cache = make_mtp_caches_with_rotation(&self.cfg, options, rotation.as_ref());
+        self.cache = cache;
+        self.mtp_cache = mtp_cache;
+        self.rotation = rotation;
+        self.cache_options = options;
+        Ok(())
+    }
 }
 
 /// One speculative MTP step.
@@ -185,8 +227,10 @@ fn mtp_step(
         .ok_or_else(|| Error::Other("mtp_step: prev_hidden unset; call prepare first".into()))?;
 
     let last_token_2d = last_token.reshape(&[1, 1])?;
-    let last_host = last_token.item::<i32>();
-    let last_u32 = host_id_to_u32(last_host, adapter.vocab_size)?;
+    // Host-read of `last_token` is deferred to after the verify forward
+    // submission below so the GPU→host sync overlaps with the draft +
+    // verify pipeline instead of blocking before it. `last_u32` is only
+    // needed when building the `committed` return vec.
 
     // Snapshot caches BEFORE any draft so partial-reject can roll back
     // both main + mtp to the pre-step state and re-commit only the
@@ -231,6 +275,10 @@ fn mtp_step(
         &mut adapter.cache,
         None,
     )?;
+
+    // Now sync `last_token` to host — verify forward has been submitted,
+    // so this read overlaps with its dispatch instead of blocking it.
+    let last_u32 = host_id_to_u32(last_token.item::<i32>(), adapter.vocab_size)?;
 
     // Materialise host ids for every draft in one sync, instead of
     // re-syncing each `draft_ids[i]` individually inside the commit
@@ -534,7 +582,7 @@ pub(crate) fn load_context_moe(
     dir: &Path,
 ) -> Result<LoadedContext, Error> {
     let model = Qwen35MoeAdapter::load(cfg, env, dir)?;
-    let (tokenizer, chat_template, eos_ids) = crate::qwen3_5::text::load_common(env, dir)?;
+    let (tokenizer, chat_template, eos_ids) = load_common(env, dir)?;
     let processor = TextOnlyProcessor::new("qwen3_5_moe", tokenizer, chat_template);
     Ok((Box::new(model), Box::new(processor), eos_ids))
 }

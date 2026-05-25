@@ -102,11 +102,7 @@ impl Quantizable for Linear {
     type Quantized = QuantizedLinear;
     type QuantizationError = Exception;
 
-    fn try_into_quantized(
-        self,
-        group_size: i32,
-        bits: i32,
-    ) -> Result<Self::Quantized> {
+    fn try_into_quantized(self, group_size: i32, bits: i32) -> Result<Self::Quantized> {
         QuantizedLinear::try_from_linear(self, group_size, bits)
     }
 }

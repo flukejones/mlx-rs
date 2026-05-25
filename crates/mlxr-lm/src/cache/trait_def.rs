@@ -19,6 +19,20 @@ pub(super) fn ceil_step(s: i32, step: i32) -> i32 {
     ((s + step - 1) / step) * step
 }
 
+/// SDPA mask selection. `None` + prefill (`n_q > 1`) is causal by
+/// definition; `None` + decode (`n_q == 1`) needs no mask.
+#[inline]
+pub(super) fn resolve_sdpa_mask<'a>(
+    mask: Option<&'a Array>,
+    n_q: i32,
+) -> Option<ScaledDotProductAttentionMask<'a>> {
+    match mask {
+        Some(m) => Some(ScaledDotProductAttentionMask::Array(m)),
+        None if n_q > 1 => Some(ScaledDotProductAttentionMask::Causal),
+        None => None,
+    }
+}
+
 /// `debug_assertions` only: panic with a clear message when the mask's
 /// key axis does not match the cache-concatenated K seq len.
 ///
@@ -108,6 +122,7 @@ pub trait KeyValueCache {
         scale: f32,
         mask: Option<&Array>,
     ) -> Result<Array, Error> {
+        let n_q = queries.shape()[queries.shape().len() - 2];
         let (k_full, v_full) = self.update_and_fetch(keys, values)?;
         assert_mask_matches_keys(mask, &k_full);
         Ok(scaled_dot_product_attention(
@@ -115,7 +130,7 @@ pub trait KeyValueCache {
             k_full,
             v_full,
             scale,
-            mask.map(ScaledDotProductAttentionMask::Array),
+            resolve_sdpa_mask(mask, n_q),
             None,
         )?)
     }

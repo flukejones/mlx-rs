@@ -17,6 +17,7 @@ use std::path::Path;
 
 use mlxr::{module::Module, Array};
 
+use crate::cache::CacheOptions;
 use crate::chat_template::{ChatMessage, ChatTemplate, ContentPart, MessageContent};
 use crate::config::ModelConfig as Config;
 use crate::error::Error;
@@ -56,9 +57,6 @@ impl LanguageModel for Qwen35VlmAdapter {
     }
 
     fn prepare(&mut self, input: LMInput) -> Result<PrepareResult, Error> {
-        debug_assert!(input.audio.is_none());
-        debug_assert!(input.video.is_none());
-
         let Some(image) = input.image else {
             // Text-only request against a VLM checkpoint: defer to
             // the dense path. Same as if the processor produced no
@@ -66,8 +64,6 @@ impl LanguageModel for Qwen35VlmAdapter {
             return self.dense.prepare(LMInput {
                 text: input.text,
                 image: None,
-                audio: None,
-                video: None,
             });
         };
 
@@ -123,6 +119,18 @@ impl LanguageModel for Qwen35VlmAdapter {
     fn vocab_size(&self) -> i32 {
         self.dense.vocab_size()
     }
+
+    fn prefill_chunk_size(&self) -> Option<i32> {
+        self.dense.prefill_chunk_size()
+    }
+
+    fn prefill_chunk(&mut self, tokens: &Array) -> Result<(), Error> {
+        self.dense.prefill_chunk(tokens)
+    }
+
+    fn set_cache_options(&mut self, options: CacheOptions) -> Result<(), Error> {
+        self.dense.set_cache_options(options)
+    }
 }
 
 /// The qwen3_5 `UserInputProcessor`. Renders the chat template,
@@ -158,19 +166,6 @@ impl UserInputProcessor for Qwen35Processor {
     }
 
     fn prepare(&mut self, input: UserInput) -> Result<LMInput, Error> {
-        if !input.audios.is_empty() {
-            return Err(Error::ModalityUnsupported {
-                family: "qwen3_5",
-                modality: "audio",
-            });
-        }
-        if !input.videos.is_empty() {
-            return Err(Error::ModalityUnsupported {
-                family: "qwen3_5",
-                modality: "video",
-            });
-        }
-
         let merge = self
             .cfg
             .vision_config
@@ -261,8 +256,6 @@ impl UserInputProcessor for Qwen35Processor {
         Ok(LMInput {
             text: Text { tokens, mask: None },
             image,
-            audio: None,
-            video: None,
         })
     }
 
@@ -410,7 +403,7 @@ pub(crate) fn load_context_vlm(
         return Err(leftover_keys_error("vlm", &leftover));
     }
     let image_processor = Qwen35ImageProcessor::from_dir(dir)?;
-    let dense = Qwen35DenseAdapter::new(model, env.clone());
+    let dense = Qwen35DenseAdapter::new(model, env.clone())?;
     let vlm = Qwen35VlmAdapter::new(dense, vision);
     let processor = Qwen35Processor::new(tokenizer, chat_template, image_processor, env.clone());
     Ok((Box::new(vlm), Box::new(processor), eos_ids))

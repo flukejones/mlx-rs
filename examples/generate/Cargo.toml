@@ -1,0 +1,15 @@
+[package]
+name = "generate"
+edition = "2021"
+version = "0.0.1"
+publish = false
+
+[[bin]]
+name = "generate"
+path = "src/main.rs"
+
+[dependencies]
+mlxr-lm.workspace = true
+anyhow = { workspace = true }
+argh = { workspace = true }
+env_logger = { workspace = true }

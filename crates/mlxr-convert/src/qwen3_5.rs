@@ -28,7 +28,7 @@ use mlxr::ops::split_sections;
 use mlxr::Array;
 
 use crate::plan::{QuantClass, RewriteOutput, Rewriter};
-use crate::{Error, Result};
+use crate::{anyhow, Result};
 
 /// Qwen 3.5 / 3.6 dense + MoE rewriter. The rules are identical for
 /// dense and MoE; the MoE-specific `experts.*` keys simply don't appear
@@ -103,23 +103,23 @@ fn try_split_experts_gate_up(dst_key: &str, tensor: &Array) -> Result<Option<Rew
     };
     let shape = tensor.shape();
     if shape.len() != 3 {
-        return Err(Error::custom(format!(
+        return Err(anyhow!(
             "{dst_key}: expected 3-D [E, 2H, D] tensor, got {shape:?}"
-        )));
+        ));
     }
     if shape[1] % 2 != 0 {
-        return Err(Error::custom(format!(
+        return Err(anyhow!(
             "{dst_key}: middle dim {} is not even, can't split into gate+up",
             shape[1]
-        )));
+        ));
     }
     let half = shape[1] / 2;
     let parts = split_sections(tensor, &[half], 1)?;
     if parts.len() != 2 {
-        return Err(Error::custom(format!(
+        return Err(anyhow!(
             "{dst_key}: split_sections returned {} parts (expected 2)",
             parts.len()
-        )));
+        ));
     }
     let mut it = parts.into_iter();
     let gate = it.next().expect("split_sections returned 2 parts");
